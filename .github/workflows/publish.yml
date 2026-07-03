@@ -1,4 +1,8 @@
-# Publish to the PowerShell Gallery on a version tag (e.g. v0.1.0).
+# Publish to the PowerShell Gallery.
+#
+#   * Push a version tag (e.g. v0.1.0)     -> real publish.
+#   * Run manually (workflow_dispatch)     -> dry run by default (Publish-Module -WhatIf);
+#                                             untick "dryRun" to publish from a manual run.
 #
 # One-time setup:
 #   1. Create an API key at https://www.powershellgallery.com/account/apikeys
@@ -13,6 +17,11 @@ on:
   push:
     tags: ['v*']
   workflow_dispatch:
+    inputs:
+      dryRun:
+        description: 'Dry run (Publish-Module -WhatIf, nothing is pushed to the gallery)'
+        type: boolean
+        default: true
 
 jobs:
   publish:
@@ -35,6 +44,7 @@ jobs:
           if ($r.FailedCount -gt 0) { throw "$($r.FailedCount) unit test(s) failed — not publishing" }
 
       - name: Verify tag matches ModuleVersion
+        if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
         run: |
           $tag = "${{ github.ref_name }}".TrimStart('v')
@@ -45,10 +55,24 @@ jobs:
         shell: pwsh
         env:
           PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
+          # A tag push is always a real publish; a manual run honours the dryRun input
+          # (default true), so a hand-triggered run can't accidentally push a release.
+          DRY_RUN: ${{ github.event_name == 'workflow_dispatch' && inputs.dryRun }}
         run: |
           if (-not $env:PSGALLERY_API_KEY) { throw 'PSGALLERY_API_KEY secret is not set' }
           # Stage the module under a folder named exactly like the module (Publish-Module requirement).
           $stage = Join-Path ([System.IO.Path]::GetTempPath()) 'PSMutant'
+          if (Test-Path $stage) { Remove-Item $stage -Recurse -Force }
           New-Item -ItemType Directory -Path $stage -Force | Out-Null
           Copy-Item ./PSMutant.psd1, ./PSMutant.psm1, ./src, ./LICENSE, ./README.md -Destination $stage -Recurse -Force
-          Publish-Module -Path $stage -NuGetApiKey $env:PSGALLERY_API_KEY -Verbose
+
+          $dryRun = $env:DRY_RUN -eq 'true'
+          if ($dryRun) {
+              Write-Host '### DRY RUN — Publish-Module -WhatIf (nothing will be pushed) ###' -ForegroundColor Yellow
+              Publish-Module -Path $stage -NuGetApiKey $env:PSGALLERY_API_KEY -WhatIf -Verbose
+              Write-Host '### DRY RUN complete — module staged and validated, not published. ###' -ForegroundColor Green
+          }
+          else {
+              Publish-Module -Path $stage -NuGetApiKey $env:PSGALLERY_API_KEY -Verbose
+              Write-Host '### Published to the PowerShell Gallery. ###' -ForegroundColor Green
+          }
