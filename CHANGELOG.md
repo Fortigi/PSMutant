@@ -4,6 +4,12 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
+### Changed
+- CI now gates complexity using the **PSComplexity** module (a faithful cognitive
+  metric), replacing the bundled `tools/Get-PSComplexity.ps1`. The two Fortigi modules
+  dogfood each other: PSMutant's CI uses PSComplexity for its complexity gate, and
+  PSComplexity's CI uses PSMutant to mutation-test itself.
+- Pinned CI tooling (Pester 5.8.0, PSScriptAnalyzer 1.25.0) and SHA-pinned actions.
 
 ## [0.1.0] - 2026-07-03
 ### Added
