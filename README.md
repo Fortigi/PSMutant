@@ -99,8 +99,9 @@ untested log strings make the last stretch noise. Raise `thresholds.break` to lo
 ## Development
 
 ```powershell
-Invoke-Pester ./tests                                              # unit tests + complexity gate
+Invoke-Pester ./tests                                              # unit tests
 Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1   # lint
+Test-PSComplexity ./src -Recurse                                   # complexity gate (needs PSComplexity)
 Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .   # dogfood: PSMutant on itself
 ```
 
@@ -108,14 +109,17 @@ Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .   # dogf
 
 Every one of these runs in the CI `test` job and blocks the merge on failure:
 
-- **Unit tests** — the four suites under `tests/`.
+- **Unit tests** — the suites under `tests/`.
 - **PSScriptAnalyzer** — zero Error/Warning findings (`Write-Host` is the one allowed rule).
-- **Complexity** — every function and script body must stay at or under **15 cyclomatic**
-  and **15 cognitive** complexity (`tools/Get-PSComplexity.ps1` + `tests/Complexity.Tests.ps1`).
+- **Complexity** — every unit must stay at or under **15 cyclomatic** and **15 cognitive**,
+  measured by the sibling module [**PSComplexity**](https://github.com/Fortigi/PSComplexity)
+  (`Test-PSComplexity`) — a faithful cognitive metric, not a bundled approximation.
 - **Self-mutation** — PSMutant mutation-tests itself; the score must stay above the
   `thresholds.break` floor in `psmutant.self.config.json`.
 
-Separately, `code-scanning.yml` uploads PSScriptAnalyzer findings to GitHub code scanning.
+The two Fortigi modules dogfood each other: PSMutant gates its complexity with PSComplexity,
+and PSComplexity gates its test quality with PSMutant. Separately, `code-scanning.yml`
+uploads PSScriptAnalyzer findings to GitHub code scanning.
 
 ## License
 
