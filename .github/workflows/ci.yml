@@ -1,0 +1,45 @@
+# CI — unit tests + dogfood (PSMutant mutation-tested against itself) on every push/PR.
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser
+
+      - name: Module manifest is valid + imports
+        shell: pwsh
+        run: |
+          Test-ModuleManifest ./PSMutant.psd1 | Out-Null
+          Import-Module ./PSMutant.psd1 -Force
+          Get-Command Invoke-PSMutation -ErrorAction Stop | Out-Null
+
+      - name: Unit tests
+        shell: pwsh
+        run: |
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = './tests'
+          $cfg.Run.PassThru = $true
+          $cfg.Output.Verbosity = 'Detailed'
+          $r = Invoke-Pester -Configuration $cfg
+          if ($r.FailedCount -gt 0) { throw "$($r.FailedCount) unit test(s) failed" }
+
+      - name: Mutation test PSMutant against itself
+        shell: pwsh
+        run: |
+          Import-Module ./PSMutant.psd1 -Force
+          $result = Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot . -Quiet
+          Write-Host "Self mutation score: $($result.Score)% ($($result.Killed)/$($result.Total))"
+          # Report-only for now (self config has thresholds.break=null); surface the number.
+          if ($result.ExitCode -ne 0) { exit $result.ExitCode }
