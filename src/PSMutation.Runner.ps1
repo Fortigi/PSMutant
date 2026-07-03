@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Execution engine for the PowerShell mutation runner — baseline, candidate
+    Execution engine for the PowerShell mutation runner - baseline, candidate
     selection, and per-mutant Pester runs. Operates entirely on SANDBOX paths
     (see PSMutation.Sandbox.ps1); tracked source is never touched.
 
@@ -8,7 +8,7 @@
     Depends on PSMutation.Operators.ps1. Each function is small and single-purpose so
     every unit stays under the complexity ceiling. Mutants run IN-PROCESS: the operator
     layer drops any candidate inside a loop condition, so a mutant can't hang, which
-    removes the need for a per-mutant process/timeout — the single biggest speed win.
+    removes the need for a per-mutant process/timeout - the single biggest speed win.
 #>
 
 function Invoke-PSMutationBaseline {
@@ -19,6 +19,7 @@ function Invoke-PSMutationBaseline {
     .OUTPUTS
         @{ Passed = <bool>; DurationSeconds = <double>; CoveredLines = @{ file = HashSet[int] } }
     #>
+    [OutputType([hashtable])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string[]]$TestPath,
@@ -55,6 +56,7 @@ function Invoke-PSMutationBaseline {
 
 function Test-PSMutantCovered {
     # True if a candidate's line was executed by the baseline run. Pure.
+    [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Candidate, [Parameter(Mandatory)] [hashtable]$CoveredLines)
     $f = [System.IO.Path]::GetFullPath($Candidate.File)
@@ -63,6 +65,7 @@ function Test-PSMutantCovered {
 
 function Select-PSMutationCandidate {
     # Enumerate candidates across the mutate files, keeping only covered ones (opt).
+    [OutputType([object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string[]]$MutateFiles,
@@ -85,8 +88,9 @@ function Invoke-PSMutant {
         Evaluate one mutant: splice it into its SANDBOX file, run the covering tests
         in-process, classify, and restore the sandbox file for the next mutant.
     .OUTPUTS
-        'Killed' | 'Survived'  — killed when the suite no longer passes.
+        'Killed' | 'Survived'  -- killed when the suite no longer passes.
     #>
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Candidate,
@@ -113,13 +117,14 @@ function Write-PSMutationProgress {
     [CmdletBinding()]
     param([int]$Index, [int]$Total, $Result, [string]$DisplayFile)
     $survived = $Result.Status -eq 'Survived'
-    $glyph = if ($survived) { '·' } else { 'x' }
+    $glyph = if ($survived) { '.' } else { 'x' }
     $col = if ($survived) { 'Yellow' } else { 'DarkGray' }
     Write-Host ("  [{0}/{1}] {2} {3}:{4} {5}" -f $Index, $Total, $glyph, $DisplayFile, $Result.Line, $Result.Description) -ForegroundColor $col
 }
 
 function Invoke-PSMutationLoop {
     # Evaluate every candidate; return the result rows.
+    [OutputType([object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [object[]]$Candidates,

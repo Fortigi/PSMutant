@@ -98,9 +98,23 @@ untested log strings make the last stretch noise. Raise `thresholds.break` to lo
 ## Development
 
 ```powershell
-Invoke-Pester ./tests                                              # unit tests
+Invoke-Pester ./tests                                              # unit tests + complexity gate
+Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1   # lint
 Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .   # dogfood: PSMutant on itself
 ```
+
+### Quality gates (all required on `main`)
+
+Every one of these runs in the CI `test` job and blocks the merge on failure:
+
+- **Unit tests** — the four suites under `tests/`.
+- **PSScriptAnalyzer** — zero Error/Warning findings (`Write-Host` is the one allowed rule).
+- **Complexity** — every function and script body must stay at or under **15 cyclomatic**
+  and **15 cognitive** complexity (`tools/Get-PSComplexity.ps1` + `tests/Complexity.Tests.ps1`).
+- **Self-mutation** — PSMutant mutation-tests itself; the score must stay above the
+  `thresholds.break` floor in `psmutant.self.config.json`.
+
+Separately, `code-scanning.yml` uploads PSScriptAnalyzer findings to GitHub code scanning.
 
 ## License
 

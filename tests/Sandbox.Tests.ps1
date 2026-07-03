@@ -10,8 +10,8 @@ BeforeAll {
 
 Describe 'ConvertTo/From-PSMutationSandboxPath' {
     It 'maps a repo path into the sandbox preserving structure' {
-        # Use a real temp root (not a hardcoded 'C:/…') so the .NET path math works on
-        # Linux/macOS runners too — GetFullPath throws on a non-existent drive letter.
+        # Use a real temp root (not a hardcoded 'C:/...') so the .NET path math works on
+        # Linux/macOS runners too - GetFullPath throws on a non-existent drive letter.
         $sbRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
         $sb = ConvertTo-PSMutationSandboxPath -Path (Join-Path $script:root 'src/x.ps1') `
             -RepoRoot $script:root -SandboxRoot $sbRoot

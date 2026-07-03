@@ -5,7 +5,7 @@
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
     Copyright         = '(c) Fortigi. MIT licensed.'
-    Description       = 'Mutation testing for PowerShell. Injects small faults (flip -eq to -ne, $true to $false, N to N+1, drop -not) into your scripts using the PowerShell AST and reports how many your Pester suite catches — the metric line coverage cannot give you. Runs mutants in a throwaway sandbox so your source is never modified.'
+    Description       = 'Mutation testing for PowerShell. Injects small faults (flip -eq to -ne, $true to $false, N to N+1, drop -not) into your scripts using the PowerShell AST and reports how many your Pester suite catches - the metric line coverage cannot give you. Runs mutants in a throwaway sandbox so your source is never modified.'
     PowerShellVersion = '7.2'
 
     FunctionsToExport = @('Invoke-PSMutation', 'Get-PSMutationCandidate', 'Set-PSMutationText')

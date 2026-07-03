@@ -3,41 +3,44 @@
     Sandbox isolation for the PowerShell mutation runner.
 
 .DESCRIPTION
-    Mutants must NEVER be written into tracked source — not even transiently, so a
+    Mutants must NEVER be written into tracked source -- not even transiently, so a
     hard kill (Ctrl-C / TaskStop) can't leave a mutated file staged in git. So instead
-    of mutating the real file in place, the runner copies the PowerShell subtrees into
-    a throwaway temp sandbox and mutates only the copy. The tests run from the sandbox
+    of mutating the real file in place, the runner copies the source subtrees into a
+    throwaway temp sandbox and mutates only the copy. The tests run from the sandbox
     too, so their $PSScriptRoot-relative dot-sources resolve to the sandboxed modules.
-    On any exit — clean or killed — only a temp dir is dirty, and it's disposable.
+    On any exit -- clean or killed -- only a temp dir is dirty, and it's disposable.
 
-    This is the same isolation StrykerJS uses ("copies the project into a sandbox dir").
     Each function stays tiny (well under the complexity ceiling) and side-effects are
     confined here.
 #>
 
-# Subtrees that hold PowerShell under test + its tests. app/** is intentionally out:
-# the PS unit suite never dot-sources into it, and copying node_modules would be slow.
-$script:PSMutationSandboxSubtrees = @('tools', 'test', 'setup')
+# Default subtrees copied into the sandbox. Neutral module convention; a consuming
+# repo overrides this via the config's `sandboxSubtrees` to match its own layout.
+$script:PSMutationSandboxSubtrees = @('src', 'tests')
 
 function New-PSMutationSandbox {
-    # Copy the PowerShell subtrees into a fresh temp dir; return its root path.
-    [CmdletBinding()]
+    # Copy the source subtrees into a fresh temp dir; return its root path.
+    [OutputType([string])]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
     param(
         [Parameter(Mandatory)] [string]$RepoRoot,
         [string[]]$Subtrees = $script:PSMutationSandboxSubtrees,
         [string]$Name = "psmut-sandbox-$PID"
     )
     $root = Join-Path ([System.IO.Path]::GetTempPath()) $Name
-    if (Test-Path $root) { Remove-Item $root -Recurse -Force }
-    New-Item -ItemType Directory -Path $root -Force | Out-Null
-    $Subtrees |
-        Where-Object { Test-Path (Join-Path $RepoRoot $_) } |
-        ForEach-Object { Copy-Item (Join-Path $RepoRoot $_) (Join-Path $root $_) -Recurse -Force }
+    if ($PSCmdlet.ShouldProcess($root, 'Create mutation sandbox')) {
+        if (Test-Path $root) { Remove-Item $root -Recurse -Force }
+        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        $Subtrees |
+            Where-Object { Test-Path (Join-Path $RepoRoot $_) } |
+            ForEach-Object { Copy-Item (Join-Path $RepoRoot $_) (Join-Path $root $_) -Recurse -Force }
+    }
     return $root
 }
 
 function ConvertTo-PSMutationSandboxPath {
     # Map a repo path to its position inside the sandbox (structure is preserved). Pure.
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string]$Path,
@@ -49,7 +52,8 @@ function ConvertTo-PSMutationSandboxPath {
 }
 
 function ConvertFrom-PSMutationSandboxPath {
-    # Inverse of ConvertTo — sandbox path back to a repo-relative display path. Pure.
+    # Inverse of ConvertTo -- sandbox path back to a repo-relative display path. Pure.
+    [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string]$Path,
@@ -59,16 +63,20 @@ function ConvertFrom-PSMutationSandboxPath {
 }
 
 function Remove-PSMutationSandbox {
-    # Delete a sandbox. Best-effort — a leftover temp dir is harmless, never tracked.
-    [CmdletBinding()]
+    # Delete a sandbox. Best-effort -- a leftover temp dir is harmless, never tracked.
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
     param([Parameter(Mandatory)] [string]$SandboxRoot)
-    if (Test-Path $SandboxRoot) { Remove-Item $SandboxRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($PSCmdlet.ShouldProcess($SandboxRoot, 'Remove mutation sandbox')) {
+        if (Test-Path $SandboxRoot) { Remove-Item $SandboxRoot -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }
 
 function Clear-PSMutationStaleSandbox {
     # Sweep sandboxes left by a previously killed run (belt-and-braces at startup).
-    [CmdletBinding()]
+    [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
     param()
-    Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter 'psmut-sandbox-*' -ErrorAction SilentlyContinue |
-        ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    if ($PSCmdlet.ShouldProcess('temp', 'Clear stale mutation sandboxes')) {
+        Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter 'psmut-sandbox-*' -ErrorAction SilentlyContinue |
+            ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }

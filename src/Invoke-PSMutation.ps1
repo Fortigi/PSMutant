@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Public entry point for PSMutant — mutation testing for PowerShell.
+    Public entry point for PSMutant - mutation testing for PowerShell.
 #>
 
 function Assert-PSMutationPester {
@@ -12,8 +12,11 @@ function Assert-PSMutationPester {
     Import-Module Pester -MinimumVersion 5.0.0
 }
 
-function Get-PSMutationSandboxTargets {
+function Get-PSMutationSandboxPlan {
     # Translate the config's source-relative mutate/tests into sandbox absolute paths.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
+        Justification = 'SourceRoot and SandboxRoot are used inside the $toSb closure, which the analyzer does not track.')]
+    [OutputType([hashtable])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Cfg, [Parameter(Mandatory)] [string]$SourceRoot, [Parameter(Mandatory)] [string]$SandboxRoot)
     $toSb = { param($p) ConvertTo-PSMutationSandboxPath -Path (Join-Path $SourceRoot $p) -RepoRoot $SourceRoot -SandboxRoot $SandboxRoot }
@@ -39,7 +42,7 @@ function Invoke-PSMutation {
 
     .DESCRIPTION
         All work happens in a throwaway temp sandbox: the source subtrees are copied
-        out, mutants are spliced into the COPY, and the tests run from the copy — so
+        out, mutants are spliced into the COPY, and the tests run from the copy - so
         tracked source is never modified, even if the run is killed mid-way. Returns
         a summary object; report-only unless the config sets thresholds.break.
 
@@ -57,6 +60,7 @@ function Invoke-PSMutation {
     .EXAMPLE
         Invoke-PSMutation -ConfigFile ./psmutant.config.json
     #>
+    [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string]$ConfigFile,
@@ -72,11 +76,11 @@ function Invoke-PSMutation {
     $subtrees = if ($cfg.sandboxSubtrees) { @($cfg.sandboxSubtrees) } else { $script:PSMutationSandboxSubtrees }
     $sandbox = New-PSMutationSandbox -RepoRoot $root -Subtrees $subtrees
     try {
-        $t = Get-PSMutationSandboxTargets -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox
+        $t = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox
 
-        if (-not $Quiet) { Write-Host "`nPSMutant — PowerShell mutation testing (sandboxed)`n  Running baseline suite..." -ForegroundColor Cyan }
+        if (-not $Quiet) { Write-Host "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite..." -ForegroundColor Cyan }
         $baseline = Invoke-PSMutationBaseline -TestPath $t.AllTests -MutateFiles $t.Mutate
-        if (-not $baseline.Passed) { throw 'Baseline suite is not green — fix the tests before mutating.' }
+        if (-not $baseline.Passed) { throw 'Baseline suite is not green - fix the tests before mutating.' }
         if (-not $Quiet) { Write-Host ("  Baseline green in {0:N1}s" -f $baseline.DurationSeconds) -ForegroundColor Green }
 
         $ops = if ($cfg.operators) { @($cfg.operators) } else { $script:PSMutationDefaultOperators }

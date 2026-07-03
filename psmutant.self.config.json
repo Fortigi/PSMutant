@@ -11,6 +11,6 @@
   },
   "coveredLinesOnly": true,
   "operators": ["BinaryOperator", "BooleanLiteral", "NumberLiteral", "NegationRemoval"],
-  "thresholds": { "high": 85, "low": 70, "break": null },
+  "thresholds": { "high": 85, "low": 70, "break": 80 },
   "reportPath": "reports/ps-mutation-self.json"
 }
