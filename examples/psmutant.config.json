@@ -14,6 +14,10 @@
   "operators": ["BinaryOperator", "BooleanLiteral", "NumberLiteral", "NegationRemoval"],
   "coveredLinesOnly": true,
 
+  "_timeout": "Each mutant runs under a wall-clock timeout = max(timeoutFloorSeconds, baseline x timeoutFactor). A non-terminating mutant (e.g. a mutated loop body) is cut off and counted as Killed instead of hanging the run. Both optional; defaults 4 and 15.",
+  "timeoutFactor": 4,
+  "timeoutFloorSeconds": 15,
+
   "thresholds": { "high": 85, "low": 70, "break": null },
   "reportPath": "reports/ps-mutation.json"
 }

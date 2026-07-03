@@ -83,6 +83,7 @@ execution safe and fast.
 | `operators` | Operator classes to inject (default omits `StringLiteral`). |
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["tools","test","setup"]`; set to your layout, e.g. `["src","tests"]`). |
+| `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, baseline × factor)` (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |
 | `reportPath` | Where the JSON report is written (relative to `-SourceRoot`). |
 
