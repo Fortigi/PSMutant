@@ -1,5 +1,5 @@
 # Unit tests for the scoring/report layer (pure + one temp write).
-# Also the covering suite for self-mutating src/PSMutation.Report.ps1 — keep it self-contained.
+# Also the covering suite for self-mutating src/PSMutation.Report.ps1 - keep it self-contained.
 
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'

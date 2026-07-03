@@ -1,6 +1,6 @@
 # Unit tests for the pure AST operator layer. A mutation tool that mis-locates an
 # offset would silently corrupt source, so the splice + every operator is pinned here.
-# Also the covering suite for self-mutation (psmutant.self.config.json) — keep it pure.
+# Also the covering suite for self-mutation (psmutant.self.config.json) - keep it pure.
 
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
@@ -23,7 +23,7 @@ function Test-Fixture {
 
 AfterAll { Remove-Item $script:fixture -ErrorAction SilentlyContinue }
 
-Describe 'Get-PSMutationCandidate — operators' {
+Describe 'Get-PSMutationCandidate - operators' {
     It 'maps the binary operator -eq to -ne' {
         $c = $script:cands | Where-Object Operator -eq 'BinaryOperator'
         $c.Original | Should -Be '-eq'
@@ -50,7 +50,7 @@ Describe 'Get-PSMutationCandidate — operators' {
     }
 }
 
-Describe 'Get-PSMutationCandidate — operator selection' {
+Describe 'Get-PSMutationCandidate - operator selection' {
     It 'excludes StringLiteral from the default set' {
         $d = Get-PSMutationCandidate -Path $script:fixture
         ($d | Where-Object Operator -eq 'StringLiteral')  | Should -BeNullOrEmpty

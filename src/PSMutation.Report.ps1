@@ -6,6 +6,7 @@
 
 function Get-PSMutationScore {
     # Pure: turn result rows into a score summary. No I/O.
+    [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results)
     $killed   = @($Results | Where-Object Status -eq 'Killed').Count
@@ -17,6 +18,7 @@ function Get-PSMutationScore {
 
 function Get-PSMutationExitCode {
     # Report-only unless thresholds.break is set and the score is below it. Pure.
+    [OutputType([int])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Summary, $Thresholds)
     if ($null -ne $Thresholds.break -and $Summary.Score -lt $Thresholds.break) { return 1 }
@@ -25,6 +27,7 @@ function Get-PSMutationExitCode {
 
 function Write-PSMutationReport {
     # Write the JSON report; return the summary.
+    [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
@@ -54,7 +57,7 @@ function Show-PSMutationSummary {
         [string]$ReportPath
     )
     $col = if ($Summary.Score -ge $Thresholds.high) { 'Green' } elseif ($Summary.Score -ge $Thresholds.low) { 'Yellow' } else { 'Red' }
-    Write-Host "`n──────────────────────────────────────────────" -ForegroundColor DarkGray
+    Write-Host "`n----------------------------------------------" -ForegroundColor DarkGray
     Write-Host ("  Mutation score: {0}%  ({1} killed / {2})" -f $Summary.Score, $Summary.Killed, $Summary.Total) -ForegroundColor $col
     if ($Summary.Survived -gt 0) {
         Write-Host "  Survivors (add assertions to kill these):" -ForegroundColor Yellow

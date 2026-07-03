@@ -1,0 +1,45 @@
+# Code scanning for PowerShell. CodeQL does NOT support PowerShell, so we use
+# PSScriptAnalyzer (the PowerShell static analyzer), convert its findings to SARIF, and
+# upload them to GitHub code scanning — the same "code_scanning" gate IdentityAtlas gets
+# from CodeQL, with a tool that actually understands the language.
+name: Code scanning
+
+on:
+  push:
+    branches: [main]
+    paths-ignore:
+      - '**/*.md'
+  pull_request:
+    branches: [main]
+  schedule:
+    - cron: '0 2 * * 1' # Weekly on Monday at 02:00 UTC
+
+concurrency:
+  group: code-scanning-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+jobs:
+  analyze:
+    name: Analyze (PSScriptAnalyzer)
+    runs-on: ubuntu-latest
+    permissions:
+      security-events: write
+      contents: read
+
+    steps:
+      - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      - name: Run PSScriptAnalyzer → SARIF
+        shell: pwsh
+        run: |
+          Install-Module PSScriptAnalyzer -Force -Scope CurrentUser
+          Install-Module ConvertToSARIF   -Force -Scope CurrentUser
+          Import-Module ConvertToSARIF
+          Invoke-ScriptAnalyzer -Path . -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 |
+            ConvertTo-SARIF -FilePath results.sarif
+
+      - name: Upload SARIF to code scanning
+        uses: github/codeql-action/upload-sarif@54f647b7e1bb85c95cddabcd46b0c578ec92bc1a # v4
+        with:
+          sarif_file: results.sarif
+          category: psscriptanalyzer

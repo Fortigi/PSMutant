@@ -1,4 +1,4 @@
-# PSMutant — mutation testing for PowerShell.
+# PSMutant - mutation testing for PowerShell.
 # Dot-source the implementation files (small, single-responsibility) and export the
 # public surface. Load order matters: operators/sandbox/report before the runner and
 # the public Invoke-PSMutation that tie them together.
