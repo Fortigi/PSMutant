@@ -81,13 +81,19 @@ function Invoke-PSMutation {
         if (-not $Quiet) { Write-Host "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite..." -ForegroundColor Cyan }
         $baseline = Invoke-PSMutationBaseline -TestPath $t.AllTests -MutateFiles $t.Mutate
         if (-not $baseline.Passed) { throw 'Baseline suite is not green - fix the tests before mutating.' }
-        if (-not $Quiet) { Write-Host ("  Baseline green in {0:N1}s" -f $baseline.DurationSeconds) -ForegroundColor Green }
+        # Per-mutant timeout: a mutant should never take much longer than the baseline,
+        # so cap at max(floor, baseline x factor). A runaway (non-terminating) mutant is
+        # cut off here and counted as Killed instead of hanging the run.
+        $factor = if ($cfg.timeoutFactor) { $cfg.timeoutFactor } else { 4 }
+        $floor = if ($cfg.timeoutFloorSeconds) { $cfg.timeoutFloorSeconds } else { 15 }
+        $timeout = [int][math]::Max($floor, $baseline.DurationSeconds * $factor)
+        if (-not $Quiet) { Write-Host ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout) -ForegroundColor Green }
 
         $ops = if ($cfg.operators) { @($cfg.operators) } else { $script:PSMutationDefaultOperators }
         $cands = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly ([bool]$cfg.coveredLinesOnly) -CoveredLines $baseline.CoveredLines
         if (-not $Quiet) { Write-Host "  Mutants to evaluate: $($cands.Count)`n" -ForegroundColor Gray }
 
-        $results = Invoke-PSMutationLoop -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests -SandboxRoot $sandbox -Quiet:$Quiet
+        $results = Invoke-PSMutationLoop -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests -TimeoutSeconds $timeout -SandboxRoot $sandbox -Quiet:$Quiet
         $reportPath = Join-Path $root $cfg.reportPath
         $summary = Write-PSMutationReport -Results $results -ReportPath $reportPath -Thresholds $cfg.thresholds
         if (-not $Quiet) { Show-PSMutationSummary -Summary $summary -Results $results -Thresholds $cfg.thresholds -ReportPath $reportPath }

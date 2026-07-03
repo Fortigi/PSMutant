@@ -4,7 +4,7 @@
 
 BeforeAll {
     $root = Split-Path -Parent $PSScriptRoot
-    . (Join-Path $root 'tools' 'Get-PSComplexity.ps1')
+    . (Join-Path (Join-Path $root 'tools') 'Get-PSComplexity.ps1')
     $files = Get-ChildItem (Join-Path $root 'src'), (Join-Path $root 'tools') -Filter *.ps1 -Recurse
     $script:threshold = 15
     $script:units = @($files | ForEach-Object { Measure-PSComplexity -Path $_.FullName })

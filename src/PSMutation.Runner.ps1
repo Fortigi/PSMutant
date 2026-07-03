@@ -6,9 +6,11 @@
 
 .DESCRIPTION
     Depends on PSMutation.Operators.ps1. Each function is small and single-purpose so
-    every unit stays under the complexity ceiling. Mutants run IN-PROCESS: the operator
-    layer drops any candidate inside a loop condition, so a mutant can't hang, which
-    removes the need for a per-mutant process/timeout - the single biggest speed win.
+    every unit stays under the complexity ceiling. Each mutant's covering tests run in a
+    cancellable runspace under a wall-clock timeout (Invoke-PSBoundedPester): the loop-
+    condition guard is a speed optimisation that avoids obviously-doomed condition
+    mutants, but the timeout is the real safety net -- a mutated loop *body* can still
+    make a guarded loop never terminate, and Stop() interrupts it so the run never hangs.
 #>
 
 function Invoke-PSMutationBaseline {
@@ -82,30 +84,58 @@ function Select-PSMutationCandidate {
     return , $out.ToArray()
 }
 
+function Invoke-PSBoundedPester {
+    <#
+    .SYNOPSIS
+        Run the covering tests in a CANCELLABLE runspace with a wall-clock timeout.
+    .DESCRIPTION
+        The loop-condition guard prevents a flipped *condition* from spinning, but a
+        mutated loop *body* (e.g. `$i + 1` -> `$i - 1`) can still make a guarded loop
+        never terminate. There is no way to know that statically, so each mutant runs
+        under a hard timeout: a fresh PowerShell/runspace whose pipeline is Stop()'d
+        when it overruns -- Stop() interrupts even a tight loop, so the run never hangs.
+    .OUTPUTS
+        The Pester result string ('Passed'/'Failed'/...), or 'TimedOut'.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string[]]$CoveringTests, [Parameter(Mandatory)] [int]$TimeoutSeconds)
+    $code = 'param($tests) $c = New-PesterConfiguration; $c.Run.Path = $tests; $c.Run.PassThru = $true; $c.Output.Verbosity = "None"; (Invoke-Pester -Configuration $c).Result'
+    $ps = [PowerShell]::Create()
+    [void]$ps.AddScript($code).AddParameter('tests', $CoveringTests)
+    $async = $ps.BeginInvoke()
+    try {
+        if ($async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))) {
+            return [string]($ps.EndInvoke($async) | Select-Object -Last 1)
+        }
+        $ps.Stop()
+        return 'TimedOut'
+    }
+    finally { $ps.Dispose() }
+}
+
 function Invoke-PSMutant {
     <#
     .SYNOPSIS
         Evaluate one mutant: splice it into its SANDBOX file, run the covering tests
-        in-process, classify, and restore the sandbox file for the next mutant.
+        under a timeout, classify, and restore the sandbox file for the next mutant.
     .OUTPUTS
-        'Killed' | 'Survived'  -- killed when the suite no longer passes.
+        'Killed' | 'Survived' -- Survived only if the suite still fully passes; any
+        failure OR a timeout (a runaway mutant) counts as Killed.
     #>
     [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Candidate,
         [Parameter(Mandatory)] [string]$MutatedContent,
-        [Parameter(Mandatory)] [string[]]$CoveringTests
+        [Parameter(Mandatory)] [string[]]$CoveringTests,
+        [Parameter(Mandatory)] [int]$TimeoutSeconds
     )
     $original = [System.IO.File]::ReadAllText($Candidate.File)
     try {
         [System.IO.File]::WriteAllText($Candidate.File, $MutatedContent)
-        $cfg = New-PesterConfiguration
-        $cfg.Run.Path = $CoveringTests
-        $cfg.Run.PassThru = $true
-        $cfg.Output.Verbosity = 'None'
-        $result = Invoke-Pester -Configuration $cfg
-        if ($result.Result -eq 'Passed') { return 'Survived' } else { return 'Killed' }
+        $outcome = Invoke-PSBoundedPester -CoveringTests $CoveringTests -TimeoutSeconds $TimeoutSeconds
+        if ($outcome -eq 'Passed') { return 'Survived' } else { return 'Killed' }
     }
     finally {
         [System.IO.File]::WriteAllText($Candidate.File, $original)
@@ -130,6 +160,7 @@ function Invoke-PSMutationLoop {
         [Parameter(Mandatory)] [object[]]$Candidates,
         [Parameter(Mandatory)] [hashtable]$TestsByFile,
         [Parameter(Mandatory)] [string[]]$AllTests,
+        [Parameter(Mandatory)] [int]$TimeoutSeconds,
         [string]$SandboxRoot,
         [switch]$Quiet
     )
@@ -140,7 +171,7 @@ function Invoke-PSMutationLoop {
         $content = [System.IO.File]::ReadAllText($c.File)
         $mutated = Set-PSMutationText -Content $content -Candidate $c
         $covering = if ($TestsByFile.ContainsKey($c.File)) { $TestsByFile[$c.File] } else { $AllTests }
-        $status = Invoke-PSMutant -Candidate $c -MutatedContent $mutated -CoveringTests $covering
+        $status = Invoke-PSMutant -Candidate $c -MutatedContent $mutated -CoveringTests $covering -TimeoutSeconds $TimeoutSeconds
         $display = ConvertFrom-PSMutationSandboxPath -Path $c.File -SandboxRoot $SandboxRoot
         $row = [pscustomobject]@{
             Id = $c.Id; File = $display; Line = $c.Line
