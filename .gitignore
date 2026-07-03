@@ -1,0 +1,7 @@
+# Mutation reports and any stray sandbox/backup artifacts
+reports/
+*.psmut-orig
+
+# OS / editor cruft
+.DS_Store
+Thumbs.db

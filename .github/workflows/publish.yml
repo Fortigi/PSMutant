@@ -1,0 +1,54 @@
+# Publish to the PowerShell Gallery on a version tag (e.g. v0.1.0).
+#
+# One-time setup:
+#   1. Create an API key at https://www.powershellgallery.com/account/apikeys
+#      (scope: Push new packages and package versions; glob PSMutant).
+#   2. Add it as the repo secret PSGALLERY_API_KEY
+#      (Settings -> Secrets and variables -> Actions).
+#   3. Bump ModuleVersion in PSMutant.psd1, then push a matching tag:
+#        git tag v0.1.0 && git push origin v0.1.0
+name: Publish
+
+on:
+  push:
+    tags: ['v*']
+  workflow_dispatch:
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Pester
+        shell: pwsh
+        run: Install-Module Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser
+
+      - name: Gate on unit tests
+        shell: pwsh
+        run: |
+          $cfg = New-PesterConfiguration
+          $cfg.Run.Path = './tests'
+          $cfg.Run.PassThru = $true
+          $cfg.Output.Verbosity = 'Normal'
+          $r = Invoke-Pester -Configuration $cfg
+          if ($r.FailedCount -gt 0) { throw "$($r.FailedCount) unit test(s) failed — not publishing" }
+
+      - name: Verify tag matches ModuleVersion
+        shell: pwsh
+        run: |
+          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $ver = (Import-PowerShellDataFile ./PSMutant.psd1).ModuleVersion
+          if ($tag -ne $ver) { throw "Tag $tag does not match ModuleVersion $ver" }
+
+      - name: Publish to PSGallery
+        shell: pwsh
+        env:
+          PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
+        run: |
+          if (-not $env:PSGALLERY_API_KEY) { throw 'PSGALLERY_API_KEY secret is not set' }
+          # Stage the module under a folder named exactly like the module (Publish-Module requirement).
+          $stage = Join-Path ([System.IO.Path]::GetTempPath()) 'PSMutant'
+          New-Item -ItemType Directory -Path $stage -Force | Out-Null
+          Copy-Item ./PSMutant.psd1, ./PSMutant.psm1, ./src, ./LICENSE, ./README.md -Destination $stage -Recurse -Force
+          Publish-Module -Path $stage -NuGetApiKey $env:PSGALLERY_API_KEY -Verbose

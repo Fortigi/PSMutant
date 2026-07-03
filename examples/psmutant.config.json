@@ -1,0 +1,19 @@
+{
+  "_comment": "Example PSMutant config. Copy into your repo, point `mutate` at pure/DB-free modules and `tests` at the Pester files that cover them. Paths are relative to -SourceRoot (default: current dir). Run: Invoke-PSMutation -ConfigFile ./psmutant.config.json",
+
+  "sandboxSubtrees": ["src", "tests"],
+
+  "mutate": [
+    "src/MyModule.Transform.ps1"
+  ],
+
+  "tests": {
+    "src/MyModule.Transform.ps1": ["tests/Transform.Tests.ps1"]
+  },
+
+  "operators": ["BinaryOperator", "BooleanLiteral", "NumberLiteral", "NegationRemoval"],
+  "coveredLinesOnly": true,
+
+  "thresholds": { "high": 85, "low": 70, "break": null },
+  "reportPath": "reports/ps-mutation.json"
+}

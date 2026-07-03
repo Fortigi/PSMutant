@@ -1,0 +1,16 @@
+{
+  "_comment": "PSMutant tested against ITSELF (dogfooding). Mutates its own pure layers — the AST operators and the scoring/report code — and checks the operator/report suites kill those mutants. Sandbox New/Remove/Clear are deliberately NOT self-mutated (real temp side-effects, shared sandbox); they're covered by tests/Sandbox.Tests.ps1 in the normal suite. Run: Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .",
+  "sandboxSubtrees": ["src", "tests"],
+  "mutate": [
+    "src/PSMutation.Operators.ps1",
+    "src/PSMutation.Report.ps1"
+  ],
+  "tests": {
+    "src/PSMutation.Operators.ps1": ["tests/Operators.Tests.ps1"],
+    "src/PSMutation.Report.ps1": ["tests/Report.Tests.ps1"]
+  },
+  "coveredLinesOnly": true,
+  "operators": ["BinaryOperator", "BooleanLiteral", "NumberLiteral", "NegationRemoval"],
+  "thresholds": { "high": 85, "low": 70, "break": null },
+  "reportPath": "reports/ps-mutation-self.json"
+}
