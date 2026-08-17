@@ -90,6 +90,53 @@ Describe 'Invoke-PSMutationLoop' {
         @($r).Count | Should -Be 0
     }
 
+    It 'uses the per-file test mapping when the candidate file has one' {
+        # The paired case below covers the fallback. This is the mapping actually
+        # being honoured -- get it wrong and every mutant runs the entire suite,
+        # which is correct but turns a minutes-long run into an hours-long one.
+        Mock Invoke-PSMutant { $script:seenTests = $CoveringTests; 'Killed' }
+        $cand = [pscustomobject]@{
+            Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
+            Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
+        }
+        $map = @{ $script:fixture = @('specific.Tests.ps1') }
+
+        $r = Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile $map -AllTests @('all-tests.ps1') `
+            -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
+
+        $script:seenTests | Should -Be @('specific.Tests.ps1')
+        $r[0].Status | Should -Be 'Killed'
+    }
+
+    It 'writes a progress line per mutant unless asked to be quiet' {
+        # Every other test here passes -Quiet, so the reporting branch never ran.
+        Mock Invoke-PSMutant { 'Killed' }
+        Mock Write-PSMutationProgress { }
+        $cand = [pscustomobject]@{
+            Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
+            Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
+        }
+
+        Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
+            -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) | Out-Null
+
+        Should -Invoke Write-PSMutationProgress -Exactly 1 -ParameterFilter { $Index -eq 1 -and $Total -eq 1 }
+    }
+
+    It 'stays silent when asked to be quiet' {
+        Mock Invoke-PSMutant { 'Killed' }
+        Mock Write-PSMutationProgress { }
+        $cand = [pscustomobject]@{
+            Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
+            Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
+        }
+
+        Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
+            -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet | Out-Null
+
+        Should -Invoke Write-PSMutationProgress -Exactly 0
+    }
+
     It 'falls back to the whole test set for a file with no per-file mapping' {
         # An unmapped file must still be evaluated against SOMETHING; running zero
         # tests would mark every one of its mutants Survived and quietly tank the
@@ -105,5 +152,68 @@ Describe 'Invoke-PSMutationLoop' {
         $script:seenTests | Should -Be @('all-tests.ps1')
         $r[0].Status     | Should -Be 'Killed'
         $seen            | Should -BeNullOrEmpty
+    }
+}
+
+Describe 'Invoke-PSMutationBaseline' {
+    # The baseline run is what decides (a) whether mutation may proceed at all and
+    # (b) which lines are covered, i.e. which mutants are even worth evaluating. It
+    # was only ever exercised end-to-end, so its result-shaping was unpinned. Pester
+    # itself is mocked here: the point is what this function does with the result.
+    It 'reports a passing suite and collapses covered lines per file' {
+        Mock Invoke-Pester {
+            [pscustomobject]@{
+                Result       = 'Passed'
+                CodeCoverage = [pscustomobject]@{
+                    CommandsExecuted = @(
+                        [pscustomobject]@{ File = $script:fixture; Line = 3 }
+                        [pscustomobject]@{ File = $script:fixture; Line = 7 }
+                        # Same line reported twice -- one command per statement means
+                        # this is normal, and the line must not be counted twice.
+                        [pscustomobject]@{ File = $script:fixture; Line = 3 }
+                    )
+                }
+            }
+        }
+
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
+
+        $r.Passed | Should -BeTrue
+        $key = [System.IO.Path]::GetFullPath($script:fixture)
+        $r.CoveredLines[$key].Count     | Should -Be 2
+        $r.CoveredLines[$key].Contains(3) | Should -BeTrue
+        $r.CoveredLines[$key].Contains(7) | Should -BeTrue
+        $r.DurationSeconds | Should -BeGreaterOrEqual 0
+    }
+
+    It 'keys covered lines by FULL path, whatever Pester reported' {
+        # Candidates carry absolute paths, so a relative key here would match nothing
+        # and every mutant would look uncovered -- an empty run reported as success.
+        Push-Location ([System.IO.Path]::GetTempPath())
+        try {
+            $leaf = Split-Path $script:fixture -Leaf
+            Mock Invoke-Pester {
+                [pscustomobject]@{
+                    Result       = 'Passed'
+                    CodeCoverage = [pscustomobject]@{ CommandsExecuted = @([pscustomobject]@{ File = $leaf; Line = 1 }) }
+                }
+            }
+            $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
+            @($r.CoveredLines.Keys)[0] | Should -Be ([System.IO.Path]::GetFullPath($leaf))
+        }
+        finally { Pop-Location }
+    }
+
+    It 'reports a failing suite so the run can refuse to start' {
+        # Mutating against a red suite is meaningless: every mutant "dies" for the
+        # reason the suite was already failing.
+        Mock Invoke-Pester {
+            [pscustomobject]@{ Result = 'Failed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
+        }
+
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
+
+        $r.Passed | Should -BeFalse
+        $r.CoveredLines.Count | Should -Be 0
     }
 }
