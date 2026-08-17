@@ -34,6 +34,42 @@ function Get-PSMutationSandboxPlan {
     }
 }
 
+function Invoke-PSMutationRecheckRun {
+    # The whole -RecheckFrom path, kept out of Invoke-PSMutation so the entry point
+    # stays an orchestrator rather than growing a second mode inline.
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$RecheckFrom,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
+        [Parameter(Mandatory)] [hashtable]$Plan,
+        [Parameter(Mandatory)] [hashtable]$SourceHashes,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Operators,
+        [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        [Parameter(Mandatory)] [string]$SandboxRoot,
+        [Parameter(Mandatory)] [string]$ReportPath,
+        [switch]$Quiet
+    )
+    $prior = Get-Content $RecheckFrom -Raw | ConvertFrom-Json
+    # Refuse rather than guess. Mutant ids are AST-walk positions: if the source or
+    # the operator set moved, the ids in the report point at different mutants now,
+    # and a recheck would answer confidently about the wrong ones.
+    $why = Test-PSMutationRecheckCompatible -Report $prior -SourceHashes $SourceHashes -Operators $Operators
+    if ($why.Count -gt 0) {
+        throw ("Cannot recheck against '$RecheckFrom': " + ($why -join '; ') + '. Run the full set to regenerate the report.')
+    }
+    $targets = Select-PSMutationRecheckCandidate -Candidates $Candidates -Report $prior -SandboxRoot $SandboxRoot
+    if (-not $Quiet) { Write-Host "  Rechecking $($targets.Count) previous survivor(s)`n" -ForegroundColor Gray }
+
+    $results = Invoke-PSMutationLoop -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
+        -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -Quiet:$Quiet
+    $recheckPath = Get-PSMutationRecheckReportPath -ReportPath $ReportPath
+    $summary = Write-PSMutationRecheckReport -Results $results -ReportPath $recheckPath `
+        -PriorSurvivorCount @($prior.survivors).Count -SourceReportPath $RecheckFrom
+    if (-not $Quiet) { Show-PSMutationRecheckSummary -Summary $summary -Results $results -ReportPath $recheckPath }
+    return $summary
+}
+
 function Invoke-PSMutation {
     <#
     .SYNOPSIS
@@ -54,17 +90,38 @@ function Invoke-PSMutation {
         Root of the code under test; config paths are relative to it. Defaults to the
         current directory.
 
+    .PARAMETER RecheckFrom
+        Path to a report from a previous run. Evaluates ONLY the mutants that report
+        recorded as survivors, which is the fast inner loop while you are writing
+        assertions to kill them.
+
+        This is not a measurement and does not produce a score: the set is filtered,
+        so no percentage over it means anything, thresholds are not applied, and the
+        result is written to a separate <report>.recheck.json so the full baseline
+        cannot be overwritten by a partial run.
+
+        It is also only sound for test changes that purely ADD assertions. Editing or
+        deleting an existing test can revive a mutant that was killed before, and a
+        recheck never evaluates those -- so finish with a full run before trusting a
+        number or moving a threshold.
+
     .OUTPUTS
-        [pscustomobject] @{ Score; Killed; Survived; Total; ExitCode }
+        [pscustomobject] @{ Score; Killed; Survived; Total; ExitCode }, or for
+        -RecheckFrom, @{ Mode; PriorSurvivors; Rechecked; NowKilled; StillSurviving }.
 
     .EXAMPLE
         Invoke-PSMutation -ConfigFile ./psmutant.config.json
+
+    .EXAMPLE
+        # Write assertions, then re-run just the survivors instead of the whole set.
+        Invoke-PSMutation -ConfigFile ./psmutant.config.json -RecheckFrom ./reports/ps-mutation.json
     #>
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string]$ConfigFile,
         [string]$SourceRoot = (Get-Location).Path,
+        [string]$RecheckFrom,
         [switch]$Quiet
     )
 
@@ -91,12 +148,21 @@ function Invoke-PSMutation {
 
         $ops = if ($cfg.operators) { @($cfg.operators) } else { $script:PSMutationDefaultOperators }
         $cands = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly ([bool]$cfg.coveredLinesOnly) -CoveredLines $baseline.CoveredLines
+        $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $sandbox
+        $reportPath = Join-Path $root $cfg.reportPath
+
+        if ($RecheckFrom) {
+            return Invoke-PSMutationRecheckRun -RecheckFrom $RecheckFrom -Candidates $cands -Plan $t `
+                -SourceHashes $hashes -Operators $ops -TimeoutSeconds $timeout -SandboxRoot $sandbox `
+                -ReportPath $reportPath -Quiet:$Quiet
+        }
+
         if (-not $Quiet) { Write-Host "  Mutants to evaluate: $($cands.Count)`n" -ForegroundColor Gray }
 
         $results = Invoke-PSMutationLoop -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests -TimeoutSeconds $timeout -SandboxRoot $sandbox -Quiet:$Quiet
-        $reportPath = Join-Path $root $cfg.reportPath
-        $summary = Write-PSMutationReport -Results $results -ReportPath $reportPath -Thresholds $cfg.thresholds
-        if (-not $Quiet) { Show-PSMutationSummary -Summary $summary -Results $results -Thresholds $cfg.thresholds -ReportPath $reportPath }
+        $summary = Write-PSMutationReport -Results $results -ReportPath $reportPath -Thresholds $cfg.thresholds `
+            -SourceHashes $hashes -Operators $ops -Equivalents $cfg.equivalents
+        if (-not $Quiet) { Show-PSMutationSummary -Summary $summary -Results $results -Thresholds $cfg.thresholds -ReportPath $reportPath -Equivalents $cfg.equivalents }
 
         $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds
         return [pscustomobject]@{

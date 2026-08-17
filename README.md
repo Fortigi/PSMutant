@@ -49,6 +49,64 @@ exit $result.ExitCode        # 0 unless thresholds.break is set and unmet
 Survivors are printed with `file:line` and the exact source→mutant change — each is a
 missing assertion, an equivalent mutant (a change that can't alter behaviour), or dead code.
 
+### Rechecking survivors while you write assertions
+
+Killing survivors is an edit-run-edit loop, and re-running the mutants you already killed
+is most of the wait. `-RecheckFrom` runs **only** the mutants a previous report recorded as
+survivors:
+
+```powershell
+Invoke-PSMutation -ConfigFile ./psmutant.config.json                                  # full: 127 mutants
+# ...add assertions...
+Invoke-PSMutation -ConfigFile ./psmutant.config.json -RecheckFrom ./reports/ps-mutation.json   # 56
+```
+
+Two things it deliberately will not do:
+
+- **It produces no score.** Killing 6 of 10 survivors is not 60% of anything — the
+  denominator is a filtered set. The result object and the `*.recheck.json` report carry
+  counts (`NowKilled`, `StillSurviving`), never a percentage, and thresholds are not
+  applied. The recheck report is written beside the full one, so a partial run can never
+  overwrite the baseline that CI reads.
+- **It will not guess.** Mutants are matched by `(file, id)`, and the id is an AST-walk
+  position — it only means anything for byte-identical source and the same operator set.
+  Reports therefore record a SHA256 per mutated file plus the operator list, and a recheck
+  whose source or operators moved *refuses to run* rather than confidently rechecking the
+  wrong mutants.
+
+Finish with a full run before trusting a number or raising `thresholds.break`. A recheck is
+sound only for **additive** test changes: editing or deleting an existing test can revive a
+mutant that was killed before, and a recheck never evaluates those.
+
+### Declaring equivalent mutants
+
+Some mutants provably cannot change behaviour — `ConvertTo-Json -Depth 6` versus `-Depth 7`
+on data four levels deep, for instance. No test can kill them, and chasing them produces
+fixtures that assert nothing. Declare them, with a reason:
+
+```json
+"equivalents": {
+  "src/Report.ps1:55:6 -> 7": "Depth N and N+1 emit identical JSON for any graph shallower than N; this report nests 4 deep at worst."
+}
+```
+
+The key is `file:line:description`, exactly as printed in the survivor list. A declared
+mutant leaves the denominator, so `thresholds.break: 100` becomes a meaningful gate:
+*every catchable fault is caught*.
+
+The declaration is a **claim that gets checked**, not a mute button:
+
+- A blank reason is ignored — the mutant stays in the score.
+- If a declared mutant is ever **killed**, the run fails: the config asserted no test could
+  catch it, and one did.
+- If a declared mutant **no longer exists**, the run fails: the code moved and nobody
+  revisited the claim.
+- Both fail **regardless of `thresholds.break`**, including report-only mode — a stale
+  declaration is not a low score, it is a false statement inflating whatever score is printed.
+
+The number of exclusions is printed next to the score and stored as `declaredEquivalent`, so
+a 100% resting on a dozen declarations can never be mistaken for one that killed everything.
+
 ## How it works
 
 1. **Baseline** — runs your tests once (must be green) with Pester code coverage over the
@@ -84,8 +142,13 @@ execution safe and fast.
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["tools","test","setup"]`; set to your layout, e.g. `["src","tests"]`). |
 | `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, baseline × factor)` (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
+| `equivalents` | `file:line:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator; the run fails if one is killed or stops existing. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |
-| `reportPath` | Where the JSON report is written (relative to `-SourceRoot`). |
+| `reportPath` | Where the JSON report is written (relative to `-SourceRoot`). A `-RecheckFrom` run writes `<name>.recheck.json` beside it and never touches this file. |
+
+Reports also record `operators` and a `sourceHashes` map (SHA256 per mutated file). Those
+exist so `-RecheckFrom` can prove the mutant ids in a report still refer to the same code;
+nothing else reads them.
 
 ## What to point it at
 
