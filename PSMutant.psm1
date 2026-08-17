@@ -7,6 +7,7 @@ $src = Join-Path $PSScriptRoot 'src'
 foreach ($file in @(
         'PSMutation.Operators.ps1'
         'PSMutation.Sandbox.ps1'
+        'PSMutation.Config.ps1'
         'PSMutation.Report.ps1'
         'PSMutation.Recheck.ps1'
         'PSMutation.Runner.ps1'

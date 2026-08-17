@@ -90,6 +90,62 @@ Describe 'Loop guard' {
     }
 }
 
+Describe 'Skipped constructs' {
+    # Every collector has a "not this one" branch, and none of them were exercised:
+    # an operator outside the map, a bareword, an empty string, and the loop guard on
+    # the boolean/string/negation collectors (only the binary one was covered).
+    # Each case below pairs the skipped construct with an IDENTICAL one that is not
+    # skipped, so the assertion says "this is filtered" rather than merely "nothing
+    # came back".
+    BeforeAll {
+        $script:skipFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-skips-$PID.ps1"
+        @'
+function Skip-Cases {
+    $done = $false
+    $mode = 'go'
+    while ($true -and -not $done -and $mode -ne 'stop') { $done = $true }
+    if ($mode -like 'g*') { Write-Output 'outside' }
+    if ($mode -eq 'go') { $empty = '' }
+    return (-not $done)
+}
+'@ | Set-Content $script:skipFixture -Encoding utf8
+        $script:skipCands = Get-PSMutationCandidate -Path $script:skipFixture -Operators $script:all
+    }
+    AfterAll { Remove-Item $script:skipFixture -ErrorAction SilentlyContinue }
+
+    It 'ignores a binary operator it has no mutation for' {
+        # -like has no opposite in the map; -eq, on the same kind of node, does.
+        ($script:skipCands | Where-Object Original -eq '-like') | Should -BeNullOrEmpty
+        ($script:skipCands | Where-Object Original -eq '-eq')   | Should -Not -BeNullOrEmpty
+    }
+
+    It 'never empties a bareword, only a quoted string' {
+        # Write-Output is a StringConstantExpressionAst too; emptying it would delete
+        # the command itself rather than mutate a value.
+        ($script:skipCands | Where-Object Original -like '*Write-Output*') | Should -BeNullOrEmpty
+        ($script:skipCands | Where-Object Original -eq "'outside'")        | Should -Not -BeNullOrEmpty
+    }
+
+    It 'ignores an already-empty string' {
+        # '' -> '' is not a mutation; it would be born surviving.
+        $strings = @($script:skipCands | Where-Object Operator -eq 'StringLiteral')
+        ($strings | Where-Object Original -eq "''") | Should -BeNullOrEmpty
+        $strings.Count | Should -BeGreaterThan 0
+    }
+
+    It 'applies the loop guard to booleans, strings and negations, not just operators' {
+        # Everything in the while CONDITION is skipped -- mutating a loop condition
+        # tends to hang the run rather than fail a test. The loop BODY is fair game,
+        # which is what makes each pair below discriminate.
+        $inCondition = @($script:skipCands | Where-Object Original -eq "'stop'")
+        $inCondition | Should -BeNullOrEmpty                                  # string in condition
+        ($script:skipCands | Where-Object Original -eq '-not $done')          | Should -Not -BeNullOrEmpty  # negation outside
+        @($script:skipCands | Where-Object Operator -eq 'BooleanLiteral').Count | Should -BeGreaterThan 0    # $true in the body
+        # ...and the negation that sits inside the condition is not among them.
+        @($script:skipCands | Where-Object { $_.Operator -eq 'NegationRemoval' }).Count | Should -Be 1
+    }
+}
+
 Describe 'Set-PSMutationText' {
     It 'splices exactly the operator extent, leaving the rest intact' {
         $content = [System.IO.File]::ReadAllText($script:fixture)
