@@ -39,4 +39,51 @@ Describe 'New/Remove-PSMutationSandbox' {
             Remove-Item (Join-Path ([System.IO.Path]::GetTempPath()) $name) -Recurse -Force -ErrorAction SilentlyContinue
         }
     }
+
+    It 'wipes a sandbox left over from a previous run instead of merging into it' {
+        # A killed run leaves its sandbox behind, and the name is per-PID, so the next
+        # run in the same shell reuses it. Merging would leave the previous run's
+        # mutated copy in place -- mutants stacking on mutants, and a score describing
+        # code that never existed.
+        $srcDir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-src-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $srcDir 'keep') -Force | Out-Null
+        'current' | Set-Content (Join-Path $srcDir 'keep/file.txt')
+        $name = "psmut-sandbox-test-$([System.Guid]::NewGuid().ToString('N'))"
+        $stale = Join-Path ([System.IO.Path]::GetTempPath()) $name
+        try {
+            New-Item -ItemType Directory -Path (Join-Path $stale 'keep') -Force | Out-Null
+            'left over from a killed run' | Set-Content (Join-Path $stale 'keep/file.txt')
+            'orphan' | Set-Content (Join-Path $stale 'keep/ghost.txt')
+
+            $sb = New-PSMutationSandbox -RepoRoot $srcDir -Subtrees @('keep') -Name $name
+            Get-Content (Join-Path $sb 'keep/file.txt') | Should -Be 'current'
+            Test-Path (Join-Path $sb 'keep/ghost.txt')  | Should -BeFalse
+        }
+        finally {
+            Remove-Item $srcDir -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $stale -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'Remove-PSMutationSandbox is a no-op on a path that is already gone' {
+        # Called from a finally block, so it runs even when the sandbox was never
+        # created (an early throw). Throwing there would mask the original error.
+        $gone = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-never-$([System.Guid]::NewGuid().ToString('N'))"
+        { Remove-PSMutationSandbox -SandboxRoot $gone } | Should -Not -Throw
+    }
+}
+
+Describe 'Clear-PSMutationStaleSandbox' {
+    It 'sweeps sandboxes left behind by a killed run' {
+        # Runs at startup, which is why a killed run does not accumulate temp dirs
+        # forever. Matches psmut-sandbox-* by design.
+        $stale = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-sandbox-stale-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $stale -Force | Out-Null
+        'junk' | Set-Content (Join-Path $stale 'leftover.txt')
+        try {
+            Clear-PSMutationStaleSandbox
+            Test-Path $stale | Should -BeFalse
+        }
+        finally { Remove-Item $stale -Recurse -Force -ErrorAction SilentlyContinue }
+    }
 }

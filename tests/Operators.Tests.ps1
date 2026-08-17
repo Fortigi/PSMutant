@@ -6,6 +6,15 @@ BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     . (Join-Path $src 'PSMutation.Operators.ps1')
 
+    function Get-BadSyntaxFile {
+        # Exactly ONE parse error. The count matters: the guard is `Count -gt 0`, and
+        # a two-error file cannot tell that apart from `-gt 1`.
+        param([string]$Name)
+        $p = Join-Path $TestDrive $Name
+        Set-Content -Path $p -Value 'if ($a) {' -Encoding utf8
+        return $p
+    }
+
     $script:fixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-ops-$PID.ps1"
     @'
 function Test-Fixture {
@@ -104,5 +113,48 @@ Describe 'New-PSMutationCandidate' {
         $c = $script:cands | Select-Object -First 1
         $c.Line | Should -BeGreaterThan 0
         $c.EndOffset | Should -BeGreaterThan $c.StartOffset
+    }
+}
+
+Describe 'Get-PSMutationCandidate - unparseable input' {
+    It 'refuses a file with a single syntax error' {
+        # One error, not two: the guard is `Count -gt 0`, and a two-error fixture
+        # passes just as happily against `-gt 1` -- under which a file with exactly
+        # one syntax error would be parsed anyway and mutated from a broken AST.
+        { Get-PSMutationCandidate -Path (Get-BadSyntaxFile 'one-error.ps1') } |
+            Should -Throw '*parse errors*'
+    }
+
+    It 'reports the FIRST parse error message, not an empty one' {
+        # The message comes from $errors[0]. Read as $errors[1], a single-error file
+        # yields $null and the throw says "parse errors:" with nothing after it --
+        # still an error, but one that tells you nothing about what is wrong.
+        { Get-PSMutationCandidate -Path (Get-BadSyntaxFile 'one-error-msg.ps1') } |
+            Should -Throw "*Missing closing '}'*"
+    }
+
+    It 'names the file it could not parse' {
+        $p = Get-BadSyntaxFile 'named.ps1'
+        { Get-PSMutationCandidate -Path $p } | Should -Throw '*named.ps1*'
+    }
+}
+
+Describe 'Mutant ids' {
+    It 'numbers candidates from 1, contiguously, within a file' {
+        # -RecheckFrom matches survivors by (file, id), so the numbering is a
+        # contract, not an implementation detail: a gap or a restart would make a
+        # recheck select the wrong mutants.
+        $ids = @($script:cands | ForEach-Object Id)
+        $ids | Should -Be @(1..$ids.Count)
+    }
+
+    It 'leaves an unnumbered candidate at the 0 sentinel' {
+        # Candidates are built with Id = 0 and numbered afterwards. The sentinel has
+        # to be outside the real range: at 1 it would be indistinguishable from a
+        # genuine first mutant, so a candidate that never got numbered would look
+        # like a valid recheck target.
+        $c = New-PSMutationCandidate -Extent ([pscustomobject]@{ StartLineNumber = 7; StartOffset = 1; EndOffset = 2 }) `
+            -File 'f.ps1' -Original 'a' -Mutated 'b' -Operator 'BinaryOperator' -Description 'a -> b'
+        $c.Id | Should -Be 0
     }
 }
