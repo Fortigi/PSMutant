@@ -179,7 +179,10 @@ function Get-PSMutationCandidate {
     $content = [System.IO.File]::ReadAllText($Path)
     $errors = $null
     $ast = [System.Management.Automation.Language.Parser]::ParseInput($content, [ref]$null, [ref]$errors)
-    if ($errors -and $errors.Count -gt 0) {
+    # ParseInput always assigns a ParseError[] -- empty on success -- and $null.Count
+    # is 0, so the Count check alone covers every case. An extra `$errors -and` in
+    # front could never change the outcome.
+    if ($errors.Count -gt 0) {
         throw "Cannot mutate '$Path' -- parse errors: $($errors[0].Message)"
     }
 

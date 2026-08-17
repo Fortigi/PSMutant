@@ -1,16 +1,23 @@
 {
-  "_comment": "PSMutant tested against ITSELF (dogfooding). Mutates its own pure layers — the AST operators and the scoring/report code — and checks the operator/report suites kill those mutants. Sandbox New/Remove/Clear are deliberately NOT self-mutated (real temp side-effects, shared sandbox); they're covered by tests/Sandbox.Tests.ps1 in the normal suite. Run: Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .",
+  "_comment": "PSMutant tested against ITSELF (dogfooding). Mutates its own pure layers -- the AST operators and the scoring/report code -- and checks the operator/report suites kill those mutants. Sandbox New/Remove/Clear are deliberately NOT self-mutated (real temp side-effects, shared sandbox); they're covered by tests/Sandbox.Tests.ps1 in the normal suite. Run: Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .",
   "sandboxSubtrees": ["src", "tests"],
   "mutate": [
     "src/PSMutation.Operators.ps1",
-    "src/PSMutation.Report.ps1"
+    "src/PSMutation.Report.ps1",
+    "src/PSMutation.Recheck.ps1"
   ],
   "tests": {
     "src/PSMutation.Operators.ps1": ["tests/Operators.Tests.ps1"],
-    "src/PSMutation.Report.ps1": ["tests/Report.Tests.ps1"]
+    "src/PSMutation.Report.ps1": ["tests/Report.Tests.ps1"],
+    "src/PSMutation.Recheck.ps1": ["tests/Recheck.Tests.ps1"]
   },
   "coveredLinesOnly": true,
   "operators": ["BinaryOperator", "BooleanLiteral", "NumberLiteral", "NegationRemoval"],
-  "thresholds": { "high": 85, "low": 70, "break": 80 },
+  "_equivalentsComment": "Mutants that provably cannot change behaviour, excluded from the denominator so the score means 'every catchable fault is caught'. Each needs a reason, and the run FAILS if one is ever killed or stops existing - a declaration is a checkable claim, not a mute button. Everything else here was killed by a test; nothing is listed merely because it was inconvenient.",
+  "equivalents": {
+    "src/PSMutation.Report.ps1:125:6 -> 7": "ConvertTo-Json -Depth N and -Depth N+1 emit byte-identical output for any object graph shallower than N. The report nests 4 deep at its worst (root -> mutants[] -> row -> scalar), so 6 and 7 cannot differ. Killing this would need a fixture built for no purpose but to out-nest the serializer, which would assert nothing about the report.",
+    "src/PSMutation.Recheck.ps1:149:6 -> 7": "Same as the Report.ps1 entry: the recheck report nests 4 deep at most (root -> mutants[] -> row -> scalar), so -Depth 6 and 7 serialise identically."
+  },
+  "thresholds": { "high": 85, "low": 70, "break": 100 },
   "reportPath": "reports/ps-mutation-self.json"
 }

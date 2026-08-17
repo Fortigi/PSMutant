@@ -157,7 +157,10 @@ function Invoke-PSMutationLoop {
     [OutputType([object[]])]
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [object[]]$Candidates,
+        # Empty is a legitimate input, not an error: a mutate file may contribute no
+        # covered candidates, and a recheck run whose previous survivors are all dead
+        # has nothing left to evaluate. Both should report zero, not throw.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
         [Parameter(Mandatory)] [hashtable]$TestsByFile,
         [Parameter(Mandatory)] [string[]]$AllTests,
         [Parameter(Mandatory)] [int]$TimeoutSeconds,
