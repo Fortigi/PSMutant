@@ -4,6 +4,8 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
+
+## [0.2.0] - 2026-08-17
 ### Added
 - **`-RecheckFrom <report>`** — re-run only the mutants a previous report recorded as
   survivors, for the write-assertions-and-retry loop. It reports counts rather than a
