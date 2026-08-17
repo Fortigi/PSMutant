@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.1.0'
+    ModuleVersion     = '0.2.0'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -20,7 +20,7 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = 'Initial release: AST-based mutation operators (binary, boolean, number, string, negation), sandboxed in-process execution, covered-lines-only filtering, JSON report, and report-only/break thresholds.'
+            ReleaseNotes = 'Adds -RecheckFrom (re-run only a previous report''s survivors, with counts instead of a score and a refusal when the source or operator set moved) and the equivalents config map (declare mutants that cannot change behaviour, with reasons; the run fails if a declaration is killed or goes stale). Fixes a throw on an empty candidate set. Coverage and self-mutation both at 100%.'
         }
     }
 }
