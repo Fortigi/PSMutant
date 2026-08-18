@@ -5,6 +5,16 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Internal
+- The fix for #2 is now actually tested ([#31]). Deleting the
+  `Where-Object { Test-PSMutationSandboxAbandoned ... }` stage from
+  `Clear-PSMutationStaleSandbox` reverts the module to #2 -- a concurrent run's files pulled
+  out from under it -- and the entire 246-test suite still passed. The predicate was well
+  covered; the sweep APPLYING it was not. The existing test titled "does NOT sweep the
+  sandbox of a concurrently running process" never called the sweep at all, which is how the
+  gap hid; it is retitled to say what it really checks. The new test starts a real second
+  process, since the predicate treats our own process id as reclaimable by design, and
+  asserts one sandbox spared and another reclaimed in the same sweep -- the pairing being
+  what proves a filter rather than an inert pipeline stage.
 - The CI gates' pass/fail decisions are now pure functions with tests ([#27]). The scripts
   asserting "100% coverage", "the package works" and "Pester >= 5 still works" had no tests,
   no coverage and no mutants -- so an inverted comparison or a lowered default would have
