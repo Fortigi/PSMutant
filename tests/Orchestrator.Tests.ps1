@@ -38,20 +38,20 @@ Describe 'Assert-PSMutationPester' {
         $script:available = @([pscustomobject]@{ Version = [version]'6.1.0' })
 
         { Assert-PSMutationPester } | Should -Not -Throw
-        Should -Invoke Import-Module -Exactly 0
+        Should-Invoke Import-Module -Exactly 0
     }
 
     It 'imports Pester when the session has none loaded yet' {
         $script:available = @([pscustomobject]@{ Version = [version]'5.8.0' })
         { Assert-PSMutationPester } | Should -Not -Throw
-        Should -Invoke Import-Module -Exactly 1
+        Should-Invoke Import-Module -Exactly 1
     }
 
     It 'refuses when nothing installed is new enough' {
         # Pester 4 has no code-coverage API and a different Should surface, so without
         # this the run dies much later, inside the baseline, with an unrelated error.
         $script:available = @([pscustomobject]@{ Version = [version]'4.10.1' })
-        { Assert-PSMutationPester } | Should -Throw '*Pester 5+ is required*'
+        { Assert-PSMutationPester } | Should-Throw -ExceptionMessage '*Pester 5+ is required*'
     }
 
     It 'refuses when the LOADED Pester is too old, even though a newer one is installed' {
@@ -60,8 +60,8 @@ Describe 'Assert-PSMutationPester' {
         # Refusing names the real problem while the session can still be restarted.
         $script:loaded = @([pscustomobject]@{ Version = [version]'4.10.1' })
         $script:available = @([pscustomobject]@{ Version = [version]'6.1.0' })
-        { Assert-PSMutationPester } | Should -Throw '*Pester 5+ is required*'
-        Should -Invoke Import-Module -Exactly 0
+        { Assert-PSMutationPester } | Should-Throw -ExceptionMessage '*Pester 5+ is required*'
+        Should-Invoke Import-Module -Exactly 0
     }
 
     It 'judges by the newest module loaded when the session holds more than one' {
@@ -109,16 +109,16 @@ Describe 'Invoke-PSMutation' {
         # One killed of two on purpose: a summary that dropped a bucket, or swapped
         # killed for survived, would still pass at either extreme.
         $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet
-        $r.Total    | Should -Be 2
-        $r.Killed   | Should -Be 1
-        $r.Survived | Should -Be 1
-        $r.Score    | Should -Be 50
-        $r.ExitCode | Should -Be 0
+        $r.Total    | Should-Be 2
+        $r.Killed   | Should-Be 1
+        $r.Survived | Should-Be 1
+        $r.Score    | Should-Be 50
+        $r.ExitCode | Should-Be 0
     }
 
     It 'writes the report where the config asked for it' {
         Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
-        Test-Path (Join-Path $script:root 'reports/run.json') | Should -BeTrue
+        Test-Path (Join-Path $script:root 'reports/run.json') | Should-BeTrue
     }
 
     It 'removes the sandbox even when the run blows up half way through' {
@@ -126,14 +126,14 @@ Describe 'Invoke-PSMutation' {
         # developer temp directory fills up, and the startup sweep only reclaims
         # sandboxes whose owning process has already exited.
         Mock Invoke-PSMutationLoop { throw 'mutation exploded' }
-        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should -Throw
-        Should -Invoke Remove-PSMutationSandbox -Exactly 1
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should-Throw
+        Should-Invoke Remove-PSMutationSandbox -Exactly 1
     }
 
     It 'checks Pester and sweeps stale sandboxes before it starts' {
         Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
-        Should -Invoke Assert-PSMutationPester -Exactly 1
-        Should -Invoke Clear-PSMutationStaleSandbox -Exactly 1
+        Should-Invoke Assert-PSMutationPester -Exactly 1
+        Should-Invoke Clear-PSMutationStaleSandbox -Exactly 1
     }
 
     It 'hands -RecheckFrom to the recheck path and never writes the full report' {
@@ -143,10 +143,10 @@ Describe 'Invoke-PSMutation' {
 
         $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -RecheckFrom 'prior.json' -Quiet
 
-        $r.Mode | Should -Be 'Recheck'
-        Should -Invoke Invoke-PSMutationRecheckRun -Exactly 1
-        Should -Invoke Invoke-PSMutationLoop -Exactly 0
-        Test-Path (Join-Path $script:root 'reports/run.json') | Should -BeFalse
+        $r.Mode | Should-Be 'Recheck'
+        Should-Invoke Invoke-PSMutationRecheckRun -Exactly 1
+        Should-Invoke Invoke-PSMutationLoop -Exactly 0
+        Test-Path (Join-Path $script:root 'reports/run.json') | Should-BeFalse
     }
 
     It 'prints the banner, the baseline, the mutant count and the summary unless quiet' {
@@ -154,22 +154,22 @@ Describe 'Invoke-PSMutation' {
         # looks like it did nothing. Every other test here passes -Quiet, so without
         # this the whole console layer ships unexercised.
         $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root } 6>&1 | Out-String
-        $out | Should -BeLike '*PSMutant*'
-        $out | Should -BeLike '*Baseline green*'
-        $out | Should -BeLike '*Mutants to evaluate: 2*'
-        $out | Should -BeLike '*Mutation score*'
+        $out | Should-BeLikeString '*PSMutant*'
+        $out | Should-BeLikeString '*Baseline green*'
+        $out | Should-BeLikeString '*Mutants to evaluate: 2*'
+        $out | Should-BeLikeString '*Mutation score*'
     }
 
     It 'prints nothing at all with -Quiet' {
         $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String
-        $out | Should -Not -BeLike '*PSMutant*'
-        $out | Should -Not -BeLike '*Mutation score*'
+        $out | Should-NotBeLikeString '*PSMutant*'
+        $out | Should-NotBeLikeString '*Mutation score*'
     }
 
     It 'defaults SourceRoot to the current directory' {
         Push-Location $script:root
         try {
-            (Invoke-PSMutation -ConfigFile $script:configFile -Quiet).Total | Should -Be 2
+            (Invoke-PSMutation -ConfigFile $script:configFile -Quiet).Total | Should-Be 2
         }
         finally { Pop-Location }
     }
@@ -179,7 +179,7 @@ Describe 'Invoke-PSMutation' {
         # run would report a perfect score that means nothing.
         Mock Invoke-PSMutationBaseline { @{ Passed = $false; DurationSeconds = 1.0; CoveredLines = @{} } }
         { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } |
-            Should -Throw '*Baseline suite is not green*'
+            Should-Throw -ExceptionMessage '*Baseline suite is not green*'
     }
 
     It 'passes the resolved operator list and timeout down to the mutation loop' {
@@ -187,8 +187,8 @@ Describe 'Invoke-PSMutation' {
         # right values computed and then handed to the wrong parameter.
         Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
         # A 2.0s baseline times the default factor of 4 is under the 15s floor.
-        Should -Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { $TimeoutSeconds -eq 15 }
-        Should -Invoke Select-PSMutationCandidate -Exactly 1 -ParameterFilter {
+        Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { $TimeoutSeconds -eq 15 }
+        Should-Invoke Select-PSMutationCandidate -Exactly 1 -ParameterFilter {
             @($Operators).Count -eq 1 -and $Operators -contains 'BinaryOperator'
         }
     }
@@ -211,7 +211,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
         { Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @() -Plan $script:plan `
                 -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
                 -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet } |
-            Should -Throw '*Cannot recheck*source changed for src/a.ps1*regenerate*'
+            Should-Throw -ExceptionMessage '*Cannot recheck*source changed for src/a.ps1*regenerate*'
     }
 
     It 'evaluates only the prior survivors and returns the recheck summary' {
@@ -226,13 +226,13 @@ Describe 'Invoke-PSMutationRecheckRun' {
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
             -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet
 
-        $s.NowKilled | Should -Be 1
+        $s.NowKilled | Should-Be 1
         # The narrowed set is what makes a recheck cheap; passing all candidates
         # through would just be a full run wearing a recheck's label.
-        Should -Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { @($Candidates).Count -eq 2 }
+        Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { @($Candidates).Count -eq 2 }
         # The prior survivor COUNT comes from the report, not from the loop results.
-        Should -Invoke Write-PSMutationRecheckReport -Exactly 1 -ParameterFilter { $PriorSurvivorCount -eq 2 }
-        Should -Invoke Show-PSMutationRecheckSummary -Exactly 0
+        Should-Invoke Write-PSMutationRecheckReport -Exactly 1 -ParameterFilter { $PriorSurvivorCount -eq 2 }
+        Should-Invoke Show-PSMutationRecheckSummary -Exactly 0
     }
 
     It 'reports progress and a summary when not quiet' {
@@ -249,7 +249,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
             -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') | Out-Null
 
-        ($script:said -join "`n") | Should -Match 'Rechecking 2 previous survivor'
-        Should -Invoke Show-PSMutationRecheckSummary -Exactly 1
+        ($script:said -join "`n") | Should-MatchString 'Rechecking 2 previous survivor'
+        Should-Invoke Show-PSMutationRecheckSummary -Exactly 1
     }
 }

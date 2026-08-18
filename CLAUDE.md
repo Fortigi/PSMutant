@@ -197,3 +197,28 @@ Traps that have bitten in this repo specifically:
   mocked with a filter needs either a default mock or a filter for every shape of call
   the code under test makes. `Assert-PSMutationPester` calls `Get-Module` two different
   ways and needs both.
+
+## Assertion style
+
+The suite uses the Pester 6 `Should-*` commands (hyphen, no space): `Should-Be`,
+`Should-BeCollection`, `Should-Throw -ExceptionMessage`, `Should-Invoke`. Two deliberate
+exceptions, and neither is an oversight:
+
+- **`Should -Not -Throw` stays classic.** v6 has no `Should-NotThrow`; a block that must
+  not throw simply runs.
+- **Fixture source stays classic.** The here-strings that get written out as a
+  consumer's test files — in `tests/EndToEnd.Tests.ps1`, `tests/Mutant.Tests.ps1` and
+  `tools/Test-PSMutantPesterCompatibility.ps1` — must keep `Should -Be`, because the
+  compatibility guard runs one of them under **Pester 5.8.0**, where the `Should-*`
+  commands do not exist. Do not "finish the migration" by converting those.
+
+Because of both, do NOT set `Should.DisableV5`.
+
+Two traps worth knowing when adding assertions:
+
+- `Should-Be` **errors** if the expected value is a collection — use
+  `Should-BeCollection`. This bites on a parenthesised range (`(1..$n)`) just as much as
+  on `@(...)`.
+- `Should-BeTrue`/`Should-BeFalse` are **strict** in v6 (`$true`/`$false` only), where
+  the classic ones accepted anything truthy/falsy. Every use here is a real boolean, so
+  strict is correct — reach for `Should-BeTruthy`/`Should-BeFalsy` only if that changes.
