@@ -210,6 +210,69 @@ lets the self-mutation gate stay in the single digits of minutes.
   `PSUseBOMForUnicodeEncodedFile` and fails the lint gate.
 - Keep each function under the complexity ceiling; the gate is per unit, not per file.
 
+## Practices to preserve
+
+These are habits the codebase already has. They are written down because they are cheap to
+lose in a hurry and expensive to rebuild, and because each one has already earned its keep.
+
+- **A comment names the failure it prevents, not the mechanism.** `# Read coverage from the
+  result object; steer the XML to temp so we don't litter a coverage.xml in the working
+  tree` tells you why the line cannot be simplified. `# set the output path` would not.
+  This applies to `src/`, to tests, and to every reason string in
+  `psmutant.self.config.json`.
+- **A corrected reason says what it used to claim.** When a stated reason turns out to be
+  wrong, the replacement records the old claim and why it was wrong rather than quietly
+  overwriting it. The sandbox exclusion in `psmutant.self.config.json` has been through
+  three reasons and says so. This is what stops the same wrong conclusion being
+  rediscovered, and it is the single most useful thing in the repo for a new reader.
+- **Every gate is a committed script, not a snippet inside a workflow.** `tools/` exists so
+  that measuring by hand and measuring in CI cannot drift. Numbers that live only in
+  `ci.yml` become folklore -- that is exactly how the coverage figures here went wrong.
+- **A new operator is a function plus a map entry.** `Get-PSMutation*Candidate` +
+  `$script:PSMutationOperatorMap`, with `New-PSMutationCandidate` as the only place a
+  candidate is shaped. Three operators were added without touching the dispatcher. Keep
+  that shape; do not special-case an operator inside `Get-PSMutationCandidate`.
+- **Decisions live in pure units; the entry point is wiring.** A new *decision* belongs in
+  `PSMutation.Config.ps1` or another pure file, where it can be unit-tested and
+  self-mutated on its own terms.
+- **An equivalence declaration is a checkable claim, not a mute button.** It carries a
+  written argument someone can disagree with, and the run fails if it is ever killed or
+  stops matching a mutant. Before declaring one, verify the claim -- run the code without
+  the guard and confirm the output is identical.
+- **A "this is filtered" assertion pairs the filtered case with a kept one.** A fixture that
+  lacks the construct being filtered makes the assertion pass without proving anything.
+  This is not hypothetical: two such tests were written and shipped green in the #5 work,
+  and only the self-mutation gate caught them.
+
+## Practices to adopt
+
+Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
+issue; the rule is what stops the next instance.
+
+- **Check the docs against the code when you change behaviour.** Nothing enforces this, and
+  it has already failed twice: CLAUDE.md described a coverage trap that was misattributed
+  for months, and `README.md` still documented a `sandboxSubtrees` default the code never
+  had. When you change a default, a threshold or an operator set, grep `README.md`,
+  `CLAUDE.md` and `examples/psmutant.config.json` for it in the same commit. (#25)
+- **Validate a new config key, and make a typo name the config.** Keys are read straight off
+  the parsed JSON, so a misspelling is not rejected -- it resolves to `$null` and fails much
+  later somewhere unrelated. `mutat` for `mutate` currently ends in
+  `Access to the path '...\psmut-sandbox-<pid>' is denied`. Any key you add should be
+  validated where the config is resolved, with a message that names the key. (#24)
+- **Pin every dependency in every workflow, not just the ones you are looking at.**
+  `ci.yml` pins PSScriptAnalyzer; `code-scanning.yml` installs it unpinned and scans a
+  different path set, so the two analyzer gates can disagree in both directions. A pin is
+  only reproducible if it is everywhere. (#33)
+- **Keep a `$script:` constant in the file that reads it.** `$script:PSMutationSandboxSubtrees`
+  is defined in `PSMutation.Sandbox.ps1` and read in `PSMutation.Config.ps1`; that works
+  only because of dot-source order in `PSMutant.psm1` and because the covering suite happens
+  to dot-source both. Pass it as a parameter or move it. (#38)
+- **Hold `tools/` to the same standard as `src/`.** The two scripts that decide whether the
+  coverage and compatibility claims hold have no tests, no coverage measurement and no
+  mutants -- so a gate that silently stopped failing would look exactly like a green build.
+  Anything you add under `tools/` that makes a pass/fail decision belongs behind a pure,
+  tested function. (#27)
+
 ## Writing tests here
 
 The house style is a comment naming the *failure the test prevents*, not a restatement
