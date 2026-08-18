@@ -56,6 +56,12 @@ jobs:
       # happens for an ordinary reason: publishing by hand (workflow_dispatch with
       # dryRun off) and then tagging the same commit afterwards for traceability. That
       # second step should be a no-op, not a red run.
+      #
+      # The skip is annotated as a WARNING on purpose. Skipping is right when the
+      # version was published deliberately, but the same path is hit by a mistake --
+      # forgetting to bump ModuleVersion -- where a silently green run would look like
+      # a release that shipped when nothing did. The annotation surfaces it in the run
+      # summary either way.
       - name: Skip if this version is already published
         id: exists
         shell: pwsh
@@ -63,7 +69,7 @@ jobs:
           $ver = (Import-PowerShellDataFile ./PSMutant.psd1).ModuleVersion
           $found = Find-Module PSMutant -RequiredVersion $ver -ErrorAction SilentlyContinue
           if ($found) {
-              Write-Host "PSMutant $ver is already on the PowerShell Gallery (published $($found.PublishedDate)) - nothing to do."
+              Write-Host "::warning::PSMutant $ver is already on the PowerShell Gallery (published $($found.PublishedDate)) - skipping the publish step. If you meant to release new code, bump ModuleVersion."
               "already=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
           else {
