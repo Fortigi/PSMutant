@@ -93,6 +93,20 @@ jobs:
           $ver = (Import-PowerShellDataFile ./PSMutant.psd1).ModuleVersion
           if ($tag -ne $ver) { throw "Tag $tag does not match ModuleVersion $ver" }
 
+      # ModuleVersion, the newest CHANGELOG heading and the Gallery release notes are three
+      # descriptions of one release, and nothing compared them: 0.2.2 shipped while its entry
+      # was still under Unreleased, and the heading was renamed by hand afterwards. This also
+      # captures the notes, so they are derived from the changelog rather than maintained a
+      # second time by hand in the manifest.
+      - name: Check release consistency and capture the notes
+        shell: pwsh
+        run: |
+          $notes = ./tools/Test-PSMutantRelease.ps1
+          $file = Join-Path $env:RUNNER_TEMP 'release-notes.md'
+          $notes | Out-File -FilePath $file -Encoding utf8
+          "RELEASE_NOTES_FILE=$file" | Out-File -FilePath $env:GITHUB_ENV -Append
+          Write-Host "Release notes captured ($($notes.Length) chars)."
+
       # A version already on the gallery cannot be replaced or withdrawn, so a repeat
       # publish is not just noisy -- it is the one outcome we can never undo. It also
       # happens for an ordinary reason: publishing by hand (workflow_dispatch with
@@ -133,6 +147,20 @@ jobs:
           Copy-Item ./PSMutant.psd1, ./PSMutant.psm1, ./src, ./LICENSE, ./README.md -Destination $stage -Recurse -Force
           "STAGE_DIR=$stage" | Out-File -FilePath $env:GITHUB_ENV -Append
           Get-ChildItem $stage | ForEach-Object { Write-Host "  staged: $($_.Name)" }
+
+      # The Gallery page is permanent, so the notes on it are derived from CHANGELOG.md
+      # rather than transcribed. Only the STAGED manifest is rewritten; the one in git keeps
+      # whatever it has, and the changelog stays the single source of truth.
+      - name: Apply the changelog notes to the staged manifest
+        if: steps.exists.outputs.already != 'true'
+        shell: pwsh
+        run: |
+          $notes = Get-Content $env:RELEASE_NOTES_FILE -Raw
+          if ([string]::IsNullOrWhiteSpace($notes)) { throw 'Captured release notes are empty' }
+          Update-ModuleManifest -Path (Join-Path $env:STAGE_DIR 'PSMutant.psd1') -ReleaseNotes $notes
+          $check = (Import-PowerShellDataFile (Join-Path $env:STAGE_DIR 'PSMutant.psd1')).PrivateData.PSData.ReleaseNotes
+          if ([string]::IsNullOrWhiteSpace($check)) { throw 'ReleaseNotes did not survive the manifest update' }
+          Write-Host 'Staged manifest now carries the CHANGELOG notes for this version.'
 
       # The gate this whole issue exists for: load the artifact that is about to become
       # permanent, and run a real mutation with it. A gallery version cannot be withdrawn.

@@ -5,6 +5,16 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Internal
+- A release-consistency gate ([#37]). ModuleVersion, the newest CHANGELOG heading and the
+  Gallery release notes are three descriptions of one release and nothing compared them --
+  0.2.2 shipped while its entry was still under Unreleased, and the heading was renamed by
+  hand afterwards. `tools/Test-PSMutantRelease.ps1` now refuses to publish unless the
+  manifest's version has its own heading, that heading is the newest versioned one, and its
+  section is not empty; it warns when entries are left stranded under Unreleased. It also
+  captures that section, and the publish workflow applies it to the *staged* manifest, so
+  the Gallery notes are derived from the changelog rather than transcribed into the manifest
+  by hand. The decisions are pure functions with unit tests, per the rule that a tools/
+  pass-or-fail decision belongs behind a tested function.
 - Publishing is gated properly ([#26]). It used to run one of the seven gates that guard a
   merge, and the package it pushed had never been loaded by anything -- the first execution
   of that exact folder happened on a consumer's machine, and a Gallery version cannot be
