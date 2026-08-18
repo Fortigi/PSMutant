@@ -51,7 +51,28 @@ jobs:
           $ver = (Import-PowerShellDataFile ./PSMutant.psd1).ModuleVersion
           if ($tag -ne $ver) { throw "Tag $tag does not match ModuleVersion $ver" }
 
+      # A version already on the gallery cannot be replaced or withdrawn, so a repeat
+      # publish is not just noisy -- it is the one outcome we can never undo. It also
+      # happens for an ordinary reason: publishing by hand (workflow_dispatch with
+      # dryRun off) and then tagging the same commit afterwards for traceability. That
+      # second step should be a no-op, not a red run.
+      - name: Skip if this version is already published
+        id: exists
+        shell: pwsh
+        run: |
+          $ver = (Import-PowerShellDataFile ./PSMutant.psd1).ModuleVersion
+          $found = Find-Module PSMutant -RequiredVersion $ver -ErrorAction SilentlyContinue
+          if ($found) {
+              Write-Host "PSMutant $ver is already on the PowerShell Gallery (published $($found.PublishedDate)) - nothing to do."
+              "already=true" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+          else {
+              Write-Host "PSMutant $ver is not on the gallery yet."
+              "already=false" | Out-File -FilePath $env:GITHUB_OUTPUT -Append
+          }
+
       - name: Publish to PSGallery
+        if: steps.exists.outputs.already != 'true'
         shell: pwsh
         env:
           PSGALLERY_API_KEY: ${{ secrets.PSGALLERY_API_KEY }}
