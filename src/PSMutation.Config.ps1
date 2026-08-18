@@ -19,6 +19,31 @@
     read for "what happens if the config omits this".
 #>
 
+function Get-PSMutationSandboxPlan {
+    # Translate the config's source-relative mutate/tests into sandbox absolute paths.
+    #
+    # Pure string work, and the last piece of config resolution that was still sitting
+    # in the orchestrator rather than here.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
+        Justification = 'SourceRoot and SandboxRoot are used inside the $toSb closure, which the analyzer does not track.')]
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Cfg, [Parameter(Mandatory)] [string]$SourceRoot, [Parameter(Mandatory)] [string]$SandboxRoot)
+    $toSb = { param($p) ConvertTo-PSMutationSandboxPath -Path (Join-Path $SourceRoot $p) -RepoRoot $SourceRoot -SandboxRoot $SandboxRoot }
+    $byFile = @{}
+    $all = [System.Collections.Generic.List[string]]::new()
+    foreach ($prop in $Cfg.tests.PSObject.Properties) {
+        $vals = @($prop.Value | ForEach-Object { & $toSb $_ })
+        $byFile[(& $toSb $prop.Name)] = $vals
+        $vals | ForEach-Object { $all.Add($_) }
+    }
+    return @{
+        Mutate      = @($Cfg.mutate | ForEach-Object { & $toSb $_ })
+        TestsByFile = $byFile
+        AllTests    = $all.ToArray()
+    }
+}
+
 function Get-PSMutationSubtree {
     # Which source subtrees get copied into the sandbox. A consuming repo overrides
     # this to match its own layout; unset means the module's own convention.

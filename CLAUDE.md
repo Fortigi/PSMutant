@@ -16,12 +16,13 @@ survive, has no standing to fail anyone else's build. The gate is not "high", it
 **100**, and `psmutant.self.config.json` sets `thresholds.break` to exactly that.
 
 That cuts both ways: when a file genuinely cannot be measured, say so **in one place,
-with the reason**, rather than letting the number quietly sag. There is one such file
-today and it is documented below.
+with the reason**, rather than letting the number quietly sag. Coverage now has no such
+exception. Self-mutation has exactly one, and it is a structural impossibility rather
+than a shortfall — see below.
 
 Every exclusion in `psmutant.self.config.json` carries a written reason. If you add
-one, write why — and re-read the existing reasons before trusting them, because one of
-them ("shared sandbox") described a bug that has since been fixed.
+one, write why — and re-read the existing reasons before trusting them, because two of
+them have already turned out to describe something other than what was really going on.
 
 ---
 
@@ -32,51 +33,77 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 | Gate | What it is |
 |---|---|
 | Import smoke | module loads, `Invoke-PSMutation` is exported |
-| Lint | PSScriptAnalyzer, `-Severity Error, Warning` only |
+| Lint | PSScriptAnalyzer over `src/`, `tests/`, `tools/`, `-Severity Error, Warning` only |
 | Unit tests | whole `tests/` directory, must be 0 failures |
+| Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
 | Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
 | Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100 |
-
-Note CI does **not** measure coverage. That does not make coverage optional here — see
-the rule above — it means you have to measure it yourself, correctly, which is harder
-than it sounds. Read the next section before quoting a number.
+| Pester compatibility | `tools/Test-PSMutantPesterCompatibility.ps1` — a real mutation run under the Pester version the suite does *not* use |
 
 ---
 
-## Measuring coverage: three traps, all of them hit in practice
+## Pester: one version for the estate, any version for consumers
 
-**1. Measure PER FILE, never the whole directory at once.** Running coverage over all
-of `tests/` against all of `src/` reports **0%** for `PSMutation.Report.ps1` and
-`PSMutation.Recheck.ps1` — files that are self-mutation tested at 100%, which is
-impossible for code that never runs. Point one test file at its own source file and
-both report 100%. The whole-directory number is simply wrong (Pester 6.1.0).
+Two different things. Conflating them is what caused #16.
+
+- **The test estate** is pinned to exactly **6.1.0** — `ci.yml`, `publish.yml`, and local
+  development. Every CI step runs `Import-Module Pester -RequiredVersion` rather than
+  letting the name resolve, so CI and your machine cannot end up on different Pesters.
+  Bumping it means changing `ci.yml` (`PESTER_VERSION`), `publish.yml`, and this file
+  together.
+- **The module** promises `Pester >= 5.0.0` in its manifest and has to drive whatever the
+  consuming repo already has. The pin above narrows nothing about that.
+
+The second promise is the fragile one, because it only breaks when **two** versions are
+installed:
+
+- A child runspace resolves `Pester` by **name** and gets the newest installed, not the
+  one this process loaded. Assemblies are per-process, so a mismatch kills the child
+  outright. Fixed by `Get-PSMutationPesterPath`, which hands the child the loaded
+  module's **path**; the child script itself lives in `Get-PSMutationBoundedPesterScript`
+  so that contract sits in one named place.
+- `Import-Module Pester -MinimumVersion 5.0.0` is **not** a no-op when a satisfying Pester
+  is already loaded — PowerShell re-resolves the name to the newest installed and
+  collides. Fixed by `Assert-PSMutationPester`, which accepts what is already loaded.
+
+**Why this mattered more than a red suite.** A dead child returns no verdict, and
+`Invoke-PSMutant` reads anything-but-`Passed` as a kill. So on any machine with two
+Pesters the *shipped* module scored **every** mutant Killed and reported a silent,
+perfect, entirely fake 100% — no error, no failed test. `Invoke-PSBoundedPester` now
+throws instead of returning nothing, and the compatibility guard exists to make that
+particular lie impossible: it runs a real mutation over a fixture whose deliberately weak
+test **must** leave survivors, and fails if everything comes back killed.
+
+---
+
+## Measuring coverage
+
+One invocation, the whole directory, no exclusions and no exempt files:
 
 ```powershell
-# Correct: one source file, its own tests.
-$c = New-PesterConfiguration
-$c.Run.Path = 'tests/Report.Tests.ps1'
-$c.CodeCoverage.Enabled = $true
-$c.CodeCoverage.Path = 'src/PSMutation.Report.ps1'
-$c.Run.PassThru = $true
-(Invoke-Pester -Configuration $c).CodeCoverage.CoveragePercent
+./tools/Measure-PSMutantCoverage.ps1        # fails below 100%
 ```
 
-**2. A nested Pester run destroys the outer run's coverage breakpoints.** A full
-`Invoke-PSMutation` starts Pester for the baseline suite. Everything in
-`Invoke-PSMutation.ps1` from that call onward is then reported as never executed —
-including lines that print on every single run. `tests/EndToEnd.Tests.ps1` proves that
-code works but **cannot measure it**.
+**`CodeCoverage.UseBreakpoints = $true` is the load-bearing setting.** Pester 6 switched
+coverage to the Profiler tracer by default, and a nested Pester run — which
+`tests/EndToEnd.Tests.ps1` starts for real, because a full `Invoke-PSMutation` runs the
+baseline suite — tears that tracer down. Every test file discovered after it then reports
+almost nothing, which reads as a believable ~20% for files that are in fact fully
+covered. Breakpoints survive the nested run.
 
-This is why `src/PSMutation.Config.ps1` exists. Decision logic that used to sit inline
-in the orchestrator (config defaults, the per-mutant timeout, the baseline-green guard,
-the result shape) was lifted into pure functions so it is measurable *and*
-self-mutatable. **Keep it that way**: new decisions belong in `Config.ps1` or another
-pure unit, not in the body of `Invoke-PSMutation`, which should stay wiring.
+It is a committed script rather than a snippet in `ci.yml` so that measuring by hand and
+measuring in CI cannot drift. The figures here used to be folklore for exactly that
+reason.
 
-**3. Pester version split.** CI pins **5.8.0**; development happens on **6.1.0**; the
-runner does a bare `Import-Module Pester`. On a machine with both, all end-to-end tests
-fail with *"An incompatible version of the Pester.dll assembly is already loaded"*. CI
-is green only because its image has one version. Tracked in **#16**.
+**This corrects two claims this file used to make.** Whole-directory coverage does *not*
+mis-attribute across files, and `Invoke-PSMutation.ps1` is *not* unmeasurable. Both were
+the same thing — the tracer being destroyed — observed on 6.1.0 while CI ran 5.8.0, which
+only ever had breakpoints and so never saw it.
+
+`src/PSMutation.Config.ps1` still exists for a good reason, just not that one: config
+resolution is *decision* logic, and decisions are worth isolating, unit-testing and
+self-mutating on their own terms. Keep new decisions there rather than in the body of
+`Invoke-PSMutation`, which should stay wiring.
 
 ### Current state
 
@@ -86,13 +113,17 @@ is green only because its image has one version. Tracked in **#16**.
 | `PSMutation.Report.ps1` | 100% | yes |
 | `PSMutation.Recheck.ps1` | 100% | yes |
 | `PSMutation.Config.ps1` | 100% | yes |
-| `PSMutation.Runner.ps1` | 100% | no — executes real Pester runs |
-| `PSMutation.Sandbox.ps1` | 100% | no — real temp side-effects |
-| `Invoke-PSMutation.ps1` | **not measurable** | no |
+| `PSMutation.Runner.ps1` | 100% | yes |
+| `Invoke-PSMutation.ps1` | 100% | yes |
+| `PSMutation.Sandbox.ps1` | 100% | **no** — see below |
 
-`Invoke-PSMutation.ps1` is the one documented exception, for trap 2. It is wiring: every
-line past the baseline call is a call into a function that is itself at 100%. If you
-find yourself putting a *decision* there, extract it instead.
+`PSMutation.Sandbox.ps1` is the one file that cannot be self-mutated, and the reason is
+structural rather than a gap in effort. Its covering suite, `tests/Sandbox.Tests.ps1`,
+calls `Clear-PSMutationStaleSandbox` for real. A self-mutation baseline runs **in-process**,
+so it shares `$PID` with the sandbox that run is executing from — and the sweep treats its
+own process id as reclaimable. Listing that suite anywhere in the config therefore deletes
+the live run's sandbox mid-baseline and turns the run red before a single mutant is tried.
+Its behaviour is pinned by the normal suite at 100% coverage instead.
 
 ---
 
@@ -101,11 +132,12 @@ find yourself putting a *decision* there, extract it instead.
 ```
 src/PSMutation.Operators.ps1   AST walk -> mutation candidates. Pure.
 src/PSMutation.Sandbox.ps1     temp sandbox: create, path-map, sweep. Side-effects.
-src/PSMutation.Config.ps1      config resolution + run guards. Pure.
+src/PSMutation.Config.ps1      config resolution + run guards + sandbox plan. Pure.
 src/PSMutation.Report.ps1      scoring, thresholds, equivalents, report JSON. Pure.
 src/PSMutation.Recheck.ps1     -RecheckFrom: compatibility + candidate selection. Pure.
-src/PSMutation.Runner.ps1      baseline, per-mutant execution, the loop.
-src/Invoke-PSMutation.ps1      public entry point. Wiring only.
+src/PSMutation.Runner.ps1      baseline, per-mutant execution, the Pester pin, the loop.
+src/Invoke-PSMutation.ps1      public entry point: the Pester guard and the wiring.
+tools/                         the committed coverage and compatibility gates.
 ```
 
 Load order is fixed in `PSMutant.psm1` — pure layers first, runner and entry point last.
@@ -116,7 +148,22 @@ real files are never written, even transiently, so a hard kill cannot leave a mu
 file staged in git. `tests/EndToEnd.Tests.ps1` asserts the tracked source is
 byte-identical after a run — keep that assertion.
 
----
+**A covering suite must be self-contained.** The sandbox copies only `src/` and `tests/`,
+so a suite that reaches for `PSMutant.psd1` at the repo root finds nothing there, proves
+nothing, and leaves the file silently unmutated while still appearing in the config.
+`tests/EndToEnd.Tests.ps1` imports the manifest and is therefore useless as a covering
+suite; `tests/Orchestrator.Tests.ps1` dot-sources `src/` and is the covering suite for
+`Invoke-PSMutation.ps1`.
+
+**A covering suite must also be cheap.** Mutating a timeout mechanism necessarily
+produces mutants that *disable* the timeout, and against a real child runspace each of
+those runs until the outer per-mutant deadline -- minutes apiece, for a verdict a mocked
+child reaches in seconds. So `tests/Runner.Tests.ps1` covers `PSMutation.Runner.ps1` on
+its own, mocking `Get-PSMutationBoundedPesterScript` and `Get-PSMutationPesterPath`;
+`tests/Mutant.Tests.ps1` keeps the real-runspace proofs (a genuinely non-terminating
+mutant, the isolate-and-restore guarantee) and is deliberately *not* a covering suite.
+Both branches of every runner decision are reachable from the mocked file, which is what
+lets the self-mutation gate stay in the single digits of minutes.
 
 ## Conventions
 
@@ -126,7 +173,7 @@ byte-identical after a run — keep that assertion.
   → minor.
 - `CHANGELOG.md` is maintained by hand here (unlike IdentityAtlas, where automation owns
   it).
-- **ASCII only** in `src/` and `tests/`. Non-ASCII without a BOM trips
+- **ASCII only** in `src/`, `tests/` and `tools/`. Non-ASCII without a BOM trips
   `PSUseBOMForUnicodeEncodedFile` and fails the lint gate.
 - Keep each function under the complexity ceiling; the gate is per unit, not per file.
 
@@ -139,9 +186,14 @@ rounds differently at one decimal than two. A test that passes against the broke
 version proves nothing — when fixing a bug, run the new test against the old code and
 confirm it fails.
 
-Two traps that have bitten in this repo specifically:
+Traps that have bitten in this repo specifically:
 
 - `Should -BeLike '*[3/10]*'` — in a wildcard, `[3/10]` is a **character class**. Use
   `Should -Match ([regex]::Escape(...))`.
 - A property getter that throws yields `$null` in PowerShell rather than raising, so a
   `try/catch` around it never runs. Test the value, not the exception.
+- **Pester 6 removed mock fall-through.** A call that matches none of your
+  `-ParameterFilter` mocks no longer runs the real command — it throws. Any command
+  mocked with a filter needs either a default mock or a filter for every shape of call
+  the code under test makes. `Assert-PSMutationPester` calls `Get-Module` two different
+  ways and needs both.

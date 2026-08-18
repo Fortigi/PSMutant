@@ -1,6 +1,15 @@
 # CI gate. Everything runs in the required "test" job -- a red lint, a complexity breach
-# (measured by our sibling module PSComplexity), a unit-test failure, or a self-mutation
-# regression all block the merge. Dependencies are pinned for reproducibility.
+# (measured by our sibling module PSComplexity), a unit-test failure, a coverage drop or
+# a self-mutation regression all block the merge. Dependencies are pinned for
+# reproducibility.
+#
+# Pester is pinned to ONE version for the test estate, and every step imports that exact
+# version rather than letting PowerShell resolve the name. CI used to pin 5.8.0 while
+# development happened on 6.1.0, and the two disagreeing is what hid issue #16: the suite
+# passed under a version CI did not run, and failed under the one it did.
+#
+# 5.8.0 is installed ALONGSIDE 6.1.0 on purpose. The module promises Pester >= 5.0.0, and
+# the bug that promise hid only appears when two versions are present -- see the last step.
 name: CI
 
 on:
@@ -9,6 +18,13 @@ on:
   pull_request:
     branches: [main]
   workflow_dispatch:
+
+env:
+  # The version the test estate is written against. Bump here, in publish.yml, and in
+  # CLAUDE.md together.
+  PESTER_VERSION: '6.1.0'
+  # Deliberately NOT the version above: the compatibility guard needs a second one.
+  PESTER_COMPAT_VERSION: '5.8.0'
 
 jobs:
   test:
@@ -19,7 +35,8 @@ jobs:
       - name: Install pinned Pester + PSScriptAnalyzer
         shell: pwsh
         run: |
-          Install-Module Pester -RequiredVersion 5.8.0 -Force -Scope CurrentUser
+          Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -Scope CurrentUser
+          Install-Module Pester -RequiredVersion $env:PESTER_COMPAT_VERSION -Force -Scope CurrentUser
           Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser
 
       - name: Module manifest is valid + imports
@@ -32,7 +49,7 @@ jobs:
       - name: Lint (PSScriptAnalyzer)
         shell: pwsh
         run: |
-          $paths = './src', './tests', './PSMutant.psm1', './PSMutant.psd1'
+          $paths = './src', './tests', './tools', './PSMutant.psm1', './PSMutant.psd1'
           $findings = $paths | ForEach-Object {
             Invoke-ScriptAnalyzer -Path $_ -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Error, Warning
           }
@@ -45,12 +62,22 @@ jobs:
       - name: Unit tests
         shell: pwsh
         run: |
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
           $cfg = New-PesterConfiguration
           $cfg.Run.Path = './tests'
           $cfg.Run.PassThru = $true
           $cfg.Output.Verbosity = 'Detailed'
           $r = Invoke-Pester -Configuration $cfg
           if ($r.FailedCount -gt 0) { throw "$($r.FailedCount) test(s) failed" }
+
+      # Coverage is measured by a committed script, not by a snippet living only here, so
+      # that a developer checking by hand runs exactly what the gate runs. The figure used
+      # to be folklore; it is now enforced at 100.
+      - name: Coverage gate (100%)
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
+          ./tools/Measure-PSMutantCoverage.ps1
 
       # Complexity gate via our sibling module PSComplexity (faithful cognitive metric).
       - name: Complexity gate (PSComplexity)
@@ -65,7 +92,16 @@ jobs:
       - name: Mutation test PSMutant against itself (gated)
         shell: pwsh
         run: |
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
           Import-Module ./PSMutant.psd1 -Force
           $result = Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot . -Quiet
           Write-Host "Self mutation score: $($result.Score)% ($($result.Killed)/$($result.Total))"
           if ($result.ExitCode -ne 0) { throw "Mutation score $($result.Score)% is below the break threshold" }
+
+      # The manifest promises Pester >= 5.0.0, but the suite above runs on exactly one
+      # version, so nothing in it can prove that promise. This step loads the OTHER
+      # installed version and runs a real mutation whose fixture must leave survivors.
+      # Before issue #16 this reported a silent, perfect, entirely fake 100%.
+      - name: Pester compatibility guard (runs under the version the suite does not use)
+        shell: pwsh
+        run: ./tools/Test-PSMutantPesterCompatibility.ps1 -PesterVersion $env:PESTER_COMPAT_VERSION
