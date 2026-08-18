@@ -161,11 +161,18 @@ untested log strings make the last stretch noise. Raise `thresholds.break` to lo
 
 ## Development
 
+The test estate is written against **Pester 6.1.0** and CI pins that exact version. That
+is a contributor requirement only -- the module itself still supports Pester 5+, and
+`tools/Test-PSMutantPesterCompatibility.ps1` proves it on every CI run.
+
 ```powershell
+Import-Module Pester -RequiredVersion 6.1.0 -Force                 # the pinned version
 Invoke-Pester ./tests                                              # unit tests
+./tools/Measure-PSMutantCoverage.ps1                               # coverage gate (100%)
 Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1   # lint
 Test-PSComplexity ./src -Recurse                                   # complexity gate (needs PSComplexity)
 Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .   # dogfood: PSMutant on itself
+./tools/Test-PSMutantPesterCompatibility.ps1 -PesterVersion 5.8.0  # needs 5.8.0 installed too
 ```
 
 ### Quality gates (all required on `main`)
@@ -173,6 +180,7 @@ Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .   # dogf
 Every one of these runs in the CI `test` job and blocks the merge on failure:
 
 - **Unit tests** — the suites under `tests/`.
+- **Coverage** — 100% of `src/`, measured by `tools/Measure-PSMutantCoverage.ps1`.
 - **PSScriptAnalyzer** — zero Error/Warning findings (`Write-Host` is the one allowed rule).
 - **Complexity** — every unit must stay at or under **15 cyclomatic** and **15 cognitive**,
   measured by the sibling module [**PSComplexity**](https://github.com/Fortigi/PSComplexity)

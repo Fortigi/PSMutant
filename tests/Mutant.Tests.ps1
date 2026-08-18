@@ -35,12 +35,12 @@ Describe 'Invoke-PSMutant classification' {
     It 'reports Killed when the mutation breaks a strict test' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
         Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -CoveringTests @($script:strictTest) -TimeoutSeconds 30 |
-            Should -Be 'Killed'
+            Should-Be 'Killed'
     }
     It 'reports Survived when a weak test misses the mutation' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
         Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -CoveringTests @($script:weakTest) -TimeoutSeconds 30 |
-            Should -Be 'Survived'
+            Should-Be 'Survived'
     }
 }
 
@@ -48,12 +48,12 @@ Describe 'Invoke-PSMutant isolation' {
     It 'restores the original file after evaluating a mutant' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
         Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -CoveringTests @($script:strictTest) -TimeoutSeconds 30 | Out-Null
-        [System.IO.File]::ReadAllText($script:modPath) | Should -Be $script:original
+        [System.IO.File]::ReadAllText($script:modPath) | Should-Be $script:original
     }
     It 'restores the original file even when the mutant times out' {
         $infinite = $script:original -replace '\$i = \$i \+ 1', '$i = $i - 1'
         Invoke-PSMutant -Candidate $script:cand -MutatedContent $infinite -CoveringTests @($script:countTest) -TimeoutSeconds 3 | Out-Null
-        [System.IO.File]::ReadAllText($script:modPath) | Should -Be $script:original
+        [System.IO.File]::ReadAllText($script:modPath) | Should-Be $script:original
     }
 }
 
@@ -64,20 +64,43 @@ Describe 'Timeout safety (the loop-body hang the loop guard cannot catch)' {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $status = Invoke-PSMutant -Candidate $script:cand -MutatedContent $infinite -CoveringTests @($script:countTest) -TimeoutSeconds 3
         $sw.Stop()
-        $status | Should -Be 'Killed'
-        $sw.Elapsed.TotalSeconds | Should -BeLessThan 20   # bounded, not hung
+        $status | Should-Be 'Killed'
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 20   # bounded, not hung
     }
 }
 
 Describe 'Invoke-PSBoundedPester' {
     It 'returns Passed for a passing suite' {
-        Invoke-PSBoundedPester -CoveringTests @($script:strictTest) -TimeoutSeconds 30 | Should -Be 'Passed'
+        Invoke-PSBoundedPester -CoveringTests @($script:strictTest) -TimeoutSeconds 30 | Should-Be 'Passed'
     }
+    It 'imports the Pester it is handed, not whatever the runspace resolves' {
+        # A fresh runspace resolves "Pester" by NAME and gets the newest installed,
+        # which need not be the version this process loaded; assemblies are per-process
+        # so the mismatch is fatal. Pointing the pin at a module that does not exist
+        # proves the child really uses the handed-over path -- if it resolved the name
+        # itself instead, the run would sail past this and report Passed.
+        Mock Get-PSMutationPesterPath { Join-Path $script:proj 'not-a-real-pester.psd1' }
+
+        { Invoke-PSBoundedPester -CoveringTests @($script:strictTest) -TimeoutSeconds 30 } |
+            Should-Throw -ExceptionMessage '*not-a-real-pester*'
+    }
+
+    It 'fails loudly when the child returns no verdict at all' {
+        # What this replaced: a dead child returned $null, Invoke-PSMutant read
+        # anything-but-Passed as a kill, and a machine with two Pesters scored every
+        # mutant Killed -- a silent, entirely fake 100%. A mutant nobody could evaluate
+        # has to stop the run, not quietly count as caught.
+        Mock Get-PSMutationBoundedPesterScript { 'param($tests, $pester)' }
+
+        { Invoke-PSBoundedPester -CoveringTests @($script:strictTest) -TimeoutSeconds 30 } |
+            Should-Throw -ExceptionMessage '*produced no result*'
+    }
+
     It 'returns TimedOut for a non-terminating suite' {
         $infinite = $script:original -replace '\$i = \$i \+ 1', '$i = $i - 1'
         [System.IO.File]::WriteAllText($script:modPath, $infinite)
         try {
-            Invoke-PSBoundedPester -CoveringTests @($script:countTest) -TimeoutSeconds 3 | Should -Be 'TimedOut'
+            Invoke-PSBoundedPester -CoveringTests @($script:countTest) -TimeoutSeconds 3 | Should-Be 'TimedOut'
         }
         finally { [System.IO.File]::WriteAllText($script:modPath, $script:original) }
     }
