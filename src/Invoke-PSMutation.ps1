@@ -3,35 +3,35 @@
     Public entry point for PSMutant - mutation testing for PowerShell.
 #>
 
+$script:PSMutationPesterRequired = 'Pester 5+ is required. Install-Module Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser'
+
 function Assert-PSMutationPester {
+    <#
+    .SYNOPSIS
+        Make sure a usable Pester is available, WITHOUT pulling in a second one.
+    .DESCRIPTION
+        `Import-Module Pester -MinimumVersion 5.0.0` is not the no-op it looks like when
+        a satisfying Pester is already loaded: PowerShell re-resolves the name against
+        PSModulePath, picks the NEWEST version installed, and on a machine that has two
+        it collides with the Pester.dll already in the process -- which is fatal, and
+        happens before a single mutant runs.
+
+        So an already-loaded Pester is checked and accepted as it is, and the import
+        only happens when nothing is loaded at all. That is also what lets the module
+        honour the >= 5.0.0 in its manifest: it runs under the caller's Pester rather
+        than choosing one for them.
+    #>
     [CmdletBinding()]
     param()
+    $loaded = Get-Module Pester | Sort-Object Version -Descending | Select-Object -First 1
+    if ($loaded) {
+        if ($loaded.Version -lt [version]'5.0.0') { throw $script:PSMutationPesterRequired }
+        return
+    }
     if (-not (Get-Module Pester -ListAvailable | Where-Object Version -ge '5.0.0')) {
-        throw 'Pester 5+ is required. Install-Module Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser'
+        throw $script:PSMutationPesterRequired
     }
     Import-Module Pester -MinimumVersion 5.0.0
-}
-
-function Get-PSMutationSandboxPlan {
-    # Translate the config's source-relative mutate/tests into sandbox absolute paths.
-    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSReviewUnusedParameter', '',
-        Justification = 'SourceRoot and SandboxRoot are used inside the $toSb closure, which the analyzer does not track.')]
-    [OutputType([hashtable])]
-    [CmdletBinding()]
-    param([Parameter(Mandatory)] $Cfg, [Parameter(Mandatory)] [string]$SourceRoot, [Parameter(Mandatory)] [string]$SandboxRoot)
-    $toSb = { param($p) ConvertTo-PSMutationSandboxPath -Path (Join-Path $SourceRoot $p) -RepoRoot $SourceRoot -SandboxRoot $SandboxRoot }
-    $byFile = @{}
-    $all = [System.Collections.Generic.List[string]]::new()
-    foreach ($prop in $Cfg.tests.PSObject.Properties) {
-        $vals = @($prop.Value | ForEach-Object { & $toSb $_ })
-        $byFile[(& $toSb $prop.Name)] = $vals
-        $vals | ForEach-Object { $all.Add($_) }
-    }
-    return @{
-        Mutate      = @($Cfg.mutate | ForEach-Object { & $toSb $_ })
-        TestsByFile = $byFile
-        AllTests    = $all.ToArray()
-    }
 }
 
 function Invoke-PSMutationRecheckRun {

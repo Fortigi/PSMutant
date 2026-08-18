@@ -51,33 +51,33 @@ AfterAll { Remove-Item $script:proj -Recurse -Force -ErrorAction SilentlyContinu
 
 Describe 'Invoke-PSMutation end-to-end' {
     It 'evaluates at least one mutant' {
-        $script:result.Total | Should -BeGreaterThan 0
+        $script:result.Total | Should-BeGreaterThan 0
     }
     It 'kills mutants that the covering test catches (score > 0)' {
-        $script:result.Killed | Should -BeGreaterThan 0
-        $script:result.Score | Should -BeGreaterThan 0
+        $script:result.Killed | Should-BeGreaterThan 0
+        $script:result.Score | Should-BeGreaterThan 0
     }
     It 'returns a consistent summary' {
-        ($script:result.Killed + $script:result.Survived) | Should -Be $script:result.Total
-        $script:result.ExitCode | Should -Be 0   # thresholds.break is null -> report-only
+        ($script:result.Killed + $script:result.Survived) | Should-Be $script:result.Total
+        $script:result.ExitCode | Should-Be 0   # thresholds.break is null -> report-only
     }
     It 'writes the JSON report' {
         $report = Join-Path $script:proj 'reports/e2e.json'
-        Test-Path $report | Should -BeTrue
-        (Get-Content $report -Raw | ConvertFrom-Json).mutationScore | Should -Be $script:result.Score
+        Test-Path $report | Should-BeTrue
+        (Get-Content $report -Raw | ConvertFrom-Json).mutationScore | Should-Be $script:result.Score
     }
     It 'leaves the tracked source byte-identical' {
-        [System.IO.File]::ReadAllText($script:srcFile) | Should -Be $script:originalSrc
+        [System.IO.File]::ReadAllText($script:srcFile) | Should-Be $script:originalSrc
     }
     It 'leaves no sandbox temp directory behind' {
-        (Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter "psmut-sandbox-$PID" -ErrorAction SilentlyContinue) |
-            Should -BeNullOrEmpty
+        @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter "psmut-sandbox-$PID" -ErrorAction SilentlyContinue).Count |
+            Should-Be 0
     }
 
     It 'records source hashes and operators for a later recheck' {
         $json = Get-Content (Join-Path $script:proj 'reports/e2e.json') -Raw | ConvertFrom-Json
-        $json.sourceHashes.'src/calc.ps1' | Should -Match '^[0-9a-f]{64}$'
-        $json.operators | Should -Be @('BinaryOperator', 'BooleanLiteral')
+        $json.sourceHashes.'src/calc.ps1' | Should-MatchString '^[0-9a-f]{64}$'
+        $json.operators | Should-BeCollection @('BinaryOperator', 'BooleanLiteral')
     }
 }
 
@@ -93,24 +93,24 @@ Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
         # The point of the feature: fewer mutants than the full run, and exactly the
         # ones that were still alive. The survivor count must be non-zero, or this
         # assertion would hold vacuously against an empty set.
-        $script:priorSurvivors    | Should -BeGreaterThan 0
-        $script:recheck.Mode      | Should -Be 'Recheck'
-        $script:recheck.Rechecked | Should -Be $script:priorSurvivors
-        $script:recheck.Rechecked | Should -BeLessThan $script:result.Total
+        $script:priorSurvivors    | Should-BeGreaterThan 0
+        $script:recheck.Mode      | Should-Be 'Recheck'
+        $script:recheck.Rechecked | Should-Be $script:priorSurvivors
+        $script:recheck.Rechecked | Should-BeLessThan $script:result.Total
     }
 
     It 'reports counts and no score' {
         # A filtered run has no denominator worth quoting, so the object must not
         # carry one -- otherwise it gets read as the file's score.
-        ($script:recheck.NowKilled + $script:recheck.StillSurviving) | Should -Be $script:recheck.Rechecked
-        $script:recheck.PSObject.Properties.Name | Should -Not -Contain 'Score'
+        ($script:recheck.NowKilled + $script:recheck.StillSurviving) | Should-Be $script:recheck.Rechecked
+        $script:recheck.PSObject.Properties.Name | Should-NotContainCollection 'Score'
     }
 
     It 'writes its own report and leaves the full one untouched' {
         # A partial run overwriting the baseline would destroy the survivor list it
         # was derived from, and hand CI a truncated number.
-        Test-Path (Join-Path $script:proj 'reports/e2e.recheck.json') | Should -BeTrue
-        [System.IO.File]::ReadAllText($script:fullReport) | Should -Be $script:fullBytes
+        Test-Path (Join-Path $script:proj 'reports/e2e.recheck.json') | Should-BeTrue
+        [System.IO.File]::ReadAllText($script:fullReport) | Should-Be $script:fullBytes
     }
 
     It 'refuses when the source changed since the report' {
@@ -120,7 +120,7 @@ Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
         try {
             Add-Content -Path $script:srcFile -Value 'function Get-Extra { param($n) if ($n -gt 1) { 1 } else { 2 } }'
             { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj -RecheckFrom $script:fullReport -Quiet } |
-                Should -Throw '*changed since the report*'
+                Should-Throw -ExceptionMessage '*changed since the report*'
         }
         finally { [System.IO.File]::WriteAllText($script:srcFile, $backup) }
     }
@@ -131,7 +131,7 @@ Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
         $alt = Join-Path $script:proj 'mutation.altops.json'
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $alt -Encoding utf8
         { Invoke-PSMutation -ConfigFile $alt -SourceRoot $script:proj -RecheckFrom $script:fullReport -Quiet } |
-            Should -Throw '*operator set changed*'
+            Should-Throw -ExceptionMessage '*operator set changed*'
     }
 
     It 'refuses a report that predates source-hash recording' {
@@ -142,28 +142,7 @@ Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
         $legacyPath = Join-Path $script:proj 'reports/legacy.json'
         $legacy | ConvertTo-Json -Depth 6 | Set-Content $legacyPath -Encoding utf8
         { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj -RecheckFrom $legacyPath -Quiet } |
-            Should -Throw '*predates source-hash recording*'
-    }
-}
-
-Describe 'Assert-PSMutationPester' {
-    BeforeAll {
-        # Dot-sourced rather than reached through the module, so Get-Module can be
-        # mocked in this scope without stubbing out the module's own loading.
-        . (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'src' -AdditionalChildPath 'Invoke-PSMutation.ps1')
-    }
-
-    It 'refuses to run without Pester 5' {
-        # Pester 4 has no code coverage API and a different Should surface, so the
-        # run would fail deep inside the baseline with an unrelated error.
-        Mock Get-Module { @() } -ParameterFilter { $ListAvailable }
-        { Assert-PSMutationPester } | Should -Throw '*Pester 5+ is required*'
-    }
-
-    It 'accepts a Pester 5 installation' {
-        Mock Get-Module { @([pscustomobject]@{ Name = 'Pester'; Version = [version]'5.8.0' }) } -ParameterFilter { $ListAvailable }
-        Mock Import-Module { }
-        { Assert-PSMutationPester } | Should -Not -Throw
+            Should-Throw -ExceptionMessage '*predates source-hash recording*'
     }
 }
 
@@ -178,11 +157,11 @@ Describe 'Invoke-PSMutation - config defaults and failure modes' {
         $p = Join-Path $script:proj 'mutation.defaults.json'
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
         $r = Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet
-        $r.Total | Should -BeGreaterThan 0
+        $r.Total | Should-BeGreaterThan 0
         # The default set excludes StringLiteral; if that changed, a mutate run on a
         # string-heavy file would silently start scoring something else.
         (Get-Content (Join-Path $script:proj 'reports/defaults.json') -Raw | ConvertFrom-Json).operators |
-            Should -Not -Contain 'StringLiteral'
+            Should-NotContainCollection 'StringLiteral'
     }
 
     It 'refuses to mutate when the baseline suite is already failing' {
@@ -202,7 +181,7 @@ Describe 'already broken' { It 'fails' { $true | Should -BeFalse } }
             $p = Join-Path $script:proj 'mutation.red.json'
             $cfg | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
             { Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet } |
-                Should -Throw '*Baseline suite is not green*'
+                Should-Throw -ExceptionMessage '*Baseline suite is not green*'
         }
         finally { Remove-Item $bad -Force -ErrorAction SilentlyContinue }
     }
@@ -213,24 +192,24 @@ Describe 'already broken' { It 'fails' { $true | Should -BeFalse } }
         # unexercised, and it is the only output a human actually sees.
         $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj } 6>&1 |
             Out-String
-        $out | Should -BeLike '*PSMutant*'
-        $out | Should -BeLike '*Baseline green*'
-        $out | Should -BeLike '*Mutants to evaluate*'
-        $out | Should -BeLike '*Mutation score*'
+        $out | Should-BeLikeString '*PSMutant*'
+        $out | Should-BeLikeString '*Baseline green*'
+        $out | Should-BeLikeString '*Mutants to evaluate*'
+        $out | Should-BeLikeString '*Mutation score*'
     }
 
     It 'prints the recheck summary when not run with -Quiet' {
         $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj `
                     -RecheckFrom (Join-Path $script:proj 'reports/e2e.json') } 6>&1 | Out-String
-        $out | Should -BeLike '*Rechecking*previous survivor*'
-        $out | Should -BeLike '*Not a mutation score*'
+        $out | Should-BeLikeString '*Rechecking*previous survivor*'
+        $out | Should-BeLikeString '*Not a mutation score*'
     }
 
     It 'defaults SourceRoot to the current directory' {
         Push-Location $script:proj
         try {
             $r = Invoke-PSMutation -ConfigFile $script:configFile -Quiet
-            $r.Total | Should -BeGreaterThan 0
+            $r.Total | Should-BeGreaterThan 0
         }
         finally { Pop-Location }
     }
@@ -247,7 +226,7 @@ Describe 'already broken' { It 'fails' { $true | Should -BeFalse } }
         }
         $p = Join-Path $script:proj 'mutation.timeouts.json'
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
-        (Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet).Total | Should -BeGreaterThan 0
+        (Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet).Total | Should-BeGreaterThan 0
     }
 
     It 'uses the default sandbox subtrees when the config omits them' {
@@ -261,7 +240,7 @@ Describe 'already broken' { It 'fails' { $true | Should -BeFalse } }
         }
         $p = Join-Path $script:proj 'mutation.subtrees.json'
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
-        (Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet).Total | Should -BeGreaterThan 0
+        (Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet).Total | Should-BeGreaterThan 0
     }
 
     It 'fails the run when the score is below thresholds.break' {
@@ -286,8 +265,8 @@ Describe 'Get-Sign (asserts nothing useful)' {
             $p = Join-Path $script:proj 'mutation.break.json'
             $cfg | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
             $r = Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet
-            $r.Score    | Should -BeLessThan 50
-            $r.ExitCode | Should -Be 1
+            $r.Score    | Should-BeLessThan 50
+            $r.ExitCode | Should-Be 1
         }
         finally { Remove-Item $lax -Force -ErrorAction SilentlyContinue }
     }

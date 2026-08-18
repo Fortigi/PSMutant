@@ -7,6 +7,10 @@ reports/
 # temp for this reason (see PSMutation.Runner.ps1).
 coverage.xml
 
+# Agent skills fetched with `gh skills install` (github/awesome-copilot). Third-party,
+# unverified, and reinstallable on demand -- not part of the project source.
+.agents/
+
 # OS / editor cruft
 .DS_Store
 Thumbs.db

@@ -36,7 +36,7 @@ Describe 'Test-PSMutationRecheckCompatible' {
     It 'accepts a report whose hashes and operators still match' {
         $why = Test-PSMutationRecheckCompatible -Report (Get-FakeReport) `
             -SourceHashes @{ 'src/a.ps1' = 'hash-a' } -Operators @('BinaryOperator')
-        @($why).Count | Should -Be 0
+        @($why).Count | Should-Be 0
     }
 
     It 'refuses when a mutated file changed' {
@@ -44,16 +44,16 @@ Describe 'Test-PSMutationRecheckCompatible' {
         # mutant id at or after the edit refers to a different piece of code.
         $why = Test-PSMutationRecheckCompatible -Report (Get-FakeReport) `
             -SourceHashes @{ 'src/a.ps1' = 'hash-DIFFERENT' } -Operators @('BinaryOperator')
-        @($why).Count | Should -Be 1
-        $why[0] | Should -BeLike '*src/a.ps1 changed*'
+        @($why).Count | Should-Be 1
+        $why[0] | Should-BeLikeString '*src/a.ps1 changed*'
     }
 
     It 'refuses when the operator set changed' {
         # Adding an operator renumbers everything, because ids are walk positions.
         $why = Test-PSMutationRecheckCompatible -Report (Get-FakeReport) `
             -SourceHashes @{ 'src/a.ps1' = 'hash-a' } -Operators @('BinaryOperator', 'BooleanLiteral')
-        @($why).Count | Should -Be 1
-        $why[0] | Should -BeLike '*operator set changed*'
+        @($why).Count | Should-Be 1
+        $why[0] | Should-BeLikeString '*operator set changed*'
     }
 
     It 'accepts the same operator set given in a different order' {
@@ -61,21 +61,21 @@ Describe 'Test-PSMutationRecheckCompatible' {
         # a false alarm, and a guard that cries wolf gets worked around.
         $why = Test-PSMutationRecheckCompatible -Report (Get-FakeReport -Operators @('BinaryOperator', 'BooleanLiteral')) `
             -SourceHashes @{ 'src/a.ps1' = 'hash-a' } -Operators @('BooleanLiteral', 'BinaryOperator')
-        @($why).Count | Should -Be 0
+        @($why).Count | Should-Be 0
     }
 
     It 'refuses when a file was added to the mutate set after the report' {
         $why = Test-PSMutationRecheckCompatible -Report (Get-FakeReport) `
             -SourceHashes @{ 'src/a.ps1' = 'hash-a'; 'src/b.ps1' = 'hash-b' } -Operators @('BinaryOperator')
-        @($why).Count | Should -Be 1
-        $why[0] | Should -BeLike '*src/b.ps1 is not in the report*'
+        @($why).Count | Should-Be 1
+        $why[0] | Should-BeLikeString '*src/b.ps1 is not in the report*'
     }
 
     It 'refuses a report written before source hashes were recorded' {
         $why = Test-PSMutationRecheckCompatible -Report (Get-FakeReport -OmitHashes) `
             -SourceHashes @{ 'src/a.ps1' = 'hash-a' } -Operators @('BinaryOperator')
-        @($why).Count | Should -Be 1
-        $why[0] | Should -BeLike '*predates source-hash recording*'
+        @($why).Count | Should-Be 1
+        $why[0] | Should-BeLikeString '*predates source-hash recording*'
     }
 
     It 'refuses a report whose sourceHashes property is present but null' {
@@ -87,8 +87,8 @@ Describe 'Test-PSMutationRecheckCompatible' {
         $r.sourceHashes = $null
         $why = Test-PSMutationRecheckCompatible -Report $r `
             -SourceHashes @{ 'src/a.ps1' = 'hash-a' } -Operators @('BinaryOperator')
-        @($why).Count | Should -Be 1
-        $why[0] | Should -BeLike '*predates source-hash recording*'
+        @($why).Count | Should-Be 1
+        $why[0] | Should-BeLikeString '*predates source-hash recording*'
     }
 
     It 'reports every reason, not just the first' {
@@ -96,7 +96,7 @@ Describe 'Test-PSMutationRecheckCompatible' {
         # on the following attempt.
         $why = Test-PSMutationRecheckCompatible -Report (Get-FakeReport) `
             -SourceHashes @{ 'src/a.ps1' = 'nope' } -Operators @('BooleanLiteral')
-        @($why).Count | Should -Be 2
+        @($why).Count | Should-Be 2
     }
 }
 
@@ -119,15 +119,15 @@ Describe 'Select-PSMutationRecheckCandidate' {
     It 'keeps only the mutants the report recorded as survivors' {
         $rep = [pscustomobject]@{ survivors = @([pscustomobject]@{ File = 'src/a.ps1'; Id = 3 }) }
         $out = Select-PSMutationRecheckCandidate -Candidates $script:cands -Report $rep -SandboxRoot $script:sandbox
-        @($out).Count | Should -Be 1
-        $out[0].Line  | Should -Be 20
+        @($out).Count | Should-Be 1
+        $out[0].Line  | Should-Be 20
     }
 
     It 'distinguishes two mutants on the same line with the same description' {
         $rep = [pscustomobject]@{ survivors = @([pscustomobject]@{ File = 'src/a.ps1'; Id = 2 }) }
         $out = Select-PSMutationRecheckCandidate -Candidates $script:cands -Report $rep -SandboxRoot $script:sandbox
-        @($out).Count | Should -Be 1
-        $out[0].Id    | Should -Be 2
+        @($out).Count | Should-Be 1
+        $out[0].Id    | Should-Be 2
     }
 
     It 'does not confuse the same id in two different files' {
@@ -135,14 +135,14 @@ Describe 'Select-PSMutationRecheckCandidate' {
         # match src/a.ps1's mutant 1.
         $rep = [pscustomobject]@{ survivors = @([pscustomobject]@{ File = 'src/b.ps1'; Id = 1 }) }
         $out = Select-PSMutationRecheckCandidate -Candidates $script:cands -Report $rep -SandboxRoot $script:sandbox
-        @($out).Count | Should -Be 1
-        $out[0].File  | Should -Be $script:fileB
+        @($out).Count | Should-Be 1
+        $out[0].File  | Should-Be $script:fileB
     }
 
     It 'returns nothing when the previous run had no survivors' {
         $rep = [pscustomobject]@{ survivors = @() }
         $out = Select-PSMutationRecheckCandidate -Candidates $script:cands -Report $rep -SandboxRoot $script:sandbox
-        @($out).Count | Should -Be 0
+        @($out).Count | Should-Be 0
     }
 }
 
@@ -155,8 +155,8 @@ Describe 'Get-PSMutationSourceHashMap' {
         $f = Join-Path $sb 'src/x.ps1'
         Set-Content -Path $f -Value '$a = 1' -NoNewline
         $map = Get-PSMutationSourceHashMap -MutateFiles @($f) -SandboxRoot $sb
-        $map.Keys | Should -Be @('src/x.ps1')
-        $map['src/x.ps1'] | Should -Match '^[0-9a-f]{64}$'
+        $map.Keys | Should-BeCollection @('src/x.ps1')
+        $map['src/x.ps1'] | Should-MatchString '^[0-9a-f]{64}$'
     }
 }
 
@@ -166,13 +166,13 @@ Describe 'Get-PSMutationRecheckReportPath' {
         # derived from, and leave a truncated result in the file CI reads.
         $full = Join-Path 'reports' 'ps-mutation.json'
         $p = Get-PSMutationRecheckReportPath -ReportPath $full
-        (Split-Path $p -Leaf) | Should -Be 'ps-mutation.recheck.json'
-        $p | Should -Not -Be $full
+        (Split-Path $p -Leaf) | Should-Be 'ps-mutation.recheck.json'
+        $p | Should-NotBe $full
     }
 
     It 'keeps the report in the same directory' {
         $p = Get-PSMutationRecheckReportPath -ReportPath (Join-Path -Path 'a' -ChildPath 'b' -AdditionalChildPath 'r.json')
-        (Split-Path $p -Parent) | Should -Be (Join-Path 'a' 'b')
+        (Split-Path $p -Parent) | Should-Be (Join-Path 'a' 'b')
     }
 }
 
@@ -188,11 +188,11 @@ Describe 'Write-PSMutationRecheckReport' {
         $out = Join-Path $TestDrive 'r.recheck.json'
         $s = Write-PSMutationRecheckReport -Results $script:results -ReportPath $out `
             -PriorSurvivorCount 5 -SourceReportPath 'reports/full.json'
-        $s.Mode           | Should -Be 'Recheck'
-        $s.PriorSurvivors | Should -Be 5
-        $s.Rechecked      | Should -Be 2
-        $s.NowKilled      | Should -Be 1
-        $s.StillSurviving | Should -Be 1
+        $s.Mode           | Should-Be 'Recheck'
+        $s.PriorSurvivors | Should-Be 5
+        $s.Rechecked      | Should-Be 2
+        $s.NowKilled      | Should-Be 1
+        $s.StillSurviving | Should-Be 1
     }
 
     It 'writes no score field, because a filtered set has no score' {
@@ -203,18 +203,18 @@ Describe 'Write-PSMutationRecheckReport' {
         Write-PSMutationRecheckReport -Results $script:results -ReportPath $out `
             -PriorSurvivorCount 5 -SourceReportPath 'f.json' | Out-Null
         $json = Get-Content $out -Raw | ConvertFrom-Json
-        $json.PSObject.Properties.Name | Should -Not -Contain 'mutationScore'
-        $json.mode          | Should -Be 'Recheck'
-        $json.nowKilled     | Should -Be 1
-        $json.priorSurvivors | Should -Be 5
-        @($json.stillSurviving).Count | Should -Be 1
+        $json.PSObject.Properties.Name | Should-NotContainCollection 'mutationScore'
+        $json.mode          | Should-Be 'Recheck'
+        $json.nowKilled     | Should-Be 1
+        $json.priorSurvivors | Should-Be 5
+        @($json.stillSurviving).Count | Should-Be 1
     }
 
     It 'records which report it was derived from' {
         $out = Join-Path $TestDrive 'r3.recheck.json'
         Write-PSMutationRecheckReport -Results $script:results -ReportPath $out `
             -PriorSurvivorCount 2 -SourceReportPath 'reports/origin.json' | Out-Null
-        (Get-Content $out -Raw | ConvertFrom-Json).recheckedFrom | Should -Be 'reports/origin.json'
+        (Get-Content $out -Raw | ConvertFrom-Json).recheckedFrom | Should-Be 'reports/origin.json'
     }
 
     It 'reports zero killed when nothing was killed' {
@@ -223,8 +223,8 @@ Describe 'Write-PSMutationRecheckReport' {
         $out = Join-Path $TestDrive 'r4.recheck.json'
         $none = @([pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 1; Description = 'x'; Status = 'Survived' })
         $s = Write-PSMutationRecheckReport -Results $none -ReportPath $out -PriorSurvivorCount 1 -SourceReportPath 'f.json'
-        $s.NowKilled      | Should -Be 0
-        $s.StillSurviving | Should -Be 1
+        $s.NowKilled      | Should-Be 0
+        $s.StillSurviving | Should-Be 1
     }
 }
 
@@ -245,22 +245,22 @@ Describe 'Show-PSMutationRecheckSummary' {
         # score -- so it is pinned rather than left to reviewer discipline.
         $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 1; StillSurviving = 1 }
         Show-PSMutationRecheckSummary -Summary $s -Results $script:results -ReportPath 'r.recheck.json'
-        ($script:lines -join "`n") | Should -BeLike '*Not a mutation score*'
-        ($script:lines -join "`n") | Should -BeLike '*full set*'
+        ($script:lines -join "`n") | Should-BeLikeString '*Not a mutation score*'
+        ($script:lines -join "`n") | Should-BeLikeString '*full set*'
     }
 
     It 'prints counts, never a percentage' {
         $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 1; StillSurviving = 1 }
         Show-PSMutationRecheckSummary -Summary $s -Results $script:results -ReportPath 'r.recheck.json'
-        ($script:lines -join "`n") | Should -BeLike '*1 of 2 previous survivor(s) now killed*'
-        ($script:lines -join "`n") | Should -Not -Match '\d+([.,]\d+)?\s*%'
+        ($script:lines -join "`n") | Should-BeLikeString '*1 of 2 previous survivor(s) now killed*'
+        ($script:lines -join "`n") | Should-NotMatchString '\d+([.,]\d+)?\s*%'
     }
 
     It 'lists the mutants that are still surviving' {
         $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 1; StillSurviving = 1 }
         Show-PSMutationRecheckSummary -Summary $s -Results $script:results -ReportPath 'r.recheck.json'
-        ($script:lines -join "`n") | Should -BeLike '*src/a.ps1:20*y*'
-        ($script:lines -join "`n") | Should -Not -BeLike '*src/a.ps1:10*'   # killed: not still surviving
+        ($script:lines -join "`n") | Should-BeLikeString '*src/a.ps1:20*y*'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*src/a.ps1:10*'   # killed: not still surviving
     }
 
     It 'goes green only when nothing is left surviving' -ForEach @(
@@ -269,7 +269,7 @@ Describe 'Show-PSMutationRecheckSummary' {
     ) {
         $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 2 - $Still; StillSurviving = $Still }
         Show-PSMutationRecheckSummary -Summary $s -Results @() -ReportPath 'r.recheck.json'
-        $script:colours | Should -Contain $Expected
+        $script:colours | Should-ContainCollection $Expected
     }
 }
 
@@ -278,13 +278,13 @@ Describe 'Get-PSMutationSourceHash' {
         $a = Join-Path $TestDrive 'h1.ps1'; Set-Content -Path $a -Value '$x = 1' -NoNewline
         $b = Join-Path $TestDrive 'h2.ps1'; Set-Content -Path $b -Value '$x = 2' -NoNewline
         $ha = Get-PSMutationSourceHash -Path $a
-        $ha | Should -Not -Be (Get-PSMutationSourceHash -Path $b)
-        $ha | Should -Match '^[0-9a-f]{64}$'
+        $ha | Should-NotBe (Get-PSMutationSourceHash -Path $b)
+        $ha | Should-MatchString '^[0-9a-f]{64}$'
     }
 
     It 'is identical for identical content in different files' {
         $a = Join-Path $TestDrive 'same1.ps1'; Set-Content -Path $a -Value '$x = 1' -NoNewline
         $b = Join-Path $TestDrive 'same2.ps1'; Set-Content -Path $b -Value '$x = 1' -NoNewline
-        (Get-PSMutationSourceHash -Path $a) | Should -Be (Get-PSMutationSourceHash -Path $b)
+        (Get-PSMutationSourceHash -Path $a) | Should-Be (Get-PSMutationSourceHash -Path $b)
     }
 }
