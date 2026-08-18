@@ -5,6 +5,18 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Internal
+- Every pinned dependency now comes from one committed file, `.github/pins.env` ([#33]).
+  `ci.yml` pinned its modules, `code-scanning.yml` installed PSScriptAnalyzer and
+  ConvertToSARIF unpinned, and `publish.yml` hardcoded the Pester version twice and used an
+  unpinned `actions/checkout` -- in the one workflow holding the Gallery API key. So the lint
+  gate and the required code-scanning check could analyse with different analyzers, and the
+  release path could run a different Pester than the test estate is written against, which is
+  the drift class that hid #16. Each workflow now loads the file after checkout and asserts
+  every key arrived, so a missing pin fails loudly instead of becoming an empty version
+  string. `PSSA_PATHS` is shared too: the two analyzer gates previously agreed only because
+  PSScriptAnalyzer ignores non-PowerShell files. Action SHAs cannot live in the file --
+  `uses:` does not expand variables -- but all five references across the three workflows are
+  now SHA-pinned.
 - A release-consistency gate ([#37]). ModuleVersion, the newest CHANGELOG heading and the
   Gallery release notes are three descriptions of one release and nothing compared them --
   0.2.2 shipped while its entry was still under Unreleased, and the heading was renamed by
