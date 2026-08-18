@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.2.2'
+    ModuleVersion     = '0.3.0'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -20,7 +20,7 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = 'Fixes a silent, entirely fake 100% score on any machine with two Pester versions installed. Mutants run in a child runspace, and that runspace resolved Pester by name - getting the newest version installed rather than the one already loaded. Assemblies are per-process, so the child died on an incompatible Pester.dll, produced no verdict, and a mutant with no verdict was counted as Killed: every mutant died and the run reported a perfect score over tests that never ran. The child is now pinned to the loaded module''s path, and a run that cannot evaluate a mutant fails instead of scoring it. Also fixes an abort when a suitable Pester was already loaded. Coverage and self-mutation both at 100%.'
+            ReleaseNotes = 'Adds three OPT-IN mutation operators that reach decisions no expression operator can touch. Code whose logic lives in structure rather than in an expression - a phase guard like if ($SyncUsers) { ... }, or a chain of if ($Ref.Value) { return ... } fallbacks - contains no comparison, literal or negation, so the default set produced ZERO mutants for it and the file scored a vacuous 100%. ConditionForcing forces an if/elseif condition to $true and to $false; ConditionalBoundary shifts a boundary (-gt <-> -ge, -lt <-> -le), the off-by-one that the existing -gt -> -le swap cannot produce; ReturnValue replaces a returned value with $null. All three are opt-in: enabling one roughly doubles the mutant count and lowers the score, so a repo gating on thresholds.break would go red purely from upgrading, and mutants are renumbered so existing reports can no longer seed a -RecheckFrom run. PSMutant runs all three against itself: 100% over 303 mutants, coverage 100%.'
         }
     }
 }

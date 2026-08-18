@@ -267,9 +267,26 @@ Describe 'Show-PSMutationRecheckSummary' {
         @{ Still = 0; Expected = 'Green'  }
         @{ Still = 1; Expected = 'Yellow' }
     ) {
+        # The colour of the HEADLINE line specifically. Asserting over the whole colour
+        # list cannot discriminate: the still-surviving block is Yellow as well, so a
+        # headline wrongly painted Green still leaves a Yellow in the list and passes.
         $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 2 - $Still; StillSurviving = $Still }
         Show-PSMutationRecheckSummary -Summary $s -Results @() -ReportPath 'r.recheck.json'
-        $script:colours | Should-ContainCollection $Expected
+
+        $headline = -1
+        for ($i = 0; $i -lt $script:lines.Count; $i++) {
+            if ($script:lines[$i] -like '*now killed*') { $headline = $i }
+        }
+        $headline | Should-BeGreaterThan -1
+        $script:colours[$headline] | Should-Be $Expected
+    }
+
+    It 'omits the still-surviving block entirely when nothing survives' {
+        # -gt 0, not -ge 0: printing an empty "Still surviving:" header after a clean
+        # recheck reads as though something were still alive.
+        $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 2; StillSurviving = 0 }
+        Show-PSMutationRecheckSummary -Summary $s -Results @() -ReportPath 'r.recheck.json'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*Still surviving*'
     }
 }
 

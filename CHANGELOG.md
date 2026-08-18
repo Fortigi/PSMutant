@@ -4,6 +4,27 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
+### Added
+- **Three opt-in operators that reach decisions no expression operator can touch**
+  ([#5]). Code whose logic lives in structure rather than in an expression produced
+  ZERO mutants and therefore a vacuous 100% -- a phase guard (`if ($SyncUsers) { ... }`)
+  or a reference-fallback chain (`if ($Ref.Value) { return ... }`) holds no comparison,
+  no literal and no negation, so nothing in the default set could perturb it.
+  - `ConditionForcing` -- an `if`/`elseif` condition forced to `$true` and to `$false`.
+    This is the one that reaches the bare guards above. Loop conditions are excluded:
+    forcing `while (X)` to `$true` is an unconditional hang, not a finding.
+  - `ConditionalBoundary` -- `-gt` <-> `-ge`, `-lt` <-> `-le`. The classic off-by-one,
+    which `BinaryOperator` cannot produce because it maps `-gt` to `-le` (a negation,
+    not a boundary shift).
+  - `ReturnValue` -- `return <expr>` -> `return $null`, for a result nothing asserts on.
+
+  All three are **opt-in**, like `StringLiteral`: switching one on roughly doubles the
+  mutant count and lowers the score, so a repo gating on `thresholds.break` would go red
+  purely from upgrading. Adding an operator also renumbers mutants, so an existing report
+  can no longer seed a `-RecheckFrom` run -- the operator set is recorded in the report,
+  and the mismatch is refused rather than guessed at.
+
+## [0.2.2] - 2026-08-18
 ### Fixed
 - **A run on a machine with two Pester versions reported a fake 100%** ([#16]). Mutants
   are evaluated in a child runspace, and that runspace resolved `Pester` by *name* --
