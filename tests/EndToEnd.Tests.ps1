@@ -146,27 +146,6 @@ Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
     }
 }
 
-Describe 'Assert-PSMutationPester' {
-    BeforeAll {
-        # Dot-sourced rather than reached through the module, so Get-Module can be
-        # mocked in this scope without stubbing out the module's own loading.
-        . (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'src' -AdditionalChildPath 'Invoke-PSMutation.ps1')
-    }
-
-    It 'refuses to run without Pester 5' {
-        # Pester 4 has no code coverage API and a different Should surface, so the
-        # run would fail deep inside the baseline with an unrelated error.
-        Mock Get-Module { @() } -ParameterFilter { $ListAvailable }
-        { Assert-PSMutationPester } | Should -Throw '*Pester 5+ is required*'
-    }
-
-    It 'accepts a Pester 5 installation' {
-        Mock Get-Module { @([pscustomobject]@{ Name = 'Pester'; Version = [version]'5.8.0' }) } -ParameterFilter { $ListAvailable }
-        Mock Import-Module { }
-        { Assert-PSMutationPester } | Should -Not -Throw
-    }
-}
-
 Describe 'Invoke-PSMutation - config defaults and failure modes' {
     It 'falls back to the default operators and timeouts when the config omits them' {
         $cfg = [ordered]@{

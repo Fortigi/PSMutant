@@ -10,6 +10,70 @@ BeforeAll {
     }
 }
 
+Describe 'Get-PSMutationSandboxPlan' {
+    BeforeAll {
+        $script:root = Join-Path $TestDrive 'repo'
+        $script:sb = Join-Path $TestDrive 'sandbox'
+        # Two mutate files with DIFFERENT mappings, one of them naming two test files.
+        # A plan that merged the entries, or kept only the last, would still look
+        # right against the single-file config every other fixture here uses.
+        $script:cfg = [pscustomobject]@{
+            mutate = @('src/a.ps1', 'src/b.ps1')
+            tests  = [pscustomobject]@{
+                'src/a.ps1' = @('tests/a.Tests.ps1')
+                'src/b.ps1' = @('tests/b1.Tests.ps1', 'tests/b2.Tests.ps1')
+            }
+        }
+        $script:plan = Get-PSMutationSandboxPlan -Cfg $script:cfg -SourceRoot $script:root -SandboxRoot $script:sb
+    }
+
+    It 'points every mutate path at the sandbox copy, never the tracked file' {
+        # The headline guarantee of the tool. Hand back repo paths and the runner
+        # splices mutants into tracked source, so a hard kill mid-run leaves a
+        # mutated file staged in git.
+        $expected = @('src/a.ps1', 'src/b.ps1') |
+            ForEach-Object { [System.IO.Path]::GetFullPath((Join-Path $script:sb $_)) }
+        $script:plan.Mutate | Should -Be $expected
+        $script:plan.Mutate | Should -Not -Contain ([System.IO.Path]::GetFullPath((Join-Path $script:root 'src/a.ps1')))
+    }
+
+    It 'keys the per-file test map by the SANDBOXED source path' {
+        # Invoke-PSMutationLoop looks the mapping up by the candidate's file, which is
+        # a sandbox path. Keyed by repo path every lookup misses, every file falls
+        # back to the whole suite, and a run that should take minutes takes hours --
+        # while still reporting the right score, so nothing looks wrong.
+        $keyA = [System.IO.Path]::GetFullPath((Join-Path $script:sb 'src/a.ps1'))
+        $keyB = [System.IO.Path]::GetFullPath((Join-Path $script:sb 'src/b.ps1'))
+        $script:plan.TestsByFile.Keys | Should -Contain $keyA
+        $script:plan.TestsByFile[$keyA] |
+            Should -Be @([System.IO.Path]::GetFullPath((Join-Path $script:sb 'tests/a.Tests.ps1')))
+        $script:plan.TestsByFile[$keyB] | Should -HaveCount 2
+    }
+
+    It 'gathers every mapped test file into AllTests' {
+        # AllTests is what the baseline runs. Drop one and the lines it covers are
+        # never recorded, so with coveredLinesOnly on that source file yields no
+        # candidates at all -- a vacuous 100% over code nothing mutated.
+        $script:plan.AllTests | Should -HaveCount 3
+        $script:plan.AllTests |
+            Should -Contain ([System.IO.Path]::GetFullPath((Join-Path $script:sb 'tests/b2.Tests.ps1')))
+    }
+
+    It 'accepts a single covering test written as a bare string' {
+        # ConvertFrom-Json yields a bare string rather than a one-element array when
+        # the config names exactly one test, which is the common case.
+        $cfg = [pscustomobject]@{
+            mutate = @('src/a.ps1')
+            tests  = [pscustomobject]@{ 'src/a.ps1' = 'tests/a.Tests.ps1' }
+        }
+        $plan = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $script:root -SandboxRoot $script:sb
+        $key = [System.IO.Path]::GetFullPath((Join-Path $script:sb 'src/a.ps1'))
+        $plan.TestsByFile[$key] |
+            Should -Be @([System.IO.Path]::GetFullPath((Join-Path $script:sb 'tests/a.Tests.ps1')))
+        $plan.AllTests | Should -HaveCount 1
+    }
+}
+
 Describe 'Get-PSMutationSubtree' {
     It 'uses the subtrees the config names' {
         Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('lib', 'spec') }) |

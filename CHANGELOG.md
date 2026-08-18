@@ -4,14 +4,46 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
+### Fixed
+- **A run on a machine with two Pester versions reported a fake 100%** ([#16]). Mutants
+  are evaluated in a child runspace, and that runspace resolved `Pester` by *name* --
+  getting the newest version installed rather than the one the process had already
+  loaded. Assemblies are per-process, so the child died on an incompatible `Pester.dll`,
+  returned no verdict, and a mutant with no verdict was classified `Killed`. The result
+  was a silent, perfect score over tests that never ran: no error, no failed test,
+  nothing to notice. The child is now handed the loaded module's *path*, and a child
+  that returns no verdict fails the run instead of counting as a kill.
+- `Assert-PSMutationPester` no longer re-imports Pester when a suitable one is already
+  loaded. `Import-Module Pester -MinimumVersion 5.0.0` is not the no-op it looks like:
+  PowerShell re-resolves the name to the newest installed version and collides with the
+  assembly already in the process, which aborted the run before the first mutant.
+
 ### Internal
 - Config resolution (subtree/operator defaults, the per-mutant timeout, the
   baseline-green guard, the run-result shape) moved out of `Invoke-PSMutation` into a
   pure `PSMutation.Config.ps1`. No behaviour change; an empty `operators: []` still falls
-  back to the defaults.
-- Line coverage is now 100% for every source file except the orchestrator, which cannot
-  be measured (a nested Pester run clears the outer run's coverage breakpoints).
-  Self-mutation remains 100%.
+  back to the defaults. The sandbox path plan moved there too, and gained unit tests.
+- Line coverage is **100% for every source file**, measured in one whole-directory pass
+  and enforced in CI by `tools/Measure-PSMutantCoverage.ps1`. The orchestrator was
+  previously documented as unmeasurable; that diagnosis was wrong. Pester 6 defaults
+  coverage to the Profiler tracer, a nested Pester run destroys it, and everything
+  discovered afterwards reports near-zero. Breakpoints survive, so the gate sets
+  `CodeCoverage.UseBreakpoints = $true`.
+- Self-mutation now covers `PSMutation.Runner.ps1` and `Invoke-PSMutation.ps1` as well,
+  and is 100% over 103 mutants. `tests/Runner.Tests.ps1` gained mocked equivalents of the
+  per-mutant execution tests so it can cover the runner on its own: mutating a timeout
+  mechanism produces mutants that *disable* the timeout, and against the real child
+  runspace in `tests/Mutant.Tests.ps1` each of those ran to the outer deadline -- minutes
+  apiece. The gate went from over twenty minutes to under three.
+  `PSMutation.Sandbox.ps1` remains excluded, with the real reason recorded: its covering
+  suite calls `Clear-PSMutationStaleSandbox`, and a baseline runs in-process, so the
+  sweep reclaims the live run's own sandbox and turns the baseline red.
+- The test estate is pinned to Pester **6.1.0** in `ci.yml` and `publish.yml`, and every
+  CI step imports that exact version instead of letting the name resolve. CI previously
+  pinned 5.8.0 while development happened on 6.1.0. `RequiredModules` still asks only for
+  Pester >= 5.0.0 -- that is a promise about the *consumer's* Pester, and it is now
+  checked by `tools/Test-PSMutantPesterCompatibility.ps1`, which runs a real mutation
+  under the version the suite does not use and fails if nothing survives.
 - `coverage.xml` is no longer tracked; it was committed by accident and shipped in 0.2.1.
 
 ## [0.2.1] - 2026-08-18

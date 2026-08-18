@@ -84,6 +84,70 @@ function Select-PSMutationCandidate {
     return , $out.ToArray()
 }
 
+function Get-PSMutationPesterPath {
+    <#
+    .SYNOPSIS
+        File path of the Pester ALREADY LOADED in this process, so a child runspace can
+        import that one by path instead of resolving the name for itself.
+    .DESCRIPTION
+        A fresh runspace resolves `Pester` by NAME against PSModulePath and gets the
+        NEWEST version installed -- which is not necessarily the version this process
+        already loaded. Assemblies are per-process, so when the two differ the child
+        dies on "An incompatible version of the Pester.dll assembly is already loaded".
+        A child that dies produces no verdict, and a mutant with no verdict used to be
+        classified Killed: on any machine with two Pesters installed, every mutant died
+        and the run reported a silent, entirely fake 100%.
+
+        Importing by PATH is what makes the module version-agnostic in the way the
+        manifest promises: whatever Pester >= 5 the consuming repo runs, the mutant
+        runs under that same one.
+    .OUTPUTS
+        [string] path to the loaded Pester module file.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param()
+    # Highest wins: two Pester 5.x releases CAN coexist in one process (the dll guard
+    # only rejects a LOWER loaded version), and the newer of them is the one whose
+    # assembly is actually serving calls.
+    $loaded = Get-Module Pester | Sort-Object Version -Descending | Select-Object -First 1
+    if (-not $loaded) {
+        throw 'Pester is not loaded in this session, so a mutant cannot be run against it.'
+    }
+    return $loaded.Path
+}
+
+function Get-PSMutationBoundedPesterScript {
+    <#
+    .SYNOPSIS
+        The script a mutant's child runspace runs: import the pinned Pester, run the
+        covering tests, emit the one-word result.
+    .DESCRIPTION
+        Named rather than inlined because it is the child's whole contract. Two things
+        in it are load-bearing and easy to "simplify" away:
+
+        * `Import-Module $pester` imports by PATH. Importing by name lets the runspace
+          resolve Pester itself, which picks the newest installed rather than the one
+          this process loaded -- the collision Get-PSMutationPesterPath exists to stop.
+        * `-ErrorAction Stop` makes a failed import terminate the child, so the caller
+          gets an exception instead of an empty result that reads as a dead mutant.
+    .OUTPUTS
+        [string] the script text.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param()
+    return @'
+param($tests, $pester)
+Import-Module $pester -Force -ErrorAction Stop
+$c = New-PesterConfiguration
+$c.Run.Path = $tests
+$c.Run.PassThru = $true
+$c.Output.Verbosity = 'None'
+(Invoke-Pester -Configuration $c).Result
+'@
+}
+
 function Invoke-PSBoundedPester {
     <#
     .SYNOPSIS
@@ -94,24 +158,45 @@ function Invoke-PSBoundedPester {
         never terminate. There is no way to know that statically, so each mutant runs
         under a hard timeout: a fresh PowerShell/runspace whose pipeline is Stop()'d
         when it overruns -- Stop() interrupts even a tight loop, so the run never hangs.
+
+        The child imports Pester by PATH (see Get-PSMutationPesterPath) rather than
+        letting the runspace resolve the name to whatever is newest on disk.
     .OUTPUTS
         The Pester result string ('Passed'/'Failed'/...), or 'TimedOut'.
     #>
     [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string[]]$CoveringTests, [Parameter(Mandatory)] [int]$TimeoutSeconds)
-    $code = 'param($tests) $c = New-PesterConfiguration; $c.Run.Path = $tests; $c.Run.PassThru = $true; $c.Output.Verbosity = "None"; (Invoke-Pester -Configuration $c).Result'
     $ps = [PowerShell]::Create()
-    [void]$ps.AddScript($code).AddParameter('tests', $CoveringTests)
+    [void]$ps.AddScript((Get-PSMutationBoundedPesterScript)).
+        AddParameter('tests', $CoveringTests).
+        AddParameter('pester', (Get-PSMutationPesterPath))
     $async = $ps.BeginInvoke()
     try {
-        if ($async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))) {
-            return [string]($ps.EndInvoke($async) | Select-Object -Last 1)
+        if (-not $async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))) {
+            $ps.Stop()
+            return 'TimedOut'
         }
-        $ps.Stop()
-        return 'TimedOut'
+        $outcome = [string]($ps.EndInvoke($async) | Select-Object -Last 1)
+        # A child that returned no verdict proved nothing about the mutant. Handing
+        # that back would classify it Killed -- anything but 'Passed' is a kill -- so a
+        # broken child reads as a perfect score. That is exactly how the Pester version
+        # collision stayed invisible for so long. Fail the run instead of scoring it.
+        if (-not $outcome) { throw ('The covering tests produced no result: ' + (Get-PSMutationRunspaceError -Runspace $ps)) }
+        return $outcome
     }
     finally { $ps.Dispose() }
+}
+
+function Get-PSMutationRunspaceError {
+    # Whatever the child wrote to its error stream, as one line. Reported rather than
+    # swallowed: without it a failed child is indistinguishable from a killed mutant.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Runspace)
+    $messages = @($Runspace.Streams.Error | ForEach-Object { $_.Exception.Message })
+    if (-not $messages) { return 'the child runspace reported no error' }
+    return ($messages -join '; ')
 }
 
 function Invoke-PSMutant {
