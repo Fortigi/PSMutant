@@ -24,6 +24,13 @@ $script:PSMutationBinaryMap = @{
     '-lt' = '-ge'; '-ge' = '-lt'; '-and' = '-or'; '-or' = '-and'
     '+' = '-'; '-' = '+'; '*' = '/'; '/' = '*'
 }
+# Off-by-one at a boundary, which the negation swaps above cannot produce: -gt maps to
+# -le there, so `-gt` vs `-ge` -- the classic fencepost -- is never tried.
+$script:PSMutationBoundaryMap = @{ '-gt' = '-ge'; '-ge' = '-gt'; '-lt' = '-le'; '-le' = '-lt' }
+
+# StringLiteral, ConditionalBoundary, ConditionForcing and ReturnValue are all OPT-IN.
+# Adding one here roughly doubles a consumer's mutant count and lowers their score, so a
+# repo gating on thresholds.break would go red purely from upgrading the module.
 $script:PSMutationDefaultOperators = @('BinaryOperator', 'BooleanLiteral', 'NumberLiteral', 'NegationRemoval')
 
 function Set-PSMutationText {
@@ -152,6 +159,71 @@ function Get-PSMutationNegationCandidate {
     }
 }
 
+function Get-PSMutationBoundaryCandidate {
+    # -gt <-> -ge, -lt <-> -le. Shifts a boundary by one instead of negating it.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst] }, $true)
+    foreach ($n in $nodes) {
+        $ext = $n.ErrorPosition
+        $key = $ext.Text.ToLowerInvariant()
+        if (-not $script:PSMutationBoundaryMap.ContainsKey($key)) { continue }
+        if (Test-PSMutationInLoop -Extent $ext -Ranges $Ranges) { continue }
+        $to = $script:PSMutationBoundaryMap[$key]
+        New-PSMutationCandidate -Extent $ext -File $File -Original $ext.Text -Mutated $to -Operator 'ConditionalBoundary' -Description "$($ext.Text) -> $to"
+    }
+}
+
+function Get-PSMutationConditionCandidate {
+    <#
+    .SYNOPSIS
+        Force an if/elseif condition to $true and to $false.
+    .DESCRIPTION
+        The operator that reaches decisions no EXPRESSION operator can touch. A guard
+        like `if ($SyncUsers) { ... }` or `if ($Ref.Value) { return ... }` contains no
+        comparison, no literal and no negation, so every other operator emits nothing and
+        the file scores a vacuous 100%. Forcing the condition asks the only question that
+        matters about it: does any test notice which way this decision went?
+
+        Loop conditions are excluded by the shared no-mutate zone -- forcing `while (X)`
+        to $true is an unconditional hang, not a fault worth reporting.
+    #>
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true)
+    foreach ($n in $nodes) {
+        foreach ($clause in $n.Clauses) {
+            $cond = $clause.Item1
+            if (Test-PSMutationInLoop -Extent $cond.Extent -Ranges $Ranges) { continue }
+            foreach ($forced in '$true', '$false') {
+                # A condition that already IS the forced value would splice to identical
+                # source: an unkillable mutant that can only ever inflate the survivor
+                # list. Skip it rather than declare it equivalent later.
+                if ($cond.Extent.Text -eq $forced) { continue }
+                New-PSMutationCandidate -Extent $cond.Extent -File $File -Original $cond.Extent.Text -Mutated $forced -Operator 'ConditionForcing' -Description "condition -> $forced"
+            }
+        }
+    }
+}
+
+function Get-PSMutationReturnCandidate {
+    # `return <expr>` -> `return $null`. Catches a result nothing asserts on.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true)
+    foreach ($n in $nodes) {
+        # A bare `return` yields nothing already, and one that returns $null is the
+        # mutation -- neither can change behaviour.
+        if (-not $n.Pipeline) { continue }
+        if ($n.Pipeline.Extent.Text -eq '$null') { continue }
+        if (Test-PSMutationInLoop -Extent $n.Pipeline.Extent -Ranges $Ranges) { continue }
+        New-PSMutationCandidate -Extent $n.Pipeline.Extent -File $File -Original $n.Pipeline.Extent.Text -Mutated '$null' -Operator 'ReturnValue' -Description 'return value -> $null'
+    }
+}
+
 # Operator name -> the function that emits it. Keeps Get-PSMutationCandidate flat.
 $script:PSMutationOperatorMap = @{
     'BinaryOperator'  = 'Get-PSMutationBinaryCandidate'
@@ -159,6 +231,9 @@ $script:PSMutationOperatorMap = @{
     'NumberLiteral'   = 'Get-PSMutationNumberCandidate'
     'StringLiteral'   = 'Get-PSMutationStringCandidate'
     'NegationRemoval' = 'Get-PSMutationNegationCandidate'
+    'ConditionalBoundary' = 'Get-PSMutationBoundaryCandidate'
+    'ConditionForcing' = 'Get-PSMutationConditionCandidate'
+    'ReturnValue' = 'Get-PSMutationReturnCandidate'
 }
 
 function Get-PSMutationCandidate {

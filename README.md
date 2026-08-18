@@ -130,7 +130,24 @@ execution safe and fast.
 | `BooleanLiteral` | `$true`↔`$false` |
 | `NumberLiteral` | `N` → `N+1` |
 | `NegationRemoval` | `-not X` → `X`, `!X` → `X` |
-| `StringLiteral` | quoted string → `''` (off by default — high-volume/low-signal) |
+| `StringLiteral` | quoted string → `''` (opt-in — high-volume/low-signal) |
+| `ConditionalBoundary` | `-gt`↔`-ge`, `-lt`↔`-le` (opt-in — off-by-one at a boundary, which the swaps above cannot produce) |
+| `ConditionForcing` | an `if`/`elseif` condition → `$true` and → `$false` (opt-in) |
+| `ReturnValue` | `return <expr>` → `return $null` (opt-in) |
+
+The last three reach decisions that live in **structure** rather than in an expression.
+A phase guard like `if ($SyncUsers) { ... }`, or a fallback chain of
+`if ($Ref.Value) { return ... }`, holds no comparison, no literal and no negation — so
+every default operator emits nothing and the file scores a **vacuous 100%** over code
+nothing has tested. `ConditionForcing` asks the only question that matters about such a
+guard: does any test notice which way the decision went?
+
+They are opt-in because switching one on roughly doubles the mutant count and lowers the
+score, so a repo gating on `thresholds.break` would go red purely from upgrading. Turn
+them on deliberately, and expect to move the threshold down before moving it back up.
+Adding an operator also renumbers mutants, so any existing report can no longer seed a
+`-RecheckFrom` run — the operator set is recorded in the report and the mismatch is
+refused rather than guessed at.
 
 ## Config reference
 
@@ -138,7 +155,7 @@ execution safe and fast.
 |---|---|
 | `mutate` | Files to mutate. Pure / I/O-free logic pays off most. |
 | `tests` | Map each mutate file → the Pester file(s) covering it (per-file test scoping). |
-| `operators` | Operator classes to inject (default omits `StringLiteral`). |
+| `operators` | Operator classes to inject. Default is the four expression operators; `StringLiteral`, `ConditionalBoundary`, `ConditionForcing` and `ReturnValue` are opt-in. |
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["tools","test","setup"]`; set to your layout, e.g. `["src","tests"]`). |
 | `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, baseline × factor)` (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
