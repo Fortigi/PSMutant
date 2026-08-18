@@ -33,6 +33,11 @@ $cfg = New-PesterConfiguration
 $cfg.Run.Path = Join-Path $root 'tests'
 $cfg.Run.PassThru = $true
 $cfg.Output.Verbosity = 'None'
+# The suite is fully on the v6 Should-* commands, so make the classic syntax an error
+# rather than a style note. It cannot reach the fixture test files this repo writes out
+# and runs in child runspaces -- those build their own configuration, and one of them is
+# executed under Pester 5.8.0 by the compatibility guard, where Should-* does not exist.
+$cfg.Should.DisableV5 = $true
 $cfg.CodeCoverage.Enabled = $true
 $cfg.CodeCoverage.UseBreakpoints = $true
 $cfg.CodeCoverage.Path = (Get-ChildItem (Join-Path $root 'src') -Filter *.ps1).FullName

@@ -200,19 +200,34 @@ Traps that have bitten in this repo specifically:
 
 ## Assertion style
 
-The suite uses the Pester 6 `Should-*` commands (hyphen, no space): `Should-Be`,
-`Should-BeCollection`, `Should-Throw -ExceptionMessage`, `Should-Invoke`. Two deliberate
-exceptions, and neither is an oversight:
+The suite is fully on the Pester 6 `Should-*` commands (hyphen, no space), and
+`Should.DisableV5 = $true` is set in `ci.yml` and in the coverage script so the classic
+syntax is an **error**, not a style note.
 
-- **`Should -Not -Throw` stays classic.** v6 has no `Should-NotThrow`; a block that must
-  not throw simply runs.
-- **Fixture source stays classic.** The here-strings that get written out as a
-  consumer's test files — in `tests/EndToEnd.Tests.ps1`, `tests/Mutant.Tests.ps1` and
-  `tools/Test-PSMutantPesterCompatibility.ps1` — must keep `Should -Be`, because the
-  compatibility guard runs one of them under **Pester 5.8.0**, where the `Should-*`
-  commands do not exist. Do not "finish the migration" by converting those.
+**There is no `Should-NotThrow`, and that is not a gap to work around.** An unhandled
+exception fails the test on its own, so "does not throw" asserts nothing — v6 leaves it
+out on purpose. Call the thing directly and assert what it actually did:
 
-Because of both, do NOT set `Should.DisableV5`.
+```powershell
+# not this -- the only claim is "no exception", which the runner already makes
+{ Assert-PSMutationPester } | Should -Not -Throw
+
+# this -- accepting the session means taking the already-loaded branch, so say that
+Assert-PSMutationPester
+Should-NotInvoke Import-Module
+```
+
+Where a guard has no observable output, assert the absence of it
+(`Should-BeNull -Actual (Assert-PSMutationBaselineGreen ...)`); where it has a
+postcondition, assert that (`Should-BeFalse -Actual (Test-Path $gone)`).
+
+**Fixture source stays classic.** The here-strings written out as a consumer's test
+files — in `tests/EndToEnd.Tests.ps1`, `tests/Mutant.Tests.ps1` and
+`tools/Test-PSMutantPesterCompatibility.ps1` — must keep `Should -Be`, because the
+compatibility guard runs one of them under **Pester 5.8.0**, where the `Should-*`
+commands do not exist. `DisableV5` cannot reach them: every one of those files is
+executed by a *different* `New-PesterConfiguration` built inside the module. Do not
+"finish the migration" by converting them.
 
 Two traps worth knowing when adding assertions:
 

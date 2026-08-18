@@ -44,11 +44,15 @@ All notable changes to PSMutant are documented here. Format follows
   Pester >= 5.0.0 -- that is a promise about the *consumer's* Pester, and it is now
   checked by `tools/Test-PSMutantPesterCompatibility.ps1`, which runs a real mutation
   under the version the suite does not use and fails if nothing survives.
-- The suite's assertions were migrated to the Pester 6 `Should-*` commands. Classic
-  `Should -Not -Throw` is kept (v6 has no equivalent), and the here-string fixtures that
-  are written out as a consumer's test files stay on classic syntax deliberately -- the
-  compatibility guard runs one of them under Pester 5.8.0, where `Should-*` does not
-  exist.
+- The suite's assertions were migrated to the Pester 6 `Should-*` commands, and
+  `Should.DisableV5` is now set so the classic syntax is an error rather than a
+  convention. v6 has no `Should-NotThrow` by design -- an unhandled exception fails a
+  test on its own -- so the five `Should -Not -Throw` sites now call the command
+  directly and assert what it actually did (which branch it took, or its
+  postcondition). The here-string fixtures written out as a consumer's test files stay
+  on classic syntax deliberately: the compatibility guard runs one of them under Pester
+  5.8.0, where `Should-*` does not exist, and `DisableV5` cannot reach them because each
+  is executed by its own configuration built inside the module.
 - `coverage.xml` is no longer tracked; it was committed by accident and shipped in 0.2.1.
 
 ## [0.2.1] - 2026-08-18

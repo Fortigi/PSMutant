@@ -151,8 +151,10 @@ Describe 'Assert-PSMutationBaselineGreen' {
             Should-Throw -ExceptionMessage '*Baseline suite is not green*'
     }
     It 'lets a green baseline through' {
-        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $true }) } |
-            Should -Not -Throw
+        # A guard that lets the run continue emits nothing at all. Calling it directly
+        # covers the refusal case too: an exception here fails the test on its own,
+        # which is why v6 offers no "does not throw" assertion to wrap it in.
+        Should-BeNull -Actual (Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $true }))
     }
 }
 
