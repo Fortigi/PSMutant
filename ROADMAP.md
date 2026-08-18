@@ -9,7 +9,7 @@ here: a second status list drifts from the first, which is the exact failure mod
 "check the docs against the code" rule exists to prevent.
 
 Snapshot taken 2026-08-18. Updated the same day after a dedicated architecture review, which
-added #52-#57 and #59 and re-priced #1 (see below). 44 issues open.
+added #52-#57, #59 and #60-#63, and re-priced #1 (see below). 48 issues open.
 
 ---
 
@@ -48,6 +48,14 @@ Two things follow that are worth stating out loud:
   in different files**. Serialisation is the isolation mechanism. Parallelism therefore needs N
   complete `Copy-Item -Recurse` sandbox trees, not N sandbox names -- and #53 (isolation keyed to
   the process rather than the run) has to land first, because the sandbox name carries `$PID`.
+  **#62** is a second blocking consideration: the per-mutant timeout is derived from a *solo*
+  baseline, so under N-way parallelism ordinary CPU contention becomes timeouts, and a timeout
+  counts as a kill -- parallelism would silently inflate the score. Do #7 before or with #1 so
+  that failure is visible rather than flattering.
+- **#1 and #39 may not belong together after all.** They were paired here because both touch the
+  loop, but they sit on different axes of the same stance: #39 is about durability of results,
+  #1 about isolation of execution. #39 is much the cheaper half and does not need #53. Consider
+  splitting them and doing #39 early as a filler.
 
 ---
 
@@ -100,6 +108,7 @@ Now has a home to land in. This is the wave with the most user-visible value.
 | 4 | **#29** operator-order renumbering | Reordering a JSON array silently invalidates recheck reports. |
 | 5 | **#28** identity collision, with **#3** and **#59** | Same identity scheme, three different defects: a colliding key, a stale key, and an id whose stability rests on an unstated ordering. Fix once. |
 | 6 | **#54**, **#56** | The run-result shape and the score function's fused scope. #56 blocks per-file scores in Wave E. |
+| 7 | **#60**, **#61** | Two files documented Pure that do I/O, and `-Quiet` implemented two ways. Both are small, both are prerequisites for #47/#11 being done cleanly. |
 
 ## Wave E -- output features
 
@@ -132,6 +141,10 @@ Pick these up between waves; none blocks anything.
 - **#46** `switch`/ternary blind spot. Natural follow-up to #5.
 - **#55** nothing asserts Pester's result vocabulary is two-valued. Small, and it guards the
   external boundary the module deliberately does not abstract.
+- **#63** no run-context object, so each new mode threads another long parameter list. Decide
+  before **#10** or **#8**, since both add a mode and the decision is far cheaper before there
+  are four call sites.
+- **#39** interrupted runs -- see the note above; likely cheaper than its pairing with #1 implies.
 - **#49** child runspace script is an unparsed string.
 - **#41** help surface / missing `about_PSMutant`.
 - **#36** end-to-end exact counts, **#43** cross-Context `$script:` coupling, **#35** consumer-shaped layout.
