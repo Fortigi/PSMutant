@@ -15,7 +15,7 @@ Describe 'ConvertTo/From-PSMutationSandboxPath' {
         $sbRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
         $sb = ConvertTo-PSMutationSandboxPath -Path (Join-Path $script:root 'src/x.ps1') `
             -RepoRoot $script:root -SandboxRoot $sbRoot
-        ConvertFrom-PSMutationSandboxPath -Path $sb -SandboxRoot $sbRoot | Should -Be 'src/x.ps1'
+        ConvertFrom-PSMutationSandboxPath -Path $sb -SandboxRoot $sbRoot | Should-Be 'src/x.ps1'
     }
 }
 
@@ -28,11 +28,11 @@ Describe 'New/Remove-PSMutationSandbox' {
         $name = "psmut-sandbox-test-$([System.Guid]::NewGuid().ToString('N'))"
         try {
             $sb = New-PSMutationSandbox -RepoRoot $srcDir -Subtrees @('keep') -Name $name
-            Test-Path (Join-Path $sb 'keep/file.txt') | Should -BeTrue
-            Test-Path (Join-Path $sb 'skip')          | Should -BeFalse
+            Test-Path (Join-Path $sb 'keep/file.txt') | Should-BeTrue
+            Test-Path (Join-Path $sb 'skip')          | Should-BeFalse
 
             Remove-PSMutationSandbox -SandboxRoot $sb
-            Test-Path $sb | Should -BeFalse
+            Test-Path $sb | Should-BeFalse
         }
         finally {
             Remove-Item $srcDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -56,8 +56,8 @@ Describe 'New/Remove-PSMutationSandbox' {
             'orphan' | Set-Content (Join-Path $stale 'keep/ghost.txt')
 
             $sb = New-PSMutationSandbox -RepoRoot $srcDir -Subtrees @('keep') -Name $name
-            Get-Content (Join-Path $sb 'keep/file.txt') | Should -Be 'current'
-            Test-Path (Join-Path $sb 'keep/ghost.txt')  | Should -BeFalse
+            Get-Content (Join-Path $sb 'keep/file.txt') | Should-Be 'current'
+            Test-Path (Join-Path $sb 'keep/ghost.txt')  | Should-BeFalse
         }
         finally {
             Remove-Item $srcDir -Recurse -Force -ErrorAction SilentlyContinue
@@ -75,14 +75,14 @@ Describe 'New/Remove-PSMutationSandbox' {
 
 Describe 'Get-PSMutationSandboxOwnerId' {
     It 'reads the process id out of a runner sandbox name' {
-        Get-PSMutationSandboxOwnerId -Name 'psmut-sandbox-1234' | Should -Be 1234
+        Get-PSMutationSandboxOwnerId -Name 'psmut-sandbox-1234' | Should-Be 1234
     }
     It 'returns nothing for a name the runner never produces' {
         # The runner only ever creates psmut-sandbox-<pid>. Anything else under that
         # prefix belongs to somebody else -- including this suite's own fixtures --
         # and must not be treated as a sandbox to reclaim.
         foreach ($n in 'psmut-sandbox-test-abc', 'psmut-sandbox-', 'psmut-sandbox-12ab', 'unrelated') {
-            Get-PSMutationSandboxOwnerId -Name $n | Should -BeNullOrEmpty
+            Should-BeNull -Actual (Get-PSMutationSandboxOwnerId -Name $n)
         }
     }
 }
@@ -95,18 +95,18 @@ Describe 'Test-PSMutationSandboxAbandoned' {
     }
 
     It 'leaves a directory alone when the name carries no process id' {
-        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-test-abc') | Should -BeFalse
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-test-abc') | Should-BeFalse
     }
 
     It 'reclaims a directory already holding our own process id' {
         # A leftover from an earlier process that happened to get this id; we are
         # about to recreate the path anyway.
-        Test-PSMutationSandboxAbandoned -Directory (NewDir "psmut-sandbox-$PID") -CurrentProcessId $PID | Should -BeTrue
+        Test-PSMutationSandboxAbandoned -Directory (NewDir "psmut-sandbox-$PID") -CurrentProcessId $PID | Should-BeTrue
     }
 
     It 'reclaims a sandbox whose owning process is gone' {
         Mock Get-Process { $null }
-        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242') -CurrentProcessId 1 | Should -BeTrue
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242') -CurrentProcessId 1 | Should-BeTrue
     }
 
     It 'SPARES a sandbox whose owning process is still running' {
@@ -116,7 +116,7 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         $dirCreated = Get-Date
         Mock Get-Process { [pscustomobject]@{ StartTime = $dirCreated.AddMinutes(-5) } }
         Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $dirCreated) -CurrentProcessId 1 |
-            Should -BeFalse
+            Should-BeFalse
     }
 
     It 'reclaims a sandbox whose id has been RECYCLED onto a newer process' {
@@ -125,7 +125,7 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         $dirCreated = Get-Date
         Mock Get-Process { [pscustomobject]@{ StartTime = $dirCreated.AddMinutes(5) } }
         Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $dirCreated) -CurrentProcessId 1 |
-            Should -BeTrue
+            Should-BeTrue
     }
 
     It 'spares a sandbox when the owner start time cannot be read' {
@@ -137,18 +137,18 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         $proc = New-Object psobject
         $proc | Add-Member ScriptProperty StartTime { throw 'Access is denied' }
         Mock Get-Process { $proc }
-        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242') -CurrentProcessId 1 | Should -BeFalse
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242') -CurrentProcessId 1 | Should-BeFalse
     }
 
     It 'treats an unreadable start time as the distant past' {
         # Directly pins the fallback the case above relies on.
         Get-PSMutationProcessStart -Process ([pscustomobject]@{ StartTime = $null }) |
-            Should -Be ([datetime]::MinValue)
+            Should-Be ([datetime]::MinValue)
     }
 
     It 'returns a readable start time unchanged' {
         $when = [datetime]'2026-01-02T03:04:05'
-        Get-PSMutationProcessStart -Process ([pscustomobject]@{ StartTime = $when }) | Should -Be $when
+        Get-PSMutationProcessStart -Process ([pscustomobject]@{ StartTime = $when }) | Should-Be $when
     }
 }
 
@@ -165,7 +165,7 @@ Describe 'Clear-PSMutationStaleSandbox' {
         'junk' | Set-Content (Join-Path $stale 'leftover.txt')
         try {
             Clear-PSMutationStaleSandbox
-            Test-Path $stale | Should -BeFalse
+            Test-Path $stale | Should-BeFalse
         }
         finally { Remove-Item $stale -Recurse -Force -ErrorAction SilentlyContinue }
     }
@@ -180,7 +180,7 @@ Describe 'Clear-PSMutationStaleSandbox' {
         try {
             # CurrentProcessId is deliberately something else, so $PID reads as a
             # foreign, live owner rather than as our own reclaimable leftover.
-            Test-PSMutationSandboxAbandoned -Directory (Get-Item $live) -CurrentProcessId 1 | Should -BeFalse
+            Test-PSMutationSandboxAbandoned -Directory (Get-Item $live) -CurrentProcessId 1 | Should-BeFalse
         }
         finally { if (-not $preExisting) { Remove-Item $live -Recurse -Force -ErrorAction SilentlyContinue } }
     }

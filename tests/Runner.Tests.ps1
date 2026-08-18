@@ -24,15 +24,15 @@ Describe 'Test-PSMutantCovered' {
     It 'is true when the candidate line was executed' {
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
-        Test-PSMutantCovered -Candidate ([pscustomobject]@{ File = $script:fixture; Line = 3 }) -CoveredLines $covered | Should -BeTrue
+        Test-PSMutantCovered -Candidate ([pscustomobject]@{ File = $script:fixture; Line = 3 }) -CoveredLines $covered | Should-BeTrue
     }
     It 'is false when the line was not executed' {
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(99) }
-        Test-PSMutantCovered -Candidate ([pscustomobject]@{ File = $script:fixture; Line = 3 }) -CoveredLines $covered | Should -BeFalse
+        Test-PSMutantCovered -Candidate ([pscustomobject]@{ File = $script:fixture; Line = 3 }) -CoveredLines $covered | Should-BeFalse
     }
     It 'is false when the file was never covered' {
-        Test-PSMutantCovered -Candidate ([pscustomobject]@{ File = $script:fixture; Line = 3 }) -CoveredLines @{} | Should -BeFalse
+        Test-PSMutantCovered -Candidate ([pscustomobject]@{ File = $script:fixture; Line = 3 }) -CoveredLines @{} | Should-BeFalse
     }
 }
 
@@ -40,14 +40,14 @@ Describe 'Select-PSMutationCandidate' {
     It 'returns all candidates when coverage filtering is off' {
         $c = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
             -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false -CoveredLines @{}
-        $c.Count | Should -BeGreaterThan 0
+        $c.Count | Should-BeGreaterThan 0
     }
     It 'keeps only candidates on covered lines when filtering is on' {
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
         $c = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
             -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
-        ($c | ForEach-Object Line | Sort-Object -Unique) | Should -Be 3
+        ($c | ForEach-Object Line | Sort-Object -Unique) | Should-Be 3
     }
 }
 
@@ -69,14 +69,14 @@ Describe 'Write-PSMutationProgress' {
         # -Match with an escaped pattern, NOT -BeLike: in a wildcard, "[3/10]" is a
         # character class matching one of 3 / 1 0, so the obvious assertion silently
         # tests something else entirely.
-        ($script:lines -join '') | Should -Match ([regex]::Escape("[3/10] $Glyph "))
-        $script:colours | Should -Contain $Colour
+        ($script:lines -join '') | Should-MatchString ([regex]::Escape("[3/10] $Glyph "))
+        $script:colours | Should-ContainCollection $Colour
     }
 
     It 'shows the file, line and the change being tried' {
         Write-PSMutationProgress -Index 1 -Total 2 `
             -Result ([pscustomobject]@{ Line = 42; Description = '-eq -> -ne'; Status = 'Killed' }) -DisplayFile 'calc.ps1'
-        ($script:lines -join '') | Should -BeLike '*calc.ps1:42*-eq -> -ne*'
+        ($script:lines -join '') | Should-BeLikeString '*calc.ps1:42*-eq -> -ne*'
     }
 }
 
@@ -87,7 +87,7 @@ Describe 'Invoke-PSMutationLoop' {
         # outcomes, so neither may throw.
         $r = Invoke-PSMutationLoop -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
-        @($r).Count | Should -Be 0
+        @($r).Count | Should-Be 0
     }
 
     It 'uses the per-file test mapping when the candidate file has one' {
@@ -104,8 +104,8 @@ Describe 'Invoke-PSMutationLoop' {
         $r = Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile $map -AllTests @('all-tests.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
 
-        $script:seenTests | Should -Be @('specific.Tests.ps1')
-        $r[0].Status | Should -Be 'Killed'
+        $script:seenTests | Should-BeCollection @('specific.Tests.ps1')
+        $r[0].Status | Should-Be 'Killed'
     }
 
     It 'writes a progress line per mutant unless asked to be quiet' {
@@ -120,7 +120,7 @@ Describe 'Invoke-PSMutationLoop' {
         Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) | Out-Null
 
-        Should -Invoke Write-PSMutationProgress -Exactly 1 -ParameterFilter { $Index -eq 1 -and $Total -eq 1 }
+        Should-Invoke Write-PSMutationProgress -Exactly 1 -ParameterFilter { $Index -eq 1 -and $Total -eq 1 }
     }
 
     It 'stays silent when asked to be quiet' {
@@ -134,7 +134,7 @@ Describe 'Invoke-PSMutationLoop' {
         Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet | Out-Null
 
-        Should -Invoke Write-PSMutationProgress -Exactly 0
+        Should-Invoke Write-PSMutationProgress -Exactly 0
     }
 
     It 'falls back to the whole test set for a file with no per-file mapping' {
@@ -149,9 +149,9 @@ Describe 'Invoke-PSMutationLoop' {
         }
         $r = Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('all-tests.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
-        $script:seenTests | Should -Be @('all-tests.ps1')
-        $r[0].Status     | Should -Be 'Killed'
-        $seen            | Should -BeNullOrEmpty
+        $script:seenTests | Should-BeCollection @('all-tests.ps1')
+        $r[0].Status     | Should-Be 'Killed'
+        Should-BeNull -Actual $seen
     }
 }
 
@@ -178,12 +178,12 @@ Describe 'Invoke-PSMutationBaseline' {
 
         $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
 
-        $r.Passed | Should -BeTrue
+        $r.Passed | Should-BeTrue
         $key = [System.IO.Path]::GetFullPath($script:fixture)
-        $r.CoveredLines[$key].Count     | Should -Be 2
-        $r.CoveredLines[$key].Contains(3) | Should -BeTrue
-        $r.CoveredLines[$key].Contains(7) | Should -BeTrue
-        $r.DurationSeconds | Should -BeGreaterOrEqual 0
+        $r.CoveredLines[$key].Count     | Should-Be 2
+        $r.CoveredLines[$key].Contains(3) | Should-BeTrue
+        $r.CoveredLines[$key].Contains(7) | Should-BeTrue
+        $r.DurationSeconds | Should-BeGreaterThanOrEqual 0
     }
 
     It 'asks Pester for the result object and for coverage' {
@@ -198,7 +198,7 @@ Describe 'Invoke-PSMutationBaseline' {
 
         Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) | Out-Null
 
-        Should -Invoke Invoke-Pester -Exactly 1 -ParameterFilter {
+        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter {
             $Configuration.Run.PassThru.Value -eq $true -and $Configuration.CodeCoverage.Enabled.Value -eq $true
         }
     }
@@ -216,7 +216,7 @@ Describe 'Invoke-PSMutationBaseline' {
                 }
             }
             $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
-            @($r.CoveredLines.Keys)[0] | Should -Be ([System.IO.Path]::GetFullPath($leaf))
+            @($r.CoveredLines.Keys)[0] | Should-Be ([System.IO.Path]::GetFullPath($leaf))
         }
         finally { Pop-Location }
     }
@@ -230,8 +230,8 @@ Describe 'Invoke-PSMutationBaseline' {
 
         $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
 
-        $r.Passed | Should -BeFalse
-        $r.CoveredLines.Count | Should -Be 0
+        $r.Passed | Should-BeFalse
+        $r.CoveredLines.Count | Should-Be 0
     }
 }
 
@@ -246,14 +246,14 @@ Describe 'Get-PSMutationPesterPath' {
                 [pscustomobject]@{ Version = [version]'6.1.0'; Path = 'C:\p\6.1.0\Pester.psd1' }
             )
         }
-        Get-PSMutationPesterPath | Should -Be 'C:\p\6.1.0\Pester.psd1'
+        Get-PSMutationPesterPath | Should-Be 'C:\p\6.1.0\Pester.psd1'
     }
 
     It 'refuses when no Pester is loaded at all' {
         # With no path to hand over, the child would resolve the name itself and pick
         # whatever is newest on disk -- exactly the behaviour being prevented.
         Mock Get-Module { }
-        { Get-PSMutationPesterPath } | Should -Throw '*not loaded*'
+        { Get-PSMutationPesterPath } | Should-Throw -ExceptionMessage '*not loaded*'
     }
 }
 
@@ -263,14 +263,14 @@ Describe 'Get-PSMutationRunspaceError' {
                     [pscustomobject]@{ Exception = [pscustomobject]@{ Message = 'first' } }
                     [pscustomobject]@{ Exception = [pscustomobject]@{ Message = 'second' } }
                 ) } }
-        Get-PSMutationRunspaceError -Runspace $fake | Should -Be 'first; second'
+        Get-PSMutationRunspaceError -Runspace $fake | Should-Be 'first; second'
     }
 
     It 'says so when the child died without writing an error' {
         # This text lands inside a thrown exception. An empty string there would
         # report "produced no result: " and name nothing at all.
         $fake = [pscustomobject]@{ Streams = [pscustomobject]@{ Error = @() } }
-        Get-PSMutationRunspaceError -Runspace $fake | Should -Be 'the child runspace reported no error'
+        Get-PSMutationRunspaceError -Runspace $fake | Should-Be 'the child runspace reported no error'
     }
 }
 
@@ -282,9 +282,9 @@ Describe 'Get-PSMutationBoundedPesterScript' {
         # import leaves the child running on to produce nothing, which used to read as
         # a killed mutant.
         $script = Get-PSMutationBoundedPesterScript
-        $script | Should -BeLike '*Import-Module $pester*'
-        $script | Should -BeLike '*-ErrorAction Stop*'
-        $script | Should -Not -BeLike '*Import-Module Pester*'
+        $script | Should-BeLikeString '*Import-Module $pester*'
+        $script | Should-BeLikeString '*-ErrorAction Stop*'
+        $script | Should-NotBeLikeString '*Import-Module Pester*'
     }
 }
 
@@ -304,7 +304,7 @@ Describe 'Invoke-PSMutant' {
     It 'reports Survived only when the suite still fully passes' {
         Mock Invoke-PSBoundedPester { 'Passed' }
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should -Be 'Survived'
+            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Survived'
     }
 
     It 'reports Killed for any outcome that is not a clean pass' -ForEach @(
@@ -316,7 +316,7 @@ Describe 'Invoke-PSMutant' {
         # not tell" must never reach here -- see Invoke-PSBoundedPester.
         Mock Invoke-PSBoundedPester { $Outcome }
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should -Be 'Killed'
+            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Killed'
     }
 
     It 'writes the mutant into the file and restores it afterwards' {
@@ -327,8 +327,8 @@ Describe 'Invoke-PSMutant' {
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'MUTATED' `
             -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Out-Null
 
-        $script:during | Should -Be 'MUTATED'
-        [System.IO.File]::ReadAllText($script:target) | Should -Be $script:before
+        $script:during | Should-Be 'MUTATED'
+        [System.IO.File]::ReadAllText($script:target) | Should-Be $script:before
     }
 
     It 'restores the file even when the covering run throws' {
@@ -337,8 +337,8 @@ Describe 'Invoke-PSMutant' {
         # sandbox corrupted for every mutant after it.
         Mock Invoke-PSBoundedPester { throw 'child exploded' }
         { Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'MUTATED' `
-                -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } | Should -Throw
-        [System.IO.File]::ReadAllText($script:target) | Should -Be $script:before
+                -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } | Should-Throw
+        [System.IO.File]::ReadAllText($script:target) | Should-Be $script:before
     }
 }
 
@@ -347,7 +347,7 @@ Describe 'Invoke-PSBoundedPester' {
 
     It 'hands back the verdict the child produced' {
         Mock Get-PSMutationBoundedPesterScript { 'param($tests, $pester) "Passed"' }
-        Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 | Should -Be 'Passed'
+        Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 | Should-Be 'Passed'
     }
 
     It 'fails loudly when the child returns no verdict, and says what the child said' {
@@ -361,7 +361,7 @@ Describe 'Invoke-PSBoundedPester' {
         # matches and the diagnosis is silently lost.
         Mock Get-PSMutationBoundedPesterScript { 'param($tests, $pester) Write-Error "child said no"' }
         { Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 } |
-            Should -Throw '*produced no result*child said no*'
+            Should-Throw -ExceptionMessage '*produced no result*child said no*'
     }
 
     It 'takes the LAST thing the child emitted as the verdict' {
@@ -370,7 +370,7 @@ Describe 'Invoke-PSBoundedPester' {
         # the verdict; carrying any of the noise with it stops the string ever matching
         # 'Passed', which silently turns every survivor into a kill.
         Mock Get-PSMutationBoundedPesterScript { 'param($tests, $pester) "noise from a test file"; "Passed"' }
-        Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 | Should -Be 'Passed'
+        Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 | Should-Be 'Passed'
     }
 
     It 'cuts off a child that overruns and reports TimedOut' {
@@ -383,7 +383,7 @@ Describe 'Invoke-PSBoundedPester' {
         $outcome = Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 2
         $sw.Stop()
 
-        $outcome | Should -Be 'TimedOut'
-        $sw.Elapsed.TotalSeconds | Should -BeLessThan 20   # cut off, not waited out
+        $outcome | Should-Be 'TimedOut'
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 20   # cut off, not waited out
     }
 }

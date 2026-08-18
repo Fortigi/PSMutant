@@ -15,25 +15,25 @@ BeforeAll {
 Describe 'Get-PSMutationScore' {
     It 'computes killed/survived/total and rounds the score' {
         $s = Get-PSMutationScore -Results $script:mixed
-        $s.Killed   | Should -Be 2
-        $s.Survived | Should -Be 1
-        $s.Total    | Should -Be 3
-        $s.Score    | Should -Be 66.7
+        $s.Killed   | Should-Be 2
+        $s.Survived | Should-Be 1
+        $s.Total    | Should-Be 3
+        $s.Score    | Should-Be 66.7
     }
     It 'reports 0 for an empty result set (no divide-by-zero)' {
         $s = Get-PSMutationScore -Results @()
-        $s.Total | Should -Be 0
-        $s.Score | Should -Be 0
+        $s.Total | Should-Be 0
+        $s.Score | Should-Be 0
     }
     It 'reports 100 when everything is killed' {
         $s = Get-PSMutationScore -Results @([pscustomobject]@{ Status = 'Killed' })
-        $s.Score | Should -Be 100
+        $s.Score | Should-Be 100
     }
 }
 
 Describe 'Get-PSMutationDeclaredEquivalent' {
     It 'returns an empty map when nothing is declared' {
-        (Get-PSMutationDeclaredEquivalent -Equivalents $null).Count | Should -Be 0
+        (Get-PSMutationDeclaredEquivalent -Equivalents $null).Count | Should-Be 0
     }
 
     It 'drops a declaration with a blank reason' {
@@ -41,8 +41,8 @@ Describe 'Get-PSMutationDeclaredEquivalent' {
         # reason must not silence a mutant, or the discipline is optional.
         $eq = [pscustomobject]@{ 'a.ps1:3:z' = '   '; 'a.ps1:4:w' = 'a real reason' }
         $m = Get-PSMutationDeclaredEquivalent -Equivalents $eq
-        $m.Count | Should -Be 1
-        $m.ContainsKey('a.ps1:4:w') | Should -BeTrue
+        $m.Count | Should-Be 1
+        $m.ContainsKey('a.ps1:4:w') | Should-BeTrue
     }
 }
 
@@ -51,11 +51,11 @@ Describe 'Get-PSMutationScore with declared equivalents' {
         # 2 killed, 1 survivor declared equivalent -> 2/2, not 2/3.
         $eq = [pscustomobject]@{ 'a.ps1:3:z' = 'cannot change behaviour' }
         $s = Get-PSMutationScore -Results $script:mixed -Equivalents $eq
-        $s.Total              | Should -Be 2
-        $s.Survived           | Should -Be 0
-        $s.DeclaredEquivalent | Should -Be 1
-        $s.Score              | Should -Be 100
-        @($s.StaleEquivalents).Count | Should -Be 0
+        $s.Total              | Should-Be 2
+        $s.Survived           | Should-Be 0
+        $s.DeclaredEquivalent | Should-Be 1
+        $s.Score              | Should-Be 100
+        @($s.StaleEquivalents).Count | Should-Be 0
     }
 
     It 'flags a declaration whose mutant the suite actually killed' {
@@ -63,24 +63,24 @@ Describe 'Get-PSMutationScore with declared equivalents' {
         # the kill silently would leave a false claim in the config forever.
         $eq = [pscustomobject]@{ 'a.ps1:1:x' = 'claimed unkillable' }
         $s = Get-PSMutationScore -Results $script:mixed -Equivalents $eq
-        $s.DeclaredEquivalent | Should -Be 0
-        @($s.StaleEquivalents).Count | Should -Be 1
-        $s.StaleEquivalents[0] | Should -BeLike '*the suite killed it*'
+        $s.DeclaredEquivalent | Should-Be 0
+        @($s.StaleEquivalents).Count | Should-Be 1
+        $s.StaleEquivalents[0] | Should-BeLikeString '*the suite killed it*'
     }
 
     It 'flags a declaration that matches no mutant at all' {
         # The code moved and nobody revisited the claim.
         $eq = [pscustomobject]@{ 'a.ps1:999:gone' = 'stale after a refactor' }
         $s = Get-PSMutationScore -Results $script:mixed -Equivalents $eq
-        @($s.StaleEquivalents).Count | Should -Be 1
-        $s.StaleEquivalents[0] | Should -BeLike '*no such mutant exists*'
+        @($s.StaleEquivalents).Count | Should-Be 1
+        $s.StaleEquivalents[0] | Should-BeLikeString '*no such mutant exists*'
     }
 
     It 'scores exactly as before when nothing is declared' {
         $s = Get-PSMutationScore -Results $script:mixed
-        $s.Score | Should -Be 66.7
-        $s.Total | Should -Be 3
-        $s.DeclaredEquivalent | Should -Be 0
+        $s.Score | Should-Be 66.7
+        $s.Total | Should-Be 3
+        $s.DeclaredEquivalent | Should-Be 0
     }
 }
 
@@ -89,19 +89,19 @@ Describe 'Get-PSMutationEquivalentKey' {
         # Ids renumber when anything earlier in the file changes; a declaration
         # keyed on one would silently start pointing at a different mutant.
         Get-PSMutationEquivalentKey -Result ([pscustomobject]@{ Id = 9; File = 'a.ps1'; Line = 3; Description = '6 -> 7' }) |
-            Should -Be 'a.ps1:3:6 -> 7'
+            Should-Be 'a.ps1:3:6 -> 7'
     }
 }
 
 Describe 'Get-PSMutationExitCode' {
     It 'returns 0 in report-only mode (break = null)' {
-        Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 10 }) -Thresholds ([pscustomobject]@{ break = $null }) | Should -Be 0
+        Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 10 }) -Thresholds ([pscustomobject]@{ break = $null }) | Should-Be 0
     }
     It 'returns 1 when the score is below the break threshold' {
-        Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 60 }) -Thresholds ([pscustomobject]@{ break = 70 }) | Should -Be 1
+        Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 60 }) -Thresholds ([pscustomobject]@{ break = 70 }) | Should-Be 1
     }
     It 'returns 0 when the score meets the break threshold' {
-        Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 70 }) -Thresholds ([pscustomobject]@{ break = 70 }) | Should -Be 0
+        Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 70 }) -Thresholds ([pscustomobject]@{ break = 70 }) | Should-Be 0
     }
 
     It 'fails on a stale equivalence declaration even in report-only mode' {
@@ -109,24 +109,24 @@ Describe 'Get-PSMutationExitCode' {
         # low score -- it is a false statement that is inflating whatever score is
         # printed, so report-only mode must not excuse it.
         Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 100; StaleEquivalents = @('a.ps1:1:x -- declared equivalent but the suite killed it') }) `
-            -Thresholds ([pscustomobject]@{ break = $null }) | Should -Be 1
+            -Thresholds ([pscustomobject]@{ break = $null }) | Should-Be 1
     }
 
     It 'fails on a stale declaration even at a perfect score above the threshold' {
         Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 100; StaleEquivalents = @('x') }) `
-            -Thresholds ([pscustomobject]@{ break = 80 }) | Should -Be 1
+            -Thresholds ([pscustomobject]@{ break = 80 }) | Should-Be 1
     }
 
     It 'passes when the stale list is present but empty' {
         Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 100; StaleEquivalents = @() }) `
-            -Thresholds ([pscustomobject]@{ break = 80 }) | Should -Be 0
+            -Thresholds ([pscustomobject]@{ break = 80 }) | Should-Be 0
     }
 
     It 'passes when the summary carries no stale list at all' {
         # @($null).Count is 1, not 0 -- counting an absent property without
         # filtering first fails every run that has no declarations.
         Get-PSMutationExitCode -Summary ([pscustomobject]@{ Score = 100; StaleEquivalents = $null }) `
-            -Thresholds ([pscustomobject]@{ break = 80 }) | Should -Be 0
+            -Thresholds ([pscustomobject]@{ break = 80 }) | Should-Be 0
     }
 }
 
@@ -135,12 +135,12 @@ Describe 'Write-PSMutationReport' {
         $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-report-$PID/report.json"
         try {
             $summary = Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds ([pscustomobject]@{ break = $null })
-            $summary.Score | Should -Be 66.7
-            Test-Path $out | Should -BeTrue
+            $summary.Score | Should-Be 66.7
+            Test-Path $out | Should-BeTrue
             $json = Get-Content $out -Raw | ConvertFrom-Json
-            $json.mutationScore | Should -Be 66.7
-            @($json.survivors).Count | Should -Be 1
-            @($json.mutants).Count   | Should -Be 3
+            $json.mutationScore | Should-Be 66.7
+            @($json.survivors).Count | Should-Be 1
+            @($json.mutants).Count   | Should-Be 3
         }
         finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
     }
@@ -154,9 +154,9 @@ Describe 'Write-PSMutationReport' {
             Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null `
                 -SourceHashes @{ 'a.ps1' = 'abc123' } -Operators @('BooleanLiteral', 'BinaryOperator') | Out-Null
             $json = Get-Content $out -Raw | ConvertFrom-Json
-            $json.sourceHashes.'a.ps1' | Should -Be 'abc123'
+            $json.sourceHashes.'a.ps1' | Should-Be 'abc123'
             # Sorted on write so a config listing them in another order still matches.
-            $json.operators | Should -Be @('BinaryOperator', 'BooleanLiteral')
+            $json.operators | Should-BeCollection @('BinaryOperator', 'BooleanLiteral')
         }
         finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
     }
@@ -180,15 +180,15 @@ Describe 'Show-PSMutationSummary' {
         # rather than the percentage, which renders as 66,7 under a comma locale.
         Show-PSMutationSummary -Summary (Get-PSMutationScore -Results $script:mixed) `
             -Results $script:mixed -Thresholds $script:th -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should -BeLike '*2 killed / 3*'
-        ($script:lines -join "`n") | Should -BeLike '*a.ps1:3*z*'
-        ($script:lines -join "`n") | Should -BeLike '*r.json*'
+        ($script:lines -join "`n") | Should-BeLikeString '*2 killed / 3*'
+        ($script:lines -join "`n") | Should-BeLikeString '*a.ps1:3*z*'
+        ($script:lines -join "`n") | Should-BeLikeString '*r.json*'
     }
 
     It 'does not print a survivor section when nothing survived' {
         Show-PSMutationSummary -Summary (Get-PSMutationScore -Results @([pscustomobject]@{ Status = 'Killed' })) `
             -Results @([pscustomobject]@{ Status = 'Killed' }) -Thresholds $script:th -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should -Not -BeLike '*Survivors*'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*Survivors*'
     }
 
     It 'says how many mutants were excluded as declared-equivalent' -ForEach @(
@@ -201,7 +201,7 @@ Describe 'Show-PSMutationSummary' {
         # "more than one" -- at exactly one declaration, `-gt 1` prints nothing.
         Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; DeclaredEquivalent = $Count }) `
             -Results @() -Thresholds $script:th -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should -BeLike "*$Count mutant(s) excluded as declared-equivalent*"
+        ($script:lines -join "`n") | Should-BeLikeString "*$Count mutant(s) excluded as declared-equivalent*"
     }
 
     It 'does not list a declared equivalent among the survivors to go and fix' {
@@ -210,8 +210,8 @@ Describe 'Show-PSMutationSummary' {
         $eq = [pscustomobject]@{ 'a.ps1:3:z' = 'cannot change behaviour' }
         Show-PSMutationSummary -Summary (Get-PSMutationScore -Results $script:mixed -Equivalents $eq) `
             -Results $script:mixed -Thresholds $script:th -ReportPath 'r.json' -Equivalents $eq
-        ($script:lines -join "`n") | Should -Not -BeLike '*a.ps1:3*'
-        ($script:lines -join "`n") | Should -Not -BeLike '*Survivors*'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*a.ps1:3*'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*Survivors*'
     }
 
     It 'still lists an undeclared survivor alongside a declared one' {
@@ -221,23 +221,23 @@ Describe 'Show-PSMutationSummary' {
         $results = $script:mixed + [pscustomobject]@{ File = 'a.ps1'; Line = 9; Operator = 'BinaryOperator'; Description = 'q'; Status = 'Survived' }
         Show-PSMutationSummary -Summary (Get-PSMutationScore -Results $results -Equivalents $eq) `
             -Results $results -Thresholds $script:th -ReportPath 'r.json' -Equivalents $eq
-        ($script:lines -join "`n") | Should -BeLike '*a.ps1:9*q*'
-        ($script:lines -join "`n") | Should -Not -BeLike '*a.ps1:3*'
+        ($script:lines -join "`n") | Should-BeLikeString '*a.ps1:9*q*'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*a.ps1:3*'
     }
 
     It 'stays silent about exclusions when there are none' {
         Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; DeclaredEquivalent = 0 }) `
             -Results @() -Thresholds $script:th -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should -Not -BeLike '*declared-equivalent*'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*declared-equivalent*'
     }
 
     It 'prints stale declarations loudly, with the offending key' {
         Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0
                                           StaleEquivalents = @('a.ps1:3:z -- declared equivalent but the suite killed it') }) `
             -Results @() -Thresholds $script:th -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should -BeLike '*STALE equivalence declarations*'
-        ($script:lines -join "`n") | Should -BeLike '*a.ps1:3:z*'
-        $script:colours | Should -Contain 'Red'
+        ($script:lines -join "`n") | Should-BeLikeString '*STALE equivalence declarations*'
+        ($script:lines -join "`n") | Should-BeLikeString '*a.ps1:3:z*'
+        $script:colours | Should-ContainCollection 'Red'
     }
 
     It 'prints no stale section when the summary carries no stale list' {
@@ -245,7 +245,7 @@ Describe 'Show-PSMutationSummary' {
         # line under it on every ordinary run.
         Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; StaleEquivalents = $null }) `
             -Results @() -Thresholds $script:th -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should -Not -BeLike '*STALE*'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*STALE*'
     }
 
     It 'colours the score green at the high threshold, yellow between, red below low' -ForEach @(
@@ -258,6 +258,6 @@ Describe 'Show-PSMutationSummary' {
         # against `-gt` as against `-ge`, and would never notice the bands sliding.
         Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = $Score; Killed = 1; Total = 2; Survived = 0 }) `
             -Results @() -Thresholds $script:th -ReportPath 'r.json'
-        $script:colours | Should -Contain $Expected
+        $script:colours | Should-ContainCollection $Expected
     }
 }
