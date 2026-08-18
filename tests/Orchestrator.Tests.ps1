@@ -64,6 +64,14 @@ Describe 'Assert-PSMutationPester' {
         Should-NotInvoke Import-Module
     }
 
+    It 'accepts a loaded Pester of exactly the minimum version' {
+        # -lt, not -le. 5.0.0 is the documented floor, so the boundary value itself has
+        # to pass -- rejecting it would refuse the very version the manifest asks for.
+        $script:loaded = @([pscustomobject]@{ Version = [version]'5.0.0' })
+        Assert-PSMutationPester
+        Should-NotInvoke Import-Module
+    }
+
     It 'judges by the newest module loaded when the session holds more than one' {
         # Pester 3 ships with Windows and can sit in a session next to a modern one.
         # Judging by the wrong element refuses a session perfectly able to run.
@@ -162,8 +170,12 @@ Describe 'Invoke-PSMutation' {
     }
 
     It 'prints nothing at all with -Quiet' {
+        # Every one of the four guards is named, not just the banner and the summary:
+        # a guard that stopped honouring -Quiet would otherwise ship unnoticed.
         $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String
         $out | Should-NotBeLikeString '*PSMutant*'
+        $out | Should-NotBeLikeString '*Baseline green*'
+        $out | Should-NotBeLikeString '*Mutants to evaluate*'
         $out | Should-NotBeLikeString '*Mutation score*'
     }
 
@@ -216,6 +228,8 @@ Describe 'Invoke-PSMutationRecheckRun' {
     }
 
     It 'evaluates only the prior survivors and returns the recheck summary' {
+        $script:quiet = [System.Collections.Generic.List[string]]::new()
+        Mock Write-Host { $script:quiet.Add([string]$Object) }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
         Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Killed' }) }
@@ -234,6 +248,8 @@ Describe 'Invoke-PSMutationRecheckRun' {
         # The prior survivor COUNT comes from the report, not from the loop results.
         Should-Invoke Write-PSMutationRecheckReport -Exactly 1 -ParameterFilter { $PriorSurvivorCount -eq 2 }
         Should-Invoke Show-PSMutationRecheckSummary -Exactly 0
+        # -Quiet has to silence the progress line too, not merely the closing summary.
+        ($script:quiet -join "`n") | Should-NotBeLikeString '*Rechecking*'
     }
 
     It 'reports progress and a summary when not quiet' {

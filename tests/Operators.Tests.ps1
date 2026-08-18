@@ -214,3 +214,254 @@ Describe 'Mutant ids' {
         $c.Id | Should-Be 0
     }
 }
+
+Describe 'Structural operators (opt-in)' {
+    BeforeAll {
+        # Decisions that live in STRUCTURE rather than in an expression: a bare variable
+        # guard, a reference-fallback chain, a boundary comparison, a returned value.
+        $script:structFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-struct-$PID.ps1"
+        @'
+function Test-Structural {
+    param($Ref, $Sync, $i)
+    $step = -$i
+    if ($Sync) { Write-Output 'sync' }
+    if ($Ref.Value) { return $Ref.Value }
+    elseif ($Ref.Name) { return 'named' }
+    if ($true) { Write-Output 'always' }
+    if ($Ref.Kind -eq 'user') { return $null }
+    while ($i -lt 3) { $i = $i + $step }
+    if ($i -gt 2) { return $i }
+    return
+}
+'@ | Set-Content $script:structFixture -Encoding utf8
+
+        # A whole file whose only decision is a bare guard -- the shape that scores a
+        # vacuous 100% today, taken from the two files named in the issue.
+        $script:bareFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-bare-$PID.ps1"
+        @'
+function Invoke-Phase {
+    param($SyncUsers)
+    if ($SyncUsers) { Write-Output 'ran' }
+}
+'@ | Set-Content $script:bareFixture -Encoding utf8
+    }
+
+    AfterAll {
+        Remove-Item $script:structFixture, $script:bareFixture -ErrorAction SilentlyContinue
+    }
+
+    Context 'ConditionForcing' {
+        BeforeAll {
+            $script:forced = @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('ConditionForcing'))
+        }
+
+        It 'reaches a decision the whole default set cannot touch' {
+            # THE reason this operator exists. A phase guard is a real decision -- does
+            # this phase run for this config? -- but it holds no comparison, no literal
+            # and no negation, so every default operator emits nothing and the file
+            # scores 100% while nothing has been tested at all.
+            @(Get-PSMutationCandidate -Path $script:bareFixture).Count | Should-Be 0
+            @(Get-PSMutationCandidate -Path $script:bareFixture -Operators @('ConditionForcing')).Count | Should-Be 2
+        }
+
+        It 'forces each condition BOTH ways' {
+            # One direction alone is not enough: a test that only ever exercises the
+            # true branch is killed by forcing $false and never notices forcing $true.
+            $sync = @($script:forced | Where-Object Original -eq '$Sync')
+            $sync.Mutated | Should-BeCollection @('$true', '$false')
+        }
+
+        It 'forces an elseif clause, not just the leading if' {
+            # Clauses after the first are where a fallback CHAIN lives, and precedence
+            # between them is exactly the risk in a chain of reference lookups.
+            @($script:forced | Where-Object Original -eq '$Ref.Name').Count | Should-Be 2
+        }
+
+        It 'skips a condition that is already the value it would be forced to' {
+            # `if ($true)` forced to $true splices identical source: an unkillable
+            # mutant that can only inflate the survivor list.
+            $already = @($script:forced | Where-Object Original -eq '$true')
+            @($already | Where-Object Mutated -eq '$true').Count  | Should-Be 0
+            @($already | Where-Object Mutated -eq '$false').Count | Should-Be 1
+        }
+
+        It 'never forces a loop condition' {
+            # Forcing `while (X)` to $true is an unconditional hang, not a fault worth
+            # reporting -- the same reason the other operators skip loop conditions.
+            @($script:forced | Where-Object Original -like '*$i -lt 3*').Count | Should-Be 0
+            # ...while an `if` on the same variable IS mutated, so this says "filtered"
+            # rather than merely "nothing came back".
+            @($script:forced | Where-Object Original -eq '$i -gt 2').Count | Should-Be 2
+        }
+    }
+
+    Context 'ConditionalBoundary' {
+        BeforeAll {
+            $script:bounds = @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('ConditionalBoundary'))
+        }
+
+        It 'shifts the boundary by one instead of negating it' {
+            # The distinction that makes this operator worth having: BinaryOperator
+            # already turns -gt into -le, which flips the branch outright. Only -ge
+            # produces the off-by-one that a boundary test is meant to catch.
+            ($script:bounds | Where-Object Original -eq '-gt').Mutated | Should-Be '-ge'
+            $binary = @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('BinaryOperator'))
+            ($binary | Where-Object Original -eq '-gt').Mutated | Should-Be '-le'
+        }
+
+        It 'leaves operators that have no boundary alone' {
+            # -eq has no adjacent boundary; mutating it here would duplicate what
+            # BinaryOperator already does.
+            @($script:bounds | Where-Object Original -eq '-eq').Count | Should-Be 0
+        }
+
+        It 'never mutates inside a loop condition' {
+            @($script:bounds | Where-Object Original -eq '-lt').Count | Should-Be 0
+        }
+    }
+
+    Context 'ReturnValue' {
+        BeforeAll {
+            $script:returns = @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('ReturnValue'))
+        }
+
+        It 'replaces a returned value with $null' {
+            # Catches a result nothing asserts on -- the function still runs, still has
+            # its side effects, and only the answer is wrong.
+            ($script:returns | Where-Object Original -eq "'named'").Mutated | Should-Be '$null'
+        }
+
+        It 'ignores a bare return' {
+            # `return` already yields nothing, so there is no value to replace.
+            @($script:returns | Where-Object Original -eq 'return').Count | Should-Be 0
+            $script:returns.Count | Should-BeGreaterThan 0
+        }
+    }
+
+    Context 'guards' {
+        It 'never offers negation removal for a unary that is not a negation' {
+            # Unary minus is a UnaryExpressionAst too; "removing" it would silently
+            # flip the sign of a value rather than drop a negation.
+            $neg = @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('NegationRemoval'))
+            @($neg | Where-Object Original -like '*-$i*').Count | Should-Be 0
+        }
+
+        It 'never replaces a return that is already $null' {
+            # `return $null` -> `return $null` is not a mutation; it would be born
+            # surviving and could only ever inflate the survivor list.
+            @($script:returns | Where-Object Original -eq '$null').Count | Should-Be 0
+            $script:returns.Count | Should-BeGreaterThan 0
+        }
+
+        It 'ignores an operator name it does not know, rather than failing the run' {
+            # A typo in a config's `operators` list must not take the whole run down --
+            # and must not silently be treated as "all operators" either.
+            @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('NoSuchOperator')).Count | Should-Be 0
+            @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('NoSuchOperator', 'ReturnValue')).Count |
+                Should-BeGreaterThan 0
+        }
+    }
+
+    Context 'opt-in wiring' {
+        It 'keeps all three out of the default operator set' {
+            # Adding one to the default set roughly doubles a consumer's mutant count
+            # and lowers their score, so a repo gating on thresholds.break would go red
+            # purely from upgrading the module.
+            $default = @(Get-PSMutationCandidate -Path $script:structFixture)
+            @($default | Where-Object Operator -in 'ConditionForcing', 'ConditionalBoundary', 'ReturnValue').Count |
+                Should-Be 0
+        }
+
+        It 'emits each one when the config asks for it by name' {
+            $named = @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('ConditionForcing', 'ConditionalBoundary', 'ReturnValue'))
+            @($named | Where-Object Operator -eq 'ConditionForcing').Count     | Should-BeGreaterThan 0
+            @($named | Where-Object Operator -eq 'ConditionalBoundary').Count  | Should-BeGreaterThan 0
+            @($named | Where-Object Operator -eq 'ReturnValue').Count          | Should-BeGreaterThan 0
+        }
+    }
+}
+
+Describe 'Test-PSMutationInLoop' {
+    # The no-mutate zone's own predicate. It was only ever exercised THROUGH the
+    # operators, so its boundaries were never pinned -- and an off-by-one here either
+    # lets a loop-condition mutant through (which hangs a run) or silently drops a
+    # legitimate one.
+    BeforeAll {
+        $script:range = @([pscustomobject]@{ Start = 10; End = 20 })
+        function Get-FakeExtent {
+            param([int]$Start, [int]$End)
+            return [pscustomobject]@{ StartOffset = $Start; EndOffset = $End }
+        }
+    }
+
+    It 'counts an extent starting exactly at the range start as inside' {
+        # -ge, not -gt: the first character of a loop condition is part of it.
+        Test-PSMutationInLoop -Extent (Get-FakeExtent 10 15) -Ranges $script:range | Should-BeTrue
+    }
+
+    It 'counts an extent ending exactly at the range end as inside' {
+        # -le, not -lt: so is the last character.
+        Test-PSMutationInLoop -Extent (Get-FakeExtent 15 20) -Ranges $script:range | Should-BeTrue
+    }
+
+    It 'excludes an extent starting one character before the range' {
+        Test-PSMutationInLoop -Extent (Get-FakeExtent 9 15) -Ranges $script:range | Should-BeFalse
+    }
+
+    It 'excludes an extent ending one character after the range' {
+        Test-PSMutationInLoop -Extent (Get-FakeExtent 15 21) -Ranges $script:range | Should-BeFalse
+    }
+
+    It 'returns an actual $false, not merely something falsy' {
+        # Every caller consumes this as `if (...) { continue }`, where $null and $false
+        # are indistinguishable -- so only a strict assertion pins the contract.
+        Test-PSMutationInLoop -Extent (Get-FakeExtent 99 100) -Ranges @() | Should-BeFalse
+    }
+}
+
+Describe 'Loop-condition guard across every operator' {
+    # A `$( )` subexpression lets an `if` -- and even a `return` -- sit inside a loop
+    # CONDITION, so the guard on those operators is reachable rather than defensive.
+    # Each construct below appears once inside the condition and once in the body, so
+    # every assertion says "this one was filtered" rather than "nothing came back".
+    BeforeAll {
+        $script:loopFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-loopguard-$PID.ps1"
+        @'
+function Test-LoopGuard {
+    param($a, $i)
+    while ($(if ($a) { return 7 } else { $true }) -and $i -lt 3) { $i = $i + 1; $stop = $false }
+    if ($i -gt 0) { Write-Output 'positive' }
+    return $i
+}
+'@ | Set-Content $script:loopFixture -Encoding utf8
+        $script:guard = @(Get-PSMutationCandidate -Path $script:loopFixture -Operators @(
+                'BinaryOperator', 'BooleanLiteral', 'NumberLiteral', 'NegationRemoval',
+                'ConditionalBoundary', 'ConditionForcing', 'ReturnValue'))
+    }
+    AfterAll { Remove-Item $script:loopFixture -ErrorAction SilentlyContinue }
+
+    It 'skips a boolean literal in the condition but keeps one in the body' {
+        @($script:guard | Where-Object { $_.Operator -eq 'BooleanLiteral' -and $_.Original -eq '$true' }).Count | Should-Be 0
+        @($script:guard | Where-Object { $_.Operator -eq 'BooleanLiteral' -and $_.Original -eq '$false' }).Count | Should-Be 1
+    }
+
+    It 'skips numeric literals in the condition but keeps one in the body' {
+        @($script:guard | Where-Object { $_.Operator -eq 'NumberLiteral' -and $_.Original -in '7', '3' }).Count | Should-Be 0
+        @($script:guard | Where-Object { $_.Operator -eq 'NumberLiteral' -and $_.Original -eq '1' }).Count | Should-Be 1
+    }
+
+    It 'skips an if-condition nested in the loop condition but keeps one outside' {
+        @($script:guard | Where-Object { $_.Operator -eq 'ConditionForcing' -and $_.Original -eq '$a' }).Count | Should-Be 0
+        @($script:guard | Where-Object { $_.Operator -eq 'ConditionForcing' -and $_.Original -eq '$i -gt 0' }).Count | Should-Be 2
+    }
+
+    It 'skips a return nested in the loop condition but keeps one outside' {
+        @($script:guard | Where-Object { $_.Operator -eq 'ReturnValue' -and $_.Original -eq '7' }).Count | Should-Be 0
+        @($script:guard | Where-Object { $_.Operator -eq 'ReturnValue' -and $_.Original -eq '$i' }).Count | Should-Be 1
+    }
+
+    It 'skips a boundary comparison in the condition but keeps one outside' {
+        @($script:guard | Where-Object { $_.Operator -eq 'ConditionalBoundary' -and $_.Original -eq '-lt' }).Count | Should-Be 0
+        @($script:guard | Where-Object { $_.Operator -eq 'ConditionalBoundary' -and $_.Original -eq '-gt' }).Count | Should-Be 1
+    }
+}

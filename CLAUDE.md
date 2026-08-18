@@ -37,7 +37,7 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 | Unit tests | whole `tests/` directory, must be 0 failures |
 | Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
 | Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
-| Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100 |
+| Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100 (~6 min: 303 mutants) |
 | Pester compatibility | `tools/Test-PSMutantPesterCompatibility.ps1` — a real mutation run under the Pester version the suite does *not* use |
 
 ---
@@ -126,6 +126,39 @@ the live run's sandbox mid-baseline and turns the run red before a single mutant
 Its behaviour is pinned by the normal suite at 100% coverage instead.
 
 ---
+
+## Operators, and the vacuous 100%
+
+The default set mutates **expressions**: `BinaryOperator`, `BooleanLiteral`,
+`NumberLiteral`, `NegationRemoval`. Code whose logic lives in *structure* produces zero
+mutants under it and therefore scores a **vacuous 100%** — a phase guard
+(`if ($SyncUsers) { ... }`) or a reference-fallback chain
+(`if ($Ref.Value) { return ... }`) contains no comparison, no literal and no negation.
+
+Four operators are **opt-in**, and this repo turns three of them on for itself:
+
+| Operator | Reaches |
+|---|---|
+| `ConditionalBoundary` | off-by-one: `-gt`↔`-ge`, `-lt`↔`-le`. `BinaryOperator` maps `-gt` to `-le` — a negation, not a boundary shift — so it can never produce a fencepost |
+| `ConditionForcing` | an `if`/`elseif` condition forced to `$true` and to `$false`. The one that reaches bare guards |
+| `ReturnValue` | `return <expr>` → `return $null`, for a result nothing asserts on |
+| `StringLiteral` | quoted string → `''`. Still off here: high-volume, low-signal |
+
+They are opt-in for consumers because switching one on roughly doubles the mutant count
+and lowers the score, so a repo gating on `thresholds.break` would go red purely from
+upgrading. **Never add one to `$script:PSMutationDefaultOperators` without a major-version
+conversation.**
+
+Two consequences worth knowing before you touch the operator set:
+
+- **Every operator change renumbers mutants**, so existing reports stop being valid seeds
+  for `-RecheckFrom`. That is detected and refused rather than guessed at (the operator
+  set is recorded in the report), but it does mean a rerun.
+- **The loop-condition no-mutate zone applies to all of them.** Forcing `while (X)` to
+  `$true` is an unconditional hang, not a finding. That guard is reachable for *every*
+  operator, including `ConditionForcing` and `ReturnValue`, because a `$( )` subexpression
+  can put an `if` or a `return` inside a loop condition — `tests/Operators.Tests.ps1`
+  pins each one with the construct appearing both inside the condition and in the body.
 
 ## Layout
 
