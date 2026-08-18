@@ -27,6 +27,7 @@
 param([Parameter(Mandatory)] [string]$PesterVersion)
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path -Path $PSScriptRoot -ChildPath 'GateDecisions.ps1')
 $root = Split-Path -Parent $PSScriptRoot
 
 $installed = @(Get-Module Pester -ListAvailable | Select-Object -ExpandProperty Version -Unique)
@@ -75,11 +76,9 @@ Describe 'Test-Flag' {
     $r = Invoke-PSMutation -ConfigFile $configFile -SourceRoot $proj -Quiet
     Write-Host "Score $($r.Score)% - $($r.Killed) killed, $($r.Survived) survived, $($r.Total) total"
 
-    if ($r.Total -le 0) { throw 'No mutants were evaluated - the fixture produced nothing to test' }
-    if ($r.Killed -le 0) { throw 'Nothing was killed - the covering tests never really ran' }
-    if ($r.Survived -le 0) {
-        throw "Every mutant was reported Killed under Pester $PesterVersion. The under-asserted fixture MUST leave survivors, so this is the version collision reappearing: the child runspace is dying and its silence is being scored as a kill."
-    }
+    # The same three-way judgement the package gate makes, in one tested place (#27).
+    $why = Get-PSMutantMutationFailure -Total $r.Total -Killed $r.Killed -Survived $r.Survived -Subject "The run under Pester $PesterVersion"
+    if ($why) { throw ($why + ' For this guard that means the version collision has reappeared: the child runspace is dying and its silence is being scored as a kill.') }
     Write-Host "Pester $PesterVersion compatibility OK - survivors present, so mutants really were evaluated." -ForegroundColor Green
 }
 finally {
