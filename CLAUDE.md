@@ -267,6 +267,12 @@ issue; the rule is what stops the next instance.
   is defined in `PSMutation.Sandbox.ps1` and read in `PSMutation.Config.ps1`; that works
   only because of dot-source order in `PSMutant.psm1` and because the covering suite happens
   to dot-source both. Pass it as a parameter or move it. (#38)
+- **Treat a file's docstring as a claim about its contents.** When you add a function,
+  either it fits the file's stated purpose or that file is the wrong home -- and if you move
+  it, fix the docstring and the layout table above in the same commit. Right now two guards
+  of the same kind live in different files (`Assert-PSMutationPester` in the entry point,
+  `Assert-PSMutationBaselineGreen` in `Config.ps1`), which leaves the next guard with no
+  basis for choosing. (#45)
 - **Hold `tools/` to the same standard as `src/`.** The two scripts that decide whether the
   coverage and compatibility claims hold have no tests, no coverage measurement and no
   mutants -- so a gate that silently stopped failing would look exactly like a green build.
