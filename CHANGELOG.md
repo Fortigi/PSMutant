@@ -5,6 +5,16 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Internal
+- The CI gates' pass/fail decisions are now pure functions with tests ([#27]). The scripts
+  asserting "100% coverage", "the package works" and "Pester >= 5 still works" had no tests,
+  no coverage and no mutants -- so an inverted comparison or a lowered default would have
+  left every gate green while the numbers became fiction. `tools/GateDecisions.ps1` holds the
+  three judgements, `tests/GateDecisions.Tests.ps1` pins them, and the package gate and the
+  compatibility guard now share one "is this mutation result sane" decision instead of
+  duplicating it. The orchestration around them is deliberately not tested or mutated: three
+  of the four scripts are side effects end to end, so every mutant would cost a full gate run
+  and `tools/` is not copied into the sandbox at all. That reasoning is recorded in CLAUDE.md
+  rather than left implicit.
 - Every pinned dependency now comes from one committed file, `.github/pins.env` ([#33]).
   `ci.yml` pinned its modules, `code-scanning.yml` installed PSScriptAnalyzer and
   ConvertToSARIF unpinned, and `publish.yml` hardcoded the Pester version twice and used an
