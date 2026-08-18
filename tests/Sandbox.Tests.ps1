@@ -171,9 +171,49 @@ Describe 'Clear-PSMutationStaleSandbox' {
         finally { Remove-Item $stale -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
-    It 'does NOT sweep the sandbox of a concurrently running process' {
-        # End-to-end guard for issue #2: our own id stands in for "a live process",
-        # since it is by definition running. The sweep must walk past it.
+    It 'spares a live process''s sandbox while reclaiming a dead one in the same sweep' {
+        # THE test for issue #2, and the one thing nothing asserted: that the sweep APPLIES
+        # its filter. Deleting the `Where-Object { Test-PSMutationSandboxAbandoned ... }`
+        # stage from Clear-PSMutationStaleSandbox reverts the module to the #2 bug -- a
+        # concurrent run's files pulled out from under it -- and before this test the entire
+        # 246-test suite still passed.
+        #
+        # It needs a REAL second process, because the predicate resolves ownership from the
+        # process id in the directory name and treats OUR id as reclaimable by design. A
+        # sandbox named for our own $PID is therefore one the sweep is entitled to delete,
+        # which is why the predicate test above cannot stand in for this.
+        #
+        # The pairing is the point: spared AND reclaimed in one sweep is what proves a
+        # filter rather than an inert pipeline stage.
+        $proc = Start-Process -FilePath 'pwsh' -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 30' -PassThru
+        do { $deadId = Get-Random -Minimum 100000 -Maximum 999999 }
+        until (-not (Get-Process -Id $deadId -ErrorAction SilentlyContinue))
+
+        $temp = [System.IO.Path]::GetTempPath()
+        $live = Join-Path $temp "psmut-sandbox-$($proc.Id)"
+        $dead = Join-Path $temp "psmut-sandbox-$deadId"
+        try {
+            # Created AFTER the process started, so the recycled-id rule (a process that
+            # began after its sandbox cannot own it) does not fire and the owner reads live.
+            New-Item -ItemType Directory -Path $live -Force | Out-Null
+            New-Item -ItemType Directory -Path $dead -Force | Out-Null
+            'in use' | Set-Content (Join-Path $live 'live.txt')
+
+            Clear-PSMutationStaleSandbox
+
+            Test-Path $live | Should-BeTrue
+            Test-Path $dead | Should-BeFalse
+        }
+        finally {
+            if (-not $proc.HasExited) { Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue }
+            Remove-Item $live, $dead -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'treats a foreign live owner as not abandoned' {
+        # A PREDICATE test, not an end-to-end one -- it never calls the sweep. The test
+        # below does that, and had to be written because this one's old title claimed to.
+        # Our own id stands in for "a live process", since it is by definition running.
         $live = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-sandbox-$PID"
         $preExisting = Test-Path $live
         if (-not $preExisting) { New-Item -ItemType Directory -Path $live -Force | Out-Null }
