@@ -5,6 +5,17 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Internal
+- Publishing is gated properly ([#26]). It used to run one of the seven gates that guard a
+  merge, and the package it pushed had never been loaded by anything -- the first execution
+  of that exact folder happened on a consumer's machine, and a Gallery version cannot be
+  replaced or withdrawn. Now: the workflow refuses unless CI **passed for that exact commit**
+  (stronger than re-running a subset, and it covers coverage, complexity, self-mutation and
+  the Pester compatibility guard, none of which ran on this path); staging happens in its own
+  step so the artifact can be inspected before it ships; and `tools/Test-PSMutantPackage.ps1`
+  loads the staged package in a fresh process, asserts every name in `FunctionsToExport`
+  resolves, checks that every `src/*.ps1` shipped is actually dot-sourced by the manifest's
+  root module, and runs a real mutation over a deliberately under-asserted fixture that must
+  leave survivors.
 - CI gained a concurrency group, a job timeout and a module cache ([#42]). A superseded
   push no longer runs the full chain to completion, a wedged runner is bounded at 25
   minutes rather than the 6-hour default, and the four pinned modules are restored from
