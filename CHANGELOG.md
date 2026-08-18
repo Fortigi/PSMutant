@@ -4,6 +4,17 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
+### Internal
+- CI gained a concurrency group, a job timeout and a module cache ([#42]). A superseded
+  push no longer runs the full chain to completion, a wedged runner is bounded at 25
+  minutes rather than the 6-hour default, and the four pinned modules are restored from
+  cache instead of downloaded on every run -- so a PowerShell Gallery blip no longer reds
+  a build that has nothing wrong with it. The cache key names the exact pinned versions,
+  with no `restore-keys`: a partial restore would hand the run a different version set
+  than the one asked for, which is the class of failure #16 was. All four pins now live
+  in one `env:` block, and the install step skips what the cache already provided and
+  then asserts every required version is present.
+
 ### Added
 - **Three opt-in operators that reach decisions no expression operator can touch**
   ([#5]). Code whose logic lives in structure rather than in an expression produced
