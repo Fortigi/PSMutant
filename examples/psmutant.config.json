@@ -11,6 +11,7 @@
     "src/MyModule.Transform.ps1": ["tests/Transform.Tests.ps1"]
   },
 
+  "_operators": "The four below are the default set. Four more are opt-in: StringLiteral (quoted string -> ''), ConditionalBoundary (-gt <-> -ge, -lt <-> -le), ConditionForcing (an if/elseif condition -> $true and -> $false) and ReturnValue (return <expr> -> return $null). ConditionForcing is the one to add if a file scores 100% while producing almost no mutants: a decision like `if ($SyncUsers) { ... }` holds no comparison, literal or negation, so nothing in the default set can perturb it and the 100% is vacuous. Adding any operator roughly doubles the mutant count and lowers the score, so expect to lower thresholds.break before raising it again - and it renumbers mutants, so existing reports can no longer seed a -RecheckFrom run.",
   "operators": ["BinaryOperator", "BooleanLiteral", "NumberLiteral", "NegationRemoval"],
   "coveredLinesOnly": true,
 
