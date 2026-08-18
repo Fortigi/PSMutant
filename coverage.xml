@@ -1,99 +1,100 @@
 ﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
 <!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd"[]>
 <report name="Pester ()">
-  <sessioninfo id="this" start="1786999366891" dump="1786999374675" />
+  <sessioninfo id="this" start="1786997881398" dump="1786997882621" />
   <package name="src">
-    <class name="src/Invoke-PSMutation" sourcefilename="Invoke-PSMutation.ps1">
-      <method name="Assert-PSMutationPester" desc="()" line="9">
-        <counter type="INSTRUCTION" missed="0" covered="6" />
+    <class name="src/PSMutation.Sandbox" sourcefilename="PSMutation.Sandbox.ps1">
+      <method name="&lt;script&gt;" desc="()" line="19">
+        <counter type="INSTRUCTION" missed="0" covered="2" />
+        <counter type="LINE" missed="0" covered="1" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="New-PSMutationSandbox" desc="()" line="30">
+        <counter type="INSTRUCTION" missed="0" covered="16" />
+        <counter type="LINE" missed="0" covered="8" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="ConvertTo-PSMutationSandboxPath" desc="()" line="50">
+        <counter type="INSTRUCTION" missed="0" covered="3" />
+        <counter type="LINE" missed="0" covered="2" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="ConvertFrom-PSMutationSandboxPath" desc="()" line="62">
+        <counter type="INSTRUCTION" missed="0" covered="1" />
+        <counter type="LINE" missed="0" covered="1" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="Remove-PSMutationSandbox" desc="()" line="69">
+        <counter type="INSTRUCTION" missed="0" covered="3" />
+        <counter type="LINE" missed="0" covered="2" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="Get-PSMutationSandboxOwnerId" desc="()" line="81">
+        <counter type="INSTRUCTION" missed="0" covered="2" />
+        <counter type="LINE" missed="0" covered="1" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="Test-PSMutationSandboxAbandoned" desc="()" line="95">
+        <counter type="INSTRUCTION" missed="0" covered="10" />
+        <counter type="LINE" missed="0" covered="6" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="Get-PSMutationProcessStart" desc="()" line="119">
+        <counter type="INSTRUCTION" missed="0" covered="4" />
         <counter type="LINE" missed="0" covered="3" />
         <counter type="METHOD" missed="0" covered="1" />
       </method>
-      <method name="Get-PSMutationSandboxPlan" desc="()" line="22">
-        <counter type="INSTRUCTION" missed="0" covered="22" />
-        <counter type="LINE" missed="0" covered="11" />
+      <method name="Clear-PSMutationStaleSandbox" desc="()" line="129">
+        <counter type="INSTRUCTION" missed="0" covered="7" />
+        <counter type="LINE" missed="0" covered="4" />
         <counter type="METHOD" missed="0" covered="1" />
       </method>
-      <method name="Invoke-PSMutationRecheckRun" desc="()" line="53">
-        <counter type="INSTRUCTION" missed="0" covered="19" />
-        <counter type="LINE" missed="0" covered="12" />
-        <counter type="METHOD" missed="0" covered="1" />
-      </method>
-      <method name="Invoke-PSMutation" desc="()" line="123">
-        <counter type="INSTRUCTION" missed="23" covered="12" />
-        <counter type="LINE" missed="16" covered="10" />
-        <counter type="METHOD" missed="0" covered="1" />
-      </method>
-      <counter type="INSTRUCTION" missed="23" covered="59" />
-      <counter type="LINE" missed="16" covered="36" />
-      <counter type="METHOD" missed="0" covered="4" />
+      <counter type="INSTRUCTION" missed="0" covered="48" />
+      <counter type="LINE" missed="0" covered="28" />
+      <counter type="METHOD" missed="0" covered="9" />
       <counter type="CLASS" missed="0" covered="1" />
     </class>
-    <sourcefile name="Invoke-PSMutation.ps1">
-      <line nr="9" mi="0" ci="3" mb="0" cb="0" />
-      <line nr="10" mi="0" ci="2" mb="0" cb="0" />
-      <line nr="12" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="22" mi="0" ci="3" mb="0" cb="0" />
-      <line nr="23" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="24" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="25" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="26" mi="0" ci="4" mb="0" cb="0" />
-      <line nr="27" mi="0" ci="2" mb="0" cb="0" />
-      <line nr="28" mi="0" ci="3" mb="0" cb="0" />
-      <line nr="30" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="31" mi="0" ci="4" mb="0" cb="0" />
-      <line nr="32" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="33" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="53" mi="0" ci="2" mb="0" cb="0" />
-      <line nr="57" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="58" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="59" mi="0" ci="4" mb="0" cb="0" />
-      <line nr="61" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="62" mi="0" ci="3" mb="0" cb="0" />
-      <line nr="64" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="66" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="67" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="68" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="69" mi="0" ci="2" mb="0" cb="0" />
-      <line nr="70" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="123" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="128" mi="0" ci="2" mb="0" cb="0" />
-      <line nr="129" mi="0" ci="2" mb="0" cb="0" />
-      <line nr="130" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="131" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="133" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="134" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="136" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="138" mi="1" ci="1" mb="0" cb="0" />
-      <line nr="139" mi="0" ci="1" mb="0" cb="0" />
-      <line nr="140" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="141" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="142" mi="3" ci="0" mb="0" cb="0" />
-      <line nr="144" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="145" mi="2" ci="0" mb="0" cb="0" />
-      <line nr="146" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="147" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="149" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="150" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="155" mi="3" ci="0" mb="0" cb="0" />
-      <line nr="157" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="158" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="160" mi="2" ci="0" mb="0" cb="0" />
-      <line nr="162" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="163" mi="1" ci="0" mb="0" cb="0" />
-      <line nr="166" mi="1" ci="0" mb="0" cb="0" />
-      <counter type="INSTRUCTION" missed="23" covered="59" />
-      <counter type="LINE" missed="16" covered="36" />
-      <counter type="METHOD" missed="0" covered="4" />
+    <sourcefile name="PSMutation.Sandbox.ps1">
+      <line nr="19" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="30" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="31" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="32" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="33" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="34" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="35" mi="0" ci="3" mb="0" cb="0" />
+      <line nr="36" mi="0" ci="4" mb="0" cb="0" />
+      <line nr="38" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="50" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="51" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="62" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="69" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="70" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="81" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="95" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="96" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="99" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="100" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="101" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="105" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="119" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="120" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="121" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="129" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="130" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="131" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="132" mi="0" ci="2" mb="0" cb="0" />
+      <counter type="INSTRUCTION" missed="0" covered="48" />
+      <counter type="LINE" missed="0" covered="28" />
+      <counter type="METHOD" missed="0" covered="9" />
       <counter type="CLASS" missed="0" covered="1" />
     </sourcefile>
-    <counter type="INSTRUCTION" missed="23" covered="59" />
-    <counter type="LINE" missed="16" covered="36" />
-    <counter type="METHOD" missed="0" covered="4" />
+    <counter type="INSTRUCTION" missed="0" covered="48" />
+    <counter type="LINE" missed="0" covered="28" />
+    <counter type="METHOD" missed="0" covered="9" />
     <counter type="CLASS" missed="0" covered="1" />
   </package>
-  <counter type="INSTRUCTION" missed="23" covered="59" />
-  <counter type="LINE" missed="16" covered="36" />
-  <counter type="METHOD" missed="0" covered="4" />
+  <counter type="INSTRUCTION" missed="0" covered="48" />
+  <counter type="LINE" missed="0" covered="28" />
+  <counter type="METHOD" missed="0" covered="9" />
   <counter type="CLASS" missed="0" covered="1" />
 </report>
