@@ -4,6 +4,15 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
+### Internal
+- Config resolution (subtree/operator defaults, the per-mutant timeout, the
+  baseline-green guard, the run-result shape) moved out of `Invoke-PSMutation` into a
+  pure `PSMutation.Config.ps1`. No behaviour change; an empty `operators: []` still falls
+  back to the defaults.
+- Line coverage is now 100% for every source file except the orchestrator, which cannot
+  be measured (a nested Pester run clears the outer run's coverage breakpoints).
+  Self-mutation remains 100%.
+- `coverage.xml` is no longer tracked; it was committed by accident and shipped in 0.2.1.
 
 ## [0.2.1] - 2026-08-18
 ### Fixed
@@ -13,15 +22,6 @@ All notable changes to PSMutant are documented here. Format follows
   missing-file error rather than as a concurrency problem. A sandbox is now reclaimed
   only when its owning process is gone, including the case where the process id has been
   recycled onto an unrelated process.
-
-### Internal
-- Config resolution (subtree/operator defaults, the per-mutant timeout, the
-  baseline-green guard, the run-result shape) moved out of `Invoke-PSMutation` into a
-  pure `PSMutation.Config.ps1`. No behaviour change; an empty `operators: []` still falls
-  back to the defaults.
-- Line coverage is now 100% for every source file except the orchestrator, which cannot
-  be measured (a nested Pester run clears the outer run's coverage breakpoints).
-  Self-mutation remains 100%.
 
 ## [0.2.0] - 2026-08-17
 ### Added
