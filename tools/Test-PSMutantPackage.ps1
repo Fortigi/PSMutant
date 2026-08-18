@@ -34,6 +34,7 @@
 param([Parameter(Mandatory)] [string]$Path)
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path -Path $PSScriptRoot -ChildPath 'GateDecisions.ps1')
 
 $stage = (Resolve-Path $Path).Path
 Write-Host "Testing staged package: $stage"
@@ -50,10 +51,10 @@ Write-Host "  manifest OK - $($manifest.Name) $($manifest.Version)"
 # functions, which is unfixable once published.
 $psm1 = Get-Content (Join-Path $stage 'PSMutant.psm1') -Raw
 $shipped = Get-ChildItem (Join-Path $stage 'src') -Filter *.ps1 -Recurse
-$unloaded = @($shipped | Where-Object { $psm1 -notmatch [regex]::Escape($_.Name) })
+$unloaded = @(Get-PSMutantUnloadedFile -RootModuleText $psm1 -ShippedName $shipped.Name)
 if ($unloaded.Count -gt 0) {
     throw ("These files ship in the package but are never dot-sourced by PSMutant.psm1: " +
-        (($unloaded.Name) -join ', '))
+        ($unloaded -join ', '))
 }
 Write-Host "  all $($shipped.Count) shipped src file(s) are dot-sourced"
 
@@ -121,11 +122,9 @@ $r = Invoke-PSMutation -ConfigFile $ConfigFile -SourceRoot $SourceRoot -Quiet
     $null, $total, $killed, $survived, $score = $line -split '\|'
     Write-Host "  mutation run: score $score% - $killed killed, $survived survived, $total total"
 
-    if ([int]$total -le 0) { throw 'The staged package evaluated no mutants' }
-    if ([int]$killed -le 0) { throw 'The staged package killed nothing - the covering tests never really ran' }
-    if ([int]$survived -le 0) {
-        throw 'The staged package reported every mutant killed. The fixture is deliberately under-asserted and MUST leave survivors, so this is a broken package, not a good score.'
-    }
+    # One tested decision, shared with the compatibility guard (#27).
+    $why = Get-PSMutantMutationFailure -Total ([int]$total) -Killed ([int]$killed) -Survived ([int]$survived) -Subject 'The staged package'
+    if ($why) { throw $why }
 
     Write-Host 'Staged package OK - it imports, exports what it declares, and mutates correctly.' -ForegroundColor Green
 }

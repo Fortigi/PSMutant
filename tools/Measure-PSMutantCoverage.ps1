@@ -27,6 +27,7 @@
 param([double]$Minimum = 100)
 
 $ErrorActionPreference = 'Stop'
+. (Join-Path -Path $PSScriptRoot -ChildPath 'GateDecisions.ps1')
 $root = Split-Path -Parent $PSScriptRoot
 
 $cfg = New-PesterConfiguration
@@ -47,12 +48,6 @@ $cfg.CodeCoverage.OutputPath = Join-Path ([System.IO.Path]::GetTempPath()) "psmu
 
 $result = Invoke-Pester -Configuration $cfg
 
-# A red suite makes the coverage figure meaningless rather than merely lower: lines are
-# still executed on the way to a failure, so a broken build could still measure 100%.
-if ($result.FailedCount -gt 0) {
-    throw "$($result.FailedCount) test(s) failed - the coverage figure would not mean anything"
-}
-
 $covered = $result.CodeCoverage.CommandsExecuted
 $missed = $result.CodeCoverage.CommandsMissed
 ($covered + $missed) | Group-Object { Split-Path $_.File -Leaf } | Sort-Object Name | ForEach-Object {
@@ -66,6 +61,9 @@ $missed | Sort-Object File, Line | ForEach-Object {
 
 $percent = [math]::Round($result.CodeCoverage.CoveragePercent, 2)
 Write-Host ("Coverage: $percent% over $(@($covered + $missed).Count) commands in src/")
-if ($percent -lt $Minimum) {
-    throw "Coverage $percent% is below the required $Minimum%"
-}
+
+# The verdict is a pure function so it can be tested (#27). A red suite is rejected before
+# the percentage is believed: lines are still executed on the way to a failure, so a broken
+# build could otherwise measure 100%.
+$why = Get-PSMutantCoverageFailure -Percent $percent -Minimum $Minimum -FailedTestCount $result.FailedCount
+if ($why) { throw $why }
