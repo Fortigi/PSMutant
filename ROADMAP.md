@@ -8,7 +8,8 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot taken 2026-08-18, with 37 issues open.
+Snapshot taken 2026-08-18. Updated the same day after a dedicated architecture review, which
+added #52-#57 and #59 and re-priced #1 (see below). 44 issues open.
 
 ---
 
@@ -40,6 +41,13 @@ Two things follow that are worth stating out loud:
 - **#24 is the highest-value single fix, and still should not be first.** It adds validation and
   resolvers, and #45 is what decides where those live. #45 is a pure-move change with no
   behaviour change, so the prerequisite is cheap -- it is a reordering, not a delay.
+- **#1 is bigger than "add a runspace pool".** The architecture review established that
+  sequential evaluation is a *correctness invariant*, not a tuning default: the loop mutates one
+  shared sandbox copy and runs the covering tests against the whole tree
+  (`src/PSMutation.Runner.ps1:219-227`), so two mutants are not independent **even when they are
+  in different files**. Serialisation is the isolation mechanism. Parallelism therefore needs N
+  complete `Copy-Item -Recurse` sandbox trees, not N sandbox names -- and #53 (isolation keyed to
+  the process rather than the run) has to land first, because the sandbox name carries `$PID`.
 
 ---
 
@@ -71,6 +79,7 @@ as three refactors interleaved with features.
 
 | Order | Issue | Why here |
 |---|---|---|
+| 0 | **#52** layering has no enforcement | Decide whether to gate the layering or stop claiming it is enforced. Cheap, and it settles the ground the rest of this wave moves. |
 | 1 | **#45 + #38** together | File responsibilities and the duplication overlap: #45's proposed `PSMutation.Pester.ps1` is the home that resolves #38's duplicated Pester resolution. Doing #38 alone puts the shared helper in a file #45 then wants to split. |
 | 2 | **#34** report provenance | `schemaVersion`, producing module version, timestamp, durations. Unblocks three issues and gives #1 a before/after number it currently has no way to produce. |
 | 3 | **#47** output seam | Separate deciding what to say from saying it. Unblocks three more. |
@@ -89,7 +98,8 @@ Now has a home to land in. This is the wave with the most user-visible value.
 | 2 | **#25** documented defaults | `coveredLinesOnly` needs the resolver #24's work introduces. Same file, same review. |
 | 3 | **#40** 0% prints green | Threshold-band resolution: again the same file. Do 1, 2 and 3 together. |
 | 4 | **#29** operator-order renumbering | Reordering a JSON array silently invalidates recheck reports. |
-| 5 | **#28** identity collision, with **#3** | Same key format, two different defects. Fix once. |
+| 5 | **#28** identity collision, with **#3** and **#59** | Same identity scheme, three different defects: a colliding key, a stale key, and an id whose stability rests on an unstated ordering. Fix once. |
+| 6 | **#54**, **#56** | The run-result shape and the score function's fused scope. #56 blocks per-file scores in Wave E. |
 
 ## Wave E -- output features
 
@@ -102,9 +112,13 @@ All three want #47; #6 also wants #34.
 build it** -- a design for a loop nobody is rebuilding goes stale, which this repo has already
 had happen twice with its own documentation.
 
-1. One narrow design pass on the runner/loop. It is the only place the current design genuinely
+1. **#53** first -- isolation keyed to the run rather than the OS process. #1 cannot be built on
+   a `$PID`-named sandbox.
+2. One narrow design pass on the runner/loop. It is the only place the current design genuinely
    does not extend: sequential, accumulates in memory, writes nothing until the last mutant.
-2. **#1** parallelism and **#39** resumability together.
+   Note #57 records the existing stance, so the design pass starts from a written baseline.
+3. **#1** parallelism and **#39** resumability together -- but see the re-pricing above; these
+   sit on different halves of the loop and #1 is the larger of the two by some margin.
 3. **#7** TimedOut as a distinct status.
 4. **#8** diff-scoped runs.
 
@@ -116,6 +130,8 @@ Pick these up between waves; none blocks anything.
 
 - **#30** `RequiredModules` auto-imports the newest Pester. Small, consumer-facing, no dependencies -- the best early win outside Wave A.
 - **#46** `switch`/ternary blind spot. Natural follow-up to #5.
+- **#55** nothing asserts Pester's result vocabulary is two-valued. Small, and it guards the
+  external boundary the module deliberately does not abstract.
 - **#49** child runspace script is an unparsed string.
 - **#41** help surface / missing `about_PSMutant`.
 - **#36** end-to-end exact counts, **#43** cross-Context `$script:` coupling, **#35** consumer-shaped layout.
