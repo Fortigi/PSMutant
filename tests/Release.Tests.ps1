@@ -13,7 +13,7 @@
 # of confusing failures while writing these.
 
 BeforeAll {
-    . (Join-Path (Split-Path -Parent $PSScriptRoot) 'tools' 'Test-PSMutantRelease.ps1')
+    . (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'tools' -AdditionalChildPath 'Test-PSMutantRelease.ps1')
 
     $script:good = @'
 # Changelog
