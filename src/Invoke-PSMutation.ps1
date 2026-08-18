@@ -130,23 +130,18 @@ function Invoke-PSMutation {
     Assert-PSMutationPester
     Clear-PSMutationStaleSandbox
 
-    $subtrees = if ($cfg.sandboxSubtrees) { @($cfg.sandboxSubtrees) } else { $script:PSMutationSandboxSubtrees }
+    $subtrees = Get-PSMutationSubtree -Cfg $cfg
     $sandbox = New-PSMutationSandbox -RepoRoot $root -Subtrees $subtrees
     try {
         $t = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox
 
         if (-not $Quiet) { Write-Host "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite..." -ForegroundColor Cyan }
         $baseline = Invoke-PSMutationBaseline -TestPath $t.AllTests -MutateFiles $t.Mutate
-        if (-not $baseline.Passed) { throw 'Baseline suite is not green - fix the tests before mutating.' }
-        # Per-mutant timeout: a mutant should never take much longer than the baseline,
-        # so cap at max(floor, baseline x factor). A runaway (non-terminating) mutant is
-        # cut off here and counted as Killed instead of hanging the run.
-        $factor = if ($cfg.timeoutFactor) { $cfg.timeoutFactor } else { 4 }
-        $floor = if ($cfg.timeoutFloorSeconds) { $cfg.timeoutFloorSeconds } else { 15 }
-        $timeout = [int][math]::Max($floor, $baseline.DurationSeconds * $factor)
+        Assert-PSMutationBaselineGreen -Baseline $baseline
+        $timeout = Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds $baseline.DurationSeconds
         if (-not $Quiet) { Write-Host ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout) -ForegroundColor Green }
 
-        $ops = if ($cfg.operators) { @($cfg.operators) } else { $script:PSMutationDefaultOperators }
+        $ops = Get-PSMutationOperatorList -Cfg $cfg
         $cands = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly ([bool]$cfg.coveredLinesOnly) -CoveredLines $baseline.CoveredLines
         $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $sandbox
         $reportPath = Join-Path $root $cfg.reportPath
@@ -165,10 +160,7 @@ function Invoke-PSMutation {
         if (-not $Quiet) { Show-PSMutationSummary -Summary $summary -Results $results -Thresholds $cfg.thresholds -ReportPath $reportPath -Equivalents $cfg.equivalents }
 
         $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds
-        return [pscustomobject]@{
-            Score = $summary.Score; Killed = $summary.Killed
-            Survived = $summary.Survived; Total = $summary.Total; ExitCode = $exit
-        }
+        return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit
     }
     finally {
         Remove-PSMutationSandbox -SandboxRoot $sandbox
