@@ -1,0 +1,100 @@
+﻿<?xml version="1.0" encoding="utf-8" standalone="no"?>
+<!DOCTYPE report PUBLIC "-//JACOCO//DTD Report 1.1//EN" "report.dtd"[]>
+<report name="Pester ()">
+  <sessioninfo id="this" start="1786997881398" dump="1786997882621" />
+  <package name="src">
+    <class name="src/PSMutation.Sandbox" sourcefilename="PSMutation.Sandbox.ps1">
+      <method name="&lt;script&gt;" desc="()" line="19">
+        <counter type="INSTRUCTION" missed="0" covered="2" />
+        <counter type="LINE" missed="0" covered="1" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="New-PSMutationSandbox" desc="()" line="30">
+        <counter type="INSTRUCTION" missed="0" covered="16" />
+        <counter type="LINE" missed="0" covered="8" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="ConvertTo-PSMutationSandboxPath" desc="()" line="50">
+        <counter type="INSTRUCTION" missed="0" covered="3" />
+        <counter type="LINE" missed="0" covered="2" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="ConvertFrom-PSMutationSandboxPath" desc="()" line="62">
+        <counter type="INSTRUCTION" missed="0" covered="1" />
+        <counter type="LINE" missed="0" covered="1" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="Remove-PSMutationSandbox" desc="()" line="69">
+        <counter type="INSTRUCTION" missed="0" covered="3" />
+        <counter type="LINE" missed="0" covered="2" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="Get-PSMutationSandboxOwnerId" desc="()" line="81">
+        <counter type="INSTRUCTION" missed="0" covered="2" />
+        <counter type="LINE" missed="0" covered="1" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="Test-PSMutationSandboxAbandoned" desc="()" line="95">
+        <counter type="INSTRUCTION" missed="0" covered="10" />
+        <counter type="LINE" missed="0" covered="6" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="Get-PSMutationProcessStart" desc="()" line="119">
+        <counter type="INSTRUCTION" missed="0" covered="4" />
+        <counter type="LINE" missed="0" covered="3" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <method name="Clear-PSMutationStaleSandbox" desc="()" line="129">
+        <counter type="INSTRUCTION" missed="0" covered="7" />
+        <counter type="LINE" missed="0" covered="4" />
+        <counter type="METHOD" missed="0" covered="1" />
+      </method>
+      <counter type="INSTRUCTION" missed="0" covered="48" />
+      <counter type="LINE" missed="0" covered="28" />
+      <counter type="METHOD" missed="0" covered="9" />
+      <counter type="CLASS" missed="0" covered="1" />
+    </class>
+    <sourcefile name="PSMutation.Sandbox.ps1">
+      <line nr="19" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="30" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="31" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="32" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="33" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="34" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="35" mi="0" ci="3" mb="0" cb="0" />
+      <line nr="36" mi="0" ci="4" mb="0" cb="0" />
+      <line nr="38" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="50" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="51" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="62" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="69" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="70" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="81" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="95" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="96" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="99" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="100" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="101" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="105" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="119" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="120" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="121" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="129" mi="0" ci="1" mb="0" cb="0" />
+      <line nr="130" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="131" mi="0" ci="2" mb="0" cb="0" />
+      <line nr="132" mi="0" ci="2" mb="0" cb="0" />
+      <counter type="INSTRUCTION" missed="0" covered="48" />
+      <counter type="LINE" missed="0" covered="28" />
+      <counter type="METHOD" missed="0" covered="9" />
+      <counter type="CLASS" missed="0" covered="1" />
+    </sourcefile>
+    <counter type="INSTRUCTION" missed="0" covered="48" />
+    <counter type="LINE" missed="0" covered="28" />
+    <counter type="METHOD" missed="0" covered="9" />
+    <counter type="CLASS" missed="0" covered="1" />
+  </package>
+  <counter type="INSTRUCTION" missed="0" covered="48" />
+  <counter type="LINE" missed="0" covered="28" />
+  <counter type="METHOD" missed="0" covered="9" />
+  <counter type="CLASS" missed="0" covered="1" />
+</report>
