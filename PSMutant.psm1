@@ -1,7 +1,10 @@
 # PSMutant - mutation testing for PowerShell.
 # Dot-source the implementation files (small, single-responsibility) and export the
-# public surface. Load order matters: operators/sandbox/report before the runner and
-# the public Invoke-PSMutation that tie them together.
+# public surface. The LIST is load-bearing -- a file missing from it is never loaded -- but
+# the ORDER within it is not: every cross-file reference happens inside a function body, so
+# it resolves at call time once all seven are dot-sourced. Verified by loading them in exact
+# reverse order, which behaves identically. This comment previously claimed order mattered.
+# Nothing enforces the layering the order was meant to express; see issue #52.
 
 $src = Join-Path $PSScriptRoot 'src'
 foreach ($file in @(
