@@ -69,7 +69,8 @@ Describe 'New/Remove-PSMutationSandbox' {
         # Called from a finally block, so it runs even when the sandbox was never
         # created (an early throw). Throwing there would mask the original error.
         $gone = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-never-$([System.Guid]::NewGuid().ToString('N'))"
-        { Remove-PSMutationSandbox -SandboxRoot $gone } | Should -Not -Throw
+        Remove-PSMutationSandbox -SandboxRoot $gone
+        Should-BeFalse -Actual (Test-Path $gone)
     }
 }
 

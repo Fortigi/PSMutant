@@ -67,6 +67,9 @@ jobs:
           $cfg.Run.Path = './tests'
           $cfg.Run.PassThru = $true
           $cfg.Output.Verbosity = 'Detailed'
+          # Classic `Should -Be` is an error here: the suite is fully migrated, and this
+          # keeps it that way. It does not reach the fixture files the suite writes out.
+          $cfg.Should.DisableV5 = $true
           $r = Invoke-Pester -Configuration $cfg
           if ($r.FailedCount -gt 0) { throw "$($r.FailedCount) test(s) failed" }
 

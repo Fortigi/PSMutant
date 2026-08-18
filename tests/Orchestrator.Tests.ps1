@@ -37,14 +37,14 @@ Describe 'Assert-PSMutationPester' {
         $script:loaded = @([pscustomobject]@{ Version = [version]'5.8.0' })
         $script:available = @([pscustomobject]@{ Version = [version]'6.1.0' })
 
-        { Assert-PSMutationPester } | Should -Not -Throw
-        Should-Invoke Import-Module -Exactly 0
+        Assert-PSMutationPester
+        Should-NotInvoke Import-Module
     }
 
     It 'imports Pester when the session has none loaded yet' {
         $script:available = @([pscustomobject]@{ Version = [version]'5.8.0' })
-        { Assert-PSMutationPester } | Should -Not -Throw
-        Should-Invoke Import-Module -Exactly 1
+        Assert-PSMutationPester
+        Should-Invoke Import-Module -Times 1 -Exactly
     }
 
     It 'refuses when nothing installed is new enough' {
@@ -61,7 +61,7 @@ Describe 'Assert-PSMutationPester' {
         $script:loaded = @([pscustomobject]@{ Version = [version]'4.10.1' })
         $script:available = @([pscustomobject]@{ Version = [version]'6.1.0' })
         { Assert-PSMutationPester } | Should-Throw -ExceptionMessage '*Pester 5+ is required*'
-        Should-Invoke Import-Module -Exactly 0
+        Should-NotInvoke Import-Module
     }
 
     It 'judges by the newest module loaded when the session holds more than one' {
@@ -71,7 +71,8 @@ Describe 'Assert-PSMutationPester' {
             [pscustomobject]@{ Version = [version]'3.4.0' }
             [pscustomobject]@{ Version = [version]'5.8.0' }
         )
-        { Assert-PSMutationPester } | Should -Not -Throw
+        Assert-PSMutationPester
+        Should-NotInvoke Import-Module
     }
 }
 
