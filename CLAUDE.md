@@ -173,8 +173,14 @@ src/Invoke-PSMutation.ps1      public entry point: the Pester guard and the wiri
 tools/                         the committed coverage and compatibility gates.
 ```
 
-Load order is fixed in `PSMutant.psm1` — pure layers first, runner and entry point last.
-A new `src/*.ps1` must be added there or it will not load.
+`PSMutant.psm1` dot-sources these files from an explicit list. A new `src/*.ps1` must be added
+to it or it is never loaded — and, because the publish step copies `src/` wholesale, a file
+missing from the list still ships (see #26).
+
+The **order** in that list does not matter, despite what this file and `PSMutant.psm1` used to
+claim. Every cross-file reference sits inside a function body and resolves at call time, so
+loading all seven in reverse order behaves identically — verified. Nothing enforces the layering
+the order was supposed to express; that is #52.
 
 **Mutants must never touch tracked source.** Everything runs in a temp sandbox and the
 real files are never written, even transiently, so a hard kill cannot leave a mutated
@@ -263,10 +269,15 @@ issue; the rule is what stops the next instance.
   `ci.yml` pins PSScriptAnalyzer; `code-scanning.yml` installs it unpinned and scans a
   different path set, so the two analyzer gates can disagree in both directions. A pin is
   only reproducible if it is everywhere. (#33)
-- **Keep a `$script:` constant in the file that reads it.** `$script:PSMutationSandboxSubtrees`
-  is defined in `PSMutation.Sandbox.ps1` and read in `PSMutation.Config.ps1`; that works
-  only because of dot-source order in `PSMutant.psm1` and because the covering suite happens
-  to dot-source both. Pass it as a parameter or move it. (#38)
+- **Keep a `$script:` constant in the file that reads it.** `PSMutation.Config.ps1` reads
+  `$script:PSMutationSandboxSubtrees` from `PSMutation.Sandbox.ps1` and
+  `$script:PSMutationDefaultOperators` from `PSMutation.Operators.ps1`. Move them or pass them
+  in -- not because it is fragile, but because a file that reaches into two others' module
+  state cannot be read on its own. (#38)
+
+  *This rule previously said the reads "work only because of dot-source order". That was wrong:
+  they are inside function bodies and resolve at call time, so reverse-loading every file
+  behaves identically. Recorded rather than deleted, per the practice above.*
 - **Treat a file's docstring as a claim about its contents.** When you add a function,
   either it fits the file's stated purpose or that file is the wrong home -- and if you move
   it, fix the docstring and the layout table above in the same commit. Right now two guards
