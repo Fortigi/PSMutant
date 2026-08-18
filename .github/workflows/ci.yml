@@ -19,15 +19,6 @@ on:
     branches: [main]
   workflow_dispatch:
 
-env:
-  # The version the test estate is written against. Bump here, in publish.yml, and in
-  # CLAUDE.md together.
-  PESTER_VERSION: '6.1.0'
-  # Deliberately NOT the version above: the compatibility guard needs a second one.
-  PESTER_COMPAT_VERSION: '5.8.0'
-  PSSA_VERSION: '1.25.0'
-  PSCOMPLEXITY_VERSION: '0.1.0'
-
 # A superseded run proves nothing. Three pushes in quick succession used to mean three
 # full chains; only the last one's result is ever read. Pushes to main are NOT cancelled
 # -- that history is the record of what main was green at.
@@ -44,6 +35,28 @@ jobs:
     timeout-minutes: 25
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
+
+      # Every pinned version comes from one committed file, so the gates cannot drift apart.
+      # Parsed and validated before it is exported: a missing key would otherwise become an
+      # empty version string and a silently wrong cache key.
+      - name: Load pinned versions
+        shell: pwsh
+        run: |
+          $required = 'PESTER_VERSION', 'PESTER_COMPAT_VERSION', 'PSSA_VERSION',
+                      'PSCOMPLEXITY_VERSION', 'CONVERTTOSARIF_VERSION', 'PSSA_PATHS'
+          $pins = @{}
+          foreach ($line in Get-Content .github/pins.env) {
+            $t = $line.Trim()
+            if (-not $t -or $t.StartsWith('#')) { continue }
+            $k, $v = $t -split '=', 2
+            $pins[$k.Trim()] = $v.Trim()
+          }
+          foreach ($k in $required) {
+            if (-not $pins.ContainsKey($k) -or -not $pins[$k]) { throw ".github/pins.env is missing a value for $k" }
+          }
+          $pins.GetEnumerator() | ForEach-Object { "$($_.Key)=$($_.Value)" } |
+            Out-File -FilePath $env:GITHUB_ENV -Append -Encoding utf8
+          Write-Host "pins: $(($required | ForEach-Object { "$_=$($pins[$_])" }) -join '  ')"
 
       # Keyed on the exact pins rather than on the workflow file, so the cache is
       # invalidated when -- and only when -- a version changes. No restore-keys: a
@@ -91,7 +104,7 @@ jobs:
       - name: Lint (PSScriptAnalyzer)
         shell: pwsh
         run: |
-          $paths = './src', './tests', './tools', './PSMutant.psm1', './PSMutant.psd1'
+          $paths = ($env:PSSA_PATHS -split ' ') | Where-Object { $_ }
           $findings = $paths | ForEach-Object {
             Invoke-ScriptAnalyzer -Path $_ -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Error, Warning
           }
