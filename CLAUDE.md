@@ -49,8 +49,8 @@ Two different things. Conflating them is what caused #16.
 - **The test estate** is pinned to exactly **6.1.0** — `ci.yml`, `publish.yml`, and local
   development. Every CI step runs `Import-Module Pester -RequiredVersion` rather than
   letting the name resolve, so CI and your machine cannot end up on different Pesters.
-  Bumping it means changing `ci.yml` (`PESTER_VERSION`), `publish.yml`, and this file
-  together.
+  Bumping it means changing `.github/pins.env` and this file together -- every workflow
+  loads its versions from that one file.
 - **The module** promises `Pester >= 5.0.0` in its manifest and has to drive whatever the
   consuming repo already has. The pin above narrows nothing about that.
 
@@ -265,10 +265,16 @@ issue; the rule is what stops the next instance.
   later somewhere unrelated. `mutat` for `mutate` currently ends in
   `Access to the path '...\psmut-sandbox-<pid>' is denied`. Any key you add should be
   validated where the config is resolved, with a message that names the key. (#24)
-- **Pin every dependency in every workflow, not just the ones you are looking at.**
-  `ci.yml` pins PSScriptAnalyzer; `code-scanning.yml` installs it unpinned and scans a
-  different path set, so the two analyzer gates can disagree in both directions. A pin is
-  only reproducible if it is everywhere. (#33)
+- **Add a new pinned dependency to `.github/pins.env`, never inline.** Every workflow loads
+  that file into its environment after checkout and asserts each key arrived, so the gates
+  cannot analyse with different analyzers or test against different Pesters. `PSSA_PATHS`
+  lives there too, so the lint gate and the required code-scanning check cannot disagree
+  about what they look at. Before this existed the two coincided only because
+  PSScriptAnalyzer ignores non-PowerShell files -- a coincidence, not an agreement.
+
+  The one thing the file cannot hold is a `uses:` action SHA, because `uses:` does not
+  expand variables. Those stay written out per workflow, all SHA-pinned with the version in
+  a trailing comment, and have to be kept in step by hand.
 - **Keep a `$script:` constant in the file that reads it.** `PSMutation.Config.ps1` reads
   `$script:PSMutationSandboxSubtrees` from `PSMutation.Sandbox.ps1` and
   `$script:PSMutationDefaultOperators` from `PSMutation.Operators.ps1`. Move them or pass them
