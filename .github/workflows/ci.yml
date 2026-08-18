@@ -25,19 +25,61 @@ env:
   PESTER_VERSION: '6.1.0'
   # Deliberately NOT the version above: the compatibility guard needs a second one.
   PESTER_COMPAT_VERSION: '5.8.0'
+  PSSA_VERSION: '1.25.0'
+  PSCOMPLEXITY_VERSION: '0.1.0'
+
+# A superseded run proves nothing. Three pushes in quick succession used to mean three
+# full chains; only the last one's result is ever read. Pushes to main are NOT cancelled
+# -- that history is the record of what main was green at.
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
 jobs:
   test:
     runs-on: ubuntu-latest
+    # The module bounds each mutant with its own timeout, but nothing bounded the job.
+    # A wedged runner would otherwise sit on the 6-hour default. The chain runs in about
+    # 6 minutes, of which self-mutation is the long pole.
+    timeout-minutes: 25
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
-      - name: Install pinned Pester + PSScriptAnalyzer
+      # Keyed on the exact pins rather than on the workflow file, so the cache is
+      # invalidated when -- and only when -- a version changes. No restore-keys: a
+      # partial restore would hand the run a different version set than the one asked
+      # for, which is the failure this repo cares most about avoiding.
+      - name: Cache pinned PowerShell modules
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.local/share/powershell/Modules
+          key: psmodules-${{ runner.os }}-pester${{ env.PESTER_VERSION }}-${{ env.PESTER_COMPAT_VERSION }}-pssa${{ env.PSSA_VERSION }}-psc${{ env.PSCOMPLEXITY_VERSION }}
+
+      # Install only what the cache did not restore. Every gate below asserts the exact
+      # version it needs, so a partially-populated cache cannot silently change what ran.
+      - name: Install pinned modules
         shell: pwsh
         run: |
-          Install-Module Pester -RequiredVersion $env:PESTER_VERSION -Force -Scope CurrentUser
-          Install-Module Pester -RequiredVersion $env:PESTER_COMPAT_VERSION -Force -Scope CurrentUser
-          Install-Module PSScriptAnalyzer -RequiredVersion 1.25.0 -Force -Scope CurrentUser
+          $wanted = @(
+            @{ Name = 'Pester';           Version = $env:PESTER_VERSION }
+            @{ Name = 'Pester';           Version = $env:PESTER_COMPAT_VERSION }
+            @{ Name = 'PSScriptAnalyzer'; Version = $env:PSSA_VERSION }
+            @{ Name = 'PSComplexity';     Version = $env:PSCOMPLEXITY_VERSION }
+          )
+          foreach ($m in $wanted) {
+            if (Get-Module -ListAvailable -Name $m.Name | Where-Object { $_.Version -eq [version]$m.Version }) {
+              Write-Host "cached   $($m.Name) $($m.Version)"
+              continue
+            }
+            Write-Host "install  $($m.Name) $($m.Version)"
+            Install-Module $m.Name -RequiredVersion $m.Version -Force -Scope CurrentUser
+          }
+          # Fail here rather than three steps later with a confusing version error.
+          foreach ($m in $wanted) {
+            if (-not (Get-Module -ListAvailable -Name $m.Name | Where-Object { $_.Version -eq [version]$m.Version })) {
+              throw "$($m.Name) $($m.Version) is not available after install"
+            }
+          }
 
       - name: Module manifest is valid + imports
         shell: pwsh
@@ -86,8 +128,7 @@ jobs:
       - name: Complexity gate (PSComplexity)
         shell: pwsh
         run: |
-          Install-Module PSComplexity -RequiredVersion 0.1.0 -Force -Scope CurrentUser
-          Import-Module PSComplexity -Force
+          Import-Module PSComplexity -RequiredVersion $env:PSCOMPLEXITY_VERSION -Force
           if (-not (Test-PSComplexity -Path ./src -Recurse -MaxCyclomatic 15 -MaxCognitive 15)) {
             throw 'Complexity gate failed -- a unit exceeds 15 cyclomatic or cognitive.'
           }
