@@ -290,11 +290,19 @@ issue; the rule is what stops the next instance.
   of the same kind live in different files (`Assert-PSMutationPester` in the entry point,
   `Assert-PSMutationBaselineGreen` in `Config.ps1`), which leaves the next guard with no
   basis for choosing. (#45)
-- **Hold `tools/` to the same standard as `src/`.** The two scripts that decide whether the
-  coverage and compatibility claims hold have no tests, no coverage measurement and no
-  mutants -- so a gate that silently stopped failing would look exactly like a green build.
-  Anything you add under `tools/` that makes a pass/fail decision belongs behind a pure,
-  tested function. (#27)
+- **A pass/fail decision in `tools/` belongs in `tools/GateDecisions.ps1`, behind a pure
+  function with tests.** A gate that silently stops being able to fail looks exactly like a
+  green build, and these are the scripts that decide whether every other number here is true.
+  The decisions are arithmetic and string comparison -- free to test, and where an inversion
+  hides.
+
+  The orchestration around them is deliberately **not** tested or mutated, and that is a
+  decision rather than an omission. Three of the four scripts are side effects end to end
+  (run Pester, stage a package, spawn a child process), so a covering suite would have to
+  execute them and each mutant would cost a full gate run -- the same wall that makes
+  `Sandbox.ps1` impossible to self-mutate. `tools/` is also outside `sandboxSubtrees`, so it
+  is not copied into the sandbox at all. Coverage stays measured over `src/`; the gates are
+  proven by running for real in CI. (#27)
 
 ## Writing tests here
 
