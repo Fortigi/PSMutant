@@ -104,3 +104,70 @@ Describe 'Get-PSMutantUnloadedFile' {
             Should-BeCollection @('PSMutation.Operators.ps1')
     }
 }
+
+Describe 'Get-PSMutantPinValue' {
+    BeforeAll {
+        # Shaped like the real .github/pins.env: comments, blank lines, a value containing
+        # spaces, and keys that are prefixes of one another.
+        $script:pins = @(
+            '# Single source of truth for the pinned dependencies.'
+            ''
+            'PESTER_VERSION=6.1.0'
+            '  # indented comment'
+            'PSSA_PATHS=./src ./tests ./tools ./PSMutant.psm1 ./PSMutant.psd1'
+            'PSSA_VERSION=1.25.0'
+            'PSSA_VERSION_EXTRA=should-not-be-found-as-PSSA_VERSION'
+        )
+    }
+
+    It 'reads a simple value' {
+        Get-PSMutantPinValue -Line $script:pins -Name 'PESTER_VERSION' | Should-Be '6.1.0'
+    }
+
+    It 'keeps the spaces in a space-separated value' {
+        # PSSA_PATHS is a list. A parser that split on whitespace, or trimmed too eagerly,
+        # would hand the analyzer one path or none -- and a gate that scans nothing passes.
+        Get-PSMutantPinValue -Line $script:pins -Name 'PSSA_PATHS' |
+            Should-Be './src ./tests ./tools ./PSMutant.psm1 ./PSMutant.psd1'
+    }
+
+    It 'matches the key in full, not as a prefix' {
+        # PSSA_VERSION and PSSA_VERSION_EXTRA both start the same way. A prefix match would
+        # silently pin the analyzer to whichever line came first.
+        Get-PSMutantPinValue -Line $script:pins -Name 'PSSA_VERSION' | Should-Be '1.25.0'
+    }
+
+    It 'splits on the first = only, so a value may contain one' {
+        Get-PSMutantPinValue -Line @('K=a=b') -Name 'K' | Should-Be 'a=b'
+    }
+
+    It 'ignores comment lines even when they mention the key' {
+        Should-BeNull -Actual (Get-PSMutantPinValue -Line @('# PESTER_VERSION=9.9.9') -Name 'PESTER_VERSION')
+    }
+
+    It 'returns nothing for a key that is not there' {
+        # The caller turns this into an error naming the key. It has to be distinguishable
+        # from an empty value, or a missing pin reads as a deliberate blank.
+        Should-BeNull -Actual (Get-PSMutantPinValue -Line $script:pins -Name 'NO_SUCH_PIN')
+    }
+
+    It 'returns nothing for an empty file' {
+        Should-BeNull -Actual (Get-PSMutantPinValue -Line @() -Name 'PESTER_VERSION')
+    }
+
+    It 'ignores a line with no = at all' {
+        Should-BeNull -Actual (Get-PSMutantPinValue -Line @('PESTER_VERSION') -Name 'PESTER_VERSION')
+    }
+
+    It 'trims surrounding whitespace from the value' {
+        Get-PSMutantPinValue -Line @('K=  v  ') -Name 'K' | Should-Be 'v'
+    }
+
+    It 'reads the real pins.env this repo ships' {
+        # The end-to-end check: the parser and the actual file agree. A format change to
+        # pins.env that this parser cannot read would otherwise only show up in CI.
+        $real = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath '.github' -AdditionalChildPath 'pins.env'
+        Get-PSMutantPinValue -Line (Get-Content $real) -Name 'PSSA_PATHS' | Should-BeLikeString '*./src*'
+        Should-NotBeNull -Actual (Get-PSMutantPinValue -Line (Get-Content $real) -Name 'PSSA_VERSION')
+    }
+}

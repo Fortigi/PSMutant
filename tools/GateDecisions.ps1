@@ -118,3 +118,38 @@ function Get-PSMutantUnloadedFile {
     $unloaded = [string[]]@($ShippedName | Where-Object { $RootModuleText -notmatch [regex]::Escape($_) })
     return $unloaded
 }
+
+function Get-PSMutantPinValue {
+    <#
+    .SYNOPSIS
+        The value of one key in .github/pins.env, or $null when it is not there.
+    .DESCRIPTION
+        A decision rather than plumbing, and the reason it lives here: the analyzer gate
+        derives the paths it scans from PSSA_PATHS. A parser that quietly returns nothing
+        makes that gate scan NOTHING and pass -- green, fast, and blind. The caller turns
+        $null into an error, but only because this reports it faithfully.
+
+        Split on the FIRST '=' only. Values legitimately contain both '=' and spaces:
+        PSSA_PATHS is a space-separated list. Comment and blank lines are ignored, and the
+        key must match in full, so PSSA_VERSION does not answer for PSSA_VERSION_EXTRA.
+    .OUTPUTS
+        [string] the value, or $null.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        # AllowEmptyString as well as AllowEmptyCollection: pins.env has blank lines, and a
+        # Mandatory [string[]] otherwise refuses the whole file over one of them.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$Line,
+        [Parameter(Mandatory)] [string]$Name
+    )
+    foreach ($l in $Line) {
+        $trimmed = $l.Trim()
+        if ($trimmed.StartsWith('#')) { continue }
+        $split = $trimmed.IndexOf('=')
+        if ($split -lt 1) { continue }
+        if ($trimmed.Substring(0, $split) -ne $Name) { continue }
+        return $trimmed.Substring($split + 1).Trim()
+    }
+    return $null
+}

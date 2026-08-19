@@ -33,7 +33,7 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 | Gate | What it is |
 |---|---|
 | Import smoke | module loads, `Invoke-PSMutation` is exported |
-| Lint | PSScriptAnalyzer over `src/`, `tests/`, `tools/`, `-Severity Error, Warning` only |
+| Lint | `tools/Invoke-PSMutantAnalyzer.ps1` — PSScriptAnalyzer over `PSSA_PATHS`, **every severity**. The same script code scanning runs |
 | Unit tests | whole `tests/` directory, must be 0 failures |
 | Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
 | Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
@@ -43,9 +43,10 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 `ci.yml` is not the whole story, and reading only this table is how #26 happened — publishing
 used to run about one sixth of the merge gates with the package never once loaded.
 
-**`code-scanning.yml`** runs PSScriptAnalyzer again over `PSSA_PATHS` and uploads SARIF. It is
-a **required** check, so it can block a merge on its own. It shares `PSSA_PATHS` with the lint
-gate above precisely so the two cannot disagree about scope.
+**`code-scanning.yml`** runs `tools/Invoke-PSMutantAnalyzer.ps1` — the very script the lint gate
+runs — and uploads its findings as SARIF. It is a **required** check, so it can block a merge on
+its own. One script rather than two shared variables: the two used to agree about `PSSA_PATHS`
+and the settings file and still disagree about severity (#76).
 
 **`publish.yml`** gates the one irreversible action in the project — a gallery version cannot
 be withdrawn — and runs, in order:
@@ -203,7 +204,7 @@ src/PSMutation.Report.ps1      scoring, thresholds, equivalents, report JSON, ru
 src/PSMutation.Recheck.ps1     -RecheckFrom, whole: compatibility, selection, the run.
 src/PSMutation.Runner.ps1      baseline + its green guard, per-mutant execution, the loop.
 src/Invoke-PSMutation.ps1      public entry point. Wiring, and nothing else.
-tools/                         the committed coverage and compatibility gates.
+tools/                         the committed coverage, analyzer and compatibility gates.
 ```
 
 `PSMutant.psm1` dot-sources these files from an explicit list. A new `src/*.ps1` must be added
@@ -389,6 +390,23 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   This is the enforceable half of "check the docs against the code". The rest still is not
   enforced -- when you change a threshold, an operator set or a message, grep `README.md`,
   `CLAUDE.md` and `examples/psmutant.config.json` in the same commit. (#25)
+- **Both analyzer gates run one committed script, `tools/Invoke-PSMutantAnalyzer.ps1`.** They
+  used to spell the invocation out inline in each workflow, sharing `PSSA_PATHS` and the settings
+  file but not the severity: `ci.yml` filtered to `-Severity Error, Warning` and
+  `code-scanning.yml` -- a **required** check -- did not. So every Information-severity rule was
+  invisible to the gate that *fails* and visible to the gate that *blocks*, and a finding in that
+  band passed lint locally and in CI before surfacing where nobody was looking. It happened twice
+  in one PR before anyone noticed the band existed (#76).
+
+  There is **no `-Severity` filter** now. Rules are excluded by name in
+  `PSScriptAnalyzerSettings.psd1`, with a reason -- a decision someone made -- where a severity
+  filter mutes a whole band nobody decided about. Run `./tools/Invoke-PSMutantAnalyzer.ps1`
+  before pushing; it reads `PSSA_PATHS` and `PSSA_VERSION` from `.github/pins.env` itself, so by
+  hand and in CI are the same run with no setup step.
+
+  It refuses to analyse nothing, which is the failure that would otherwise look identical to
+  success: an empty `PSSA_PATHS` would have both gates report clean over zero files. The pin
+  parsing behind that lives in `GateDecisions.ps1` with tests, for the same reason.
 - **An equivalence declaration is a checkable claim, not a mute button.** It carries a
   written argument someone can disagree with, and the run fails if it is ever killed or
   stops matching a mutant. Before declaring one, verify the claim -- run the code without
@@ -420,22 +438,9 @@ Gaps in how the repo is maintained, as rules rather than as a backlog. Each has 
 issue; the rule is what stops the next instance, and it moves up to "Practices to preserve"
 in the PR that closes its issue.
 
-- **The two PSScriptAnalyzer gates must analyse the same way, not just the same files.** They
-  share `PSSA_PATHS` and `PSScriptAnalyzerSettings.psd1`, but `ci.yml` filters to
-  `-Severity Error, Warning` and `code-scanning.yml` -- a **required** check -- does not. So an
-  **Information** finding passes the lint gate, locally and in CI, and then surfaces as a code
-  scanning alert where nobody was looking.
+**This section is empty again.** That is a state to notice rather than a milestone: it means
+the last findings have all landed, not that there is nothing left to find.
 
-  Not hypothetical: sorting candidates in #29 made `PSUseOutputTypeCorrectly` fire on
-  `Get-PSMutationCandidate`, because the inferred `System.Object[]` stopped matching the
-  declared `[pscustomobject[]]`, and a second instance had been sitting unseen in
-  `tools/GateDecisions.ps1`. Until that is aligned, **run the analyzer with no `-Severity`
-  before pushing**, not the filtered form the lint step uses. (#76)
-
-  The fix for that rule specifically: cast the **expression**, keeping `@()` inside it --
-  `[pscustomobject[]]@(...)`. Casting the *variable* leaves the analyzer inferring
-  `System.Object[]` anyway, and dropping the `@()` turns an empty result into `$null` instead
-  of an empty array, which the suite catches immediately.
 
 ## Writing tests here
 

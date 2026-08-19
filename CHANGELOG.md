@@ -5,6 +5,27 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Changed
+- **Both PSScriptAnalyzer gates now run one committed script**, `tools/Invoke-PSMutantAnalyzer.ps1`
+  ([#76]). They each spelled the invocation out inline, sharing `PSSA_PATHS` and the settings file
+  but **not the severity**: `ci.yml` filtered to `-Severity Error, Warning` and
+  `code-scanning.yml` -- a **required** check -- passed no filter. Every Information-severity rule
+  was therefore invisible to the gate that fails the build and visible to the gate that blocks the
+  merge, so a finding in that band passed lint both locally and in CI and then surfaced as a code
+  scanning alert where nobody was looking. It happened twice in one PR before the band was noticed
+  at all.
+
+  Dropping the filter would have fixed that instance; a shared script is what stops the class,
+  and it is the rule this repo already had -- a gate is a committed script precisely so measuring
+  by hand and measuring in CI cannot drift. There is no `-Severity` filter now: rules are excluded
+  by name in `PSScriptAnalyzerSettings.psd1` with a reason, which is a decision someone made,
+  where a severity filter mutes a whole band nobody decided about.
+
+  The script reads `PSSA_PATHS` and `PSSA_VERSION` from `.github/pins.env` itself, so running it
+  by hand needs no setup and cannot use a different analyzer than the gate. It **refuses to
+  analyse nothing** -- an empty or misparsed path list would otherwise have both gates report
+  clean over zero files, which is indistinguishable from success -- and the pin parsing behind
+  that is `Get-PSMutantPinValue` in `tools/GateDecisions.ps1`, with tests, because a parser that
+  quietly returns nothing is exactly how a gate stops being able to fail.
 - **Mutant ids no longer depend on the order the config listed its operators in** ([#29]).
   Ids came from the order the operator list was iterated, while `Write-PSMutationReport`
   records that list **sorted** and `Test-PSMutationRecheckCompatible` compares it sorted. So
