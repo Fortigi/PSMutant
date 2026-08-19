@@ -87,6 +87,15 @@ mutate under another -- this same bug, from the inside.
 - `Import-Module Pester -MinimumVersion 5.0.0` is **not** a no-op when a satisfying Pester
   is already loaded — PowerShell re-resolves the name to the newest installed and
   collides. Fixed by `Assert-PSMutationPester`, which accepts what is already loaded.
+- **The manifest must not declare Pester in `RequiredModules`.** `ModuleVersion` there is a
+  *minimum*, satisfied by importing the newest installed — at **import** time, before either
+  guard above can run. So `Import-Module PSMutant` then
+  `Import-Module Pester -RequiredVersion 5.7.1` died on an assembly collision and left the
+  caller on 6.1.0, while the same two lines in the other order worked fine (#30). Pester is a
+  **run-time** dependency and `Assert-PSMutationPester` is the single place that enforces it.
+  The price is that `Install-Module PSMutant` does not pull Pester in; that is the right trade
+  for a module whose whole promise is running under *your* Pester, and it is stated in the
+  manifest description, the README and the error message.
 
 **Why this mattered more than a red suite.** A dead child returns no verdict, and
 `Invoke-PSMutant` reads anything-but-`Passed` as a kill. So on any machine with two

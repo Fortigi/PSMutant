@@ -295,3 +295,36 @@ Describe 'the config files this repo ships' {
         Assert-PSMutationConfig -Cfg (Get-Content $path -Raw | ConvertFrom-Json)
     }
 }
+
+Describe 'the manifest does not choose a Pester' {
+    BeforeAll {
+        $script:manifestPath = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'PSMutant.psd1'
+    }
+
+    It 'declares no Pester dependency in RequiredModules' {
+        # ModuleVersion in RequiredModules is a MINIMUM, and PowerShell satisfies it by
+        # importing the NEWEST installed version -- at import time, before
+        # Assert-PSMutationPester or Get-PSMutationPesterPath can have a say. Pester is a
+        # run-time dependency here, and the guard is the single place that enforces it.
+        $required = @((Import-PowerShellDataFile $script:manifestPath).RequiredModules)
+        @($required | Where-Object { $_ }) | Should-BeCollection -Count 0
+    }
+
+    It 'still names the requirement in its description, so removing it did not hide it' {
+        # Pairs with the assertion above. Dropping the declaration is only correct if the
+        # dependency stays discoverable -- otherwise this trades a wrong import for a
+        # silent one.
+        (Import-PowerShellDataFile $script:manifestPath).Description |
+            Should-BeLikeString '*Pester 5.0.0 or later*'
+    }
+
+    It 'loads no Pester at all when imported into a clean session' {
+        # THE behavioural proof, and the reason this runs in a child process: Pester is
+        # running this suite, so in-process the module always looks innocent. Before the
+        # fix a clean session went from no Pester to 6.1.0 purely by importing PSMutant.
+        $loaded = pwsh -NoProfile -Command "
+            Import-Module '$script:manifestPath' -Force
+            @(Get-Module Pester).Count"
+        [int]($loaded | Select-Object -Last 1) | Should-Be 0
+    }
+}
