@@ -305,6 +305,15 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   The one thing the file cannot hold is a `uses:` action SHA, because `uses:` does not
   expand variables. Those stay written out per workflow, all SHA-pinned with the version in
   a trailing comment, and have to be kept in step by hand.
+
+  **Install a pinned module only if it is not already there, then assert it is.** Both
+  workflows now do this. An unconditional `Install-Module -Force` collides with what the
+  runner image already ships: the install warns "currently in use" and carries on, and the
+  tool then fails somewhere else entirely -- `code-scanning.yml` died inside
+  `Invoke-ScriptAnalyzer` with a bare "Object reference not set to an instance of an object"
+  naming neither a file nor a rule, on a branch that was green, and a re-run with no code
+  change passed. Agreeing on the version is not enough if the workflows disagree about how
+  they get it.
 - **A pass/fail decision in `tools/` belongs in `tools/GateDecisions.ps1`, behind a pure
   function with tests.** A gate that silently stops being able to fail looks exactly like a
   green build, and these are the scripts that decide whether every other number here is true.
