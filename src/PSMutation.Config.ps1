@@ -35,6 +35,143 @@
 # leaves neither file readable on its own (#38).
 $script:PSMutationDefaultSubtrees = @('src', 'tests')
 
+# Every key the config understands, and every sub-key of `thresholds`. A key absent from
+# these lists resolves to $null and weakens the run in silence -- `thresholds.brake` makes
+# the break gate unable to fail, and `mutat` for `mutate` surfaces as a denied path inside
+# the sandbox, mentioning neither the config nor the key (#24).
+#
+# Keys starting with `_` are exempt: JSON has no comments, and both the example config and
+# this repo's own use `_comment` / `_operators` / `_timeout` to explain themselves.
+$script:PSMutationConfigKeys = @(
+    'mutate', 'tests', 'operators', 'coveredLinesOnly', 'sandboxSubtrees',
+    'timeoutFactor', 'timeoutFloorSeconds', 'equivalents', 'thresholds', 'reportPath'
+)
+$script:PSMutationThresholdKeys = @('high', 'low', 'break')
+
+function Get-PSMutationEditDistance {
+    # Levenshtein distance between two strings.
+    #
+    # Exists only so a rejected key can say "did you mean 'break'?" rather than leaving the
+    # reader to diff two lists by eye. The three typos this has to reach are a transposition
+    # (brake/break, distance 2), a dropped letter (mutat/mutate, 1) and a wrong letter (1).
+    [OutputType([int])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$From,
+          [Parameter(Mandatory)] [AllowEmptyString()] [string]$To)
+    $n = $From.Length
+    $m = $To.Length
+    # No empty-string guard, deliberately. The obvious `if ($n -eq 0) { return $m }` pair
+    # reads like a necessary base case and is not one: with either length zero the loop
+    # below simply does not run and the seeded row already holds the answer. Verified by
+    # deleting both and re-running the table in Config.Tests.ps1 -- identical. They would
+    # also have been two mutants nothing could ever kill.
+    #
+    # Two rows rather than a full matrix: only the previous row is ever read.
+    $prev = [int[]](0..$m)
+    # Sized from $prev rather than as ($m + 1). Same length, but written as a literal it is
+    # a mutant nothing can kill: the row is a buffer, so an oversized one computes exactly
+    # the same distances. Deriving the length removes the mutant instead of excusing it.
+    $curr = [int[]]::new($prev.Length)
+    for ($i = 1; $i -le $n; $i++) {
+        $curr[0] = $i
+        for ($j = 1; $j -le $m; $j++) {
+            $cost = if ($From[$i - 1] -eq $To[$j - 1]) { 0 } else { 1 }
+            $curr[$j] = [math]::Min([math]::Min($prev[$j] + 1, $curr[$j - 1] + 1), $prev[$j - 1] + $cost)
+        }
+        $prev = $curr.Clone()
+    }
+    return [int]$prev[$m]
+}
+
+function Get-PSMutationNearestName {
+    # The valid name closest to a misspelling, or $null when nothing is close enough.
+    #
+    # Two edits is the cutoff because that is what a transposition costs; beyond it a
+    # "did you mean" is a guess, and a wrong guess sends the reader off to change a key
+    # that was never the problem.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Name,
+          [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Candidates)
+    $best = $null
+    $bestDistance = 3
+    foreach ($c in $Candidates) {
+        $d = Get-PSMutationEditDistance -From $Name.ToLowerInvariant() -To $c.ToLowerInvariant()
+        if ($d -lt $bestDistance) {
+            $bestDistance = $d
+            $best = $c
+        }
+    }
+    return $best
+}
+
+function Get-PSMutationUnknownKeyMessage {
+    # The complaint about one unrecognised key, or $null when it is recognised.
+    #
+    # Returns the reason rather than throwing so the caller decides how to report, and so
+    # the decision itself is a value a test can compare.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Name,
+          [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Known,
+          [Parameter(Mandatory)] [string]$Where)
+    # JSON has no comments; `_`-prefixed keys are how every config here explains itself.
+    if ($Name.StartsWith('_')) { return $null }
+    if ($Known -contains $Name) { return $null }
+    $near = Get-PSMutationNearestName -Name $Name -Candidates $Known
+    $hint = if ($near) { " Did you mean '$near'?" } else { '' }
+    return "Unknown $Where key '$Name'.$hint Valid keys: $(($Known | Sort-Object) -join ', ')."
+}
+
+function Assert-PSMutationConfig {
+    # Refuse a config that asks for something this module does not understand.
+    #
+    # An error rather than a warning, deliberately: a warning in a CI log is
+    # indistinguishable from silence, and every failure here makes the gate WEAKER while
+    # the run stays green -- the exact class of silent wrong answer this tool exists to
+    # find in other people's code.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Cfg)
+    foreach ($prop in $Cfg.PSObject.Properties) {
+        $why = Get-PSMutationUnknownKeyMessage -Name $prop.Name -Known $script:PSMutationConfigKeys -Where 'config'
+        if ($why) { throw $why }
+    }
+    foreach ($prop in $Cfg.thresholds.PSObject.Properties) {
+        $why = Get-PSMutationUnknownKeyMessage -Name $prop.Name -Known $script:PSMutationThresholdKeys -Where 'thresholds'
+        if ($why) { throw $why }
+    }
+    foreach ($op in @($Cfg.operators)) {
+        if ($null -eq $op) { continue }
+        $why = Get-PSMutationUnknownKeyMessage -Name $op -Known (Get-PSMutationKnownOperator) -Where 'operators'
+        if ($why) { throw $why }
+    }
+    if (@($Cfg.mutate).Where({ $_ }).Count -eq 0) {
+        throw "Config must set 'mutate' to a non-empty list of files to mutate."
+    }
+    # .Where({ $_ }) rather than a bare .Count: with no `tests` key at all, .PSObject
+    # yields $null and @($null) is an array of ONE, so a plain count reads a missing map
+    # as a populated one.
+    if (@($Cfg.tests.PSObject.Properties).Where({ $_ }).Count -eq 0) {
+        throw "Config must set 'tests' to a map of mutate file -> the test file(s) covering it."
+    }
+}
+
+function Get-PSMutationCoveredLinesOnly {
+    # Whether to mutate only the lines the baseline actually executed.
+    #
+    # Defaults to TRUE, which is what the README has always promised and what every example
+    # sets. The code used to have no resolver at all -- the orchestrator cast the raw value
+    # inline, and [bool]$null is $false -- so omitting the key silently opted into mutating
+    # uncovered lines, whose mutants are guaranteed survivors. That reports a materially
+    # worse score than the tool is designed to give, and measures coverage rather than test
+    # quality, which is a separate gate (#25).
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param($Cfg)
+    if ($null -eq $Cfg.coveredLinesOnly) { return $true }
+    return [bool]$Cfg.coveredLinesOnly
+}
+
 function Get-PSMutationSandboxPlan {
     # Translate the config's source-relative mutate/tests into sandbox absolute paths.
     #

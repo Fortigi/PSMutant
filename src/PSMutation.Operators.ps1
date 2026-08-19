@@ -33,6 +33,16 @@ $script:PSMutationBoundaryMap = @{ '-gt' = '-ge'; '-ge' = '-gt'; '-lt' = '-le'; 
 # repo gating on thresholds.break would go red purely from upgrading the module.
 $script:PSMutationDefaultOperators = @('BinaryOperator', 'BooleanLiteral', 'NumberLiteral', 'NegationRemoval')
 
+function Get-PSMutationKnownOperator {
+    # Every operator name this module understands, sorted. Exposed as a function so the
+    # config validator can name the alternatives without reaching into this file's state
+    # -- the vocabulary lives here, and only here.
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param()
+    return [string[]]@($script:PSMutationOperatorMap.Keys | Sort-Object)
+}
+
 function Get-PSMutationOperatorList {
     # Which mutation operators to apply; unset means the default set above.
     #
@@ -297,7 +307,15 @@ function Get-PSMutationCandidate {
     $out = [System.Collections.Generic.List[object]]::new()
     foreach ($op in $Operators) {
         $fn = $script:PSMutationOperatorMap[$op]
-        if ($fn) { & $fn -Ast $ast -File $Path -Ranges $ranges | ForEach-Object { $out.Add($_) } }
+        # Throw rather than skip. An unknown name used to be silently dropped, so a repo
+        # that opted into ConditionForcing and misspelled it got its old vacuous score
+        # back and concluded the operator found nothing in their code (#24). A caller
+        # asking for an operator that does not exist has a broken config, not an empty
+        # result.
+        if (-not $fn) {
+            throw "Unknown mutation operator '$op'. Valid operators: $((Get-PSMutationKnownOperator) -join ', ')."
+        }
+        & $fn -Ast $ast -File $Path -Ranges $ranges | ForEach-Object { $out.Add($_) }
     }
 
     $i = 0
