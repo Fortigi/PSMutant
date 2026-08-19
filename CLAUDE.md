@@ -341,6 +341,29 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   is a gallery version that cannot be withdrawn -- so its group serialises releases and a
   second tag waits. #42 fixed only `ci.yml`; the other two each went on missing one of the
   two guards until this was written down.
+- **An unrecognised config key is an error, and the message names the key.** Every key is
+  checked against `$script:PSMutationConfigKeys`, every `thresholds` sub-key and every
+  operator name likewise, and the message offers the nearest valid name within two edits --
+  two being what a transposition costs, beyond which a suggestion is a guess that sends the
+  reader to fix a key that was never the problem.
+
+  An **error**, never a warning: a warning in a CI log is indistinguishable from silence,
+  and every failure in this class made the gate weaker while the run stayed green.
+  `thresholds.brake` left the break gate unable to fail; a misspelled operator was dropped
+  and then written into the report as though it had run, handing back the vacuous score #5
+  exists to prevent. `_`-prefixed keys are exempt, because JSON has no comments and the
+  shipped configs use them.
+
+  Adding a key means adding it to that list and to the README table in the same commit. (#24)
+- **A documented default is pinned by a test, not by prose.** `tests/Config.Tests.ps1` has a
+  Describe asserting every default the README config table claims, so the table cannot drift
+  from the resolvers again. It had drifted twice: `sandboxSubtrees` was documented as a value
+  the code never had, and `coveredLinesOnly` was documented `true` while the code had no
+  resolver at all and `[bool]$null` gave `$false`.
+
+  This is the enforceable half of "check the docs against the code". The rest still is not
+  enforced -- when you change a threshold, an operator set or a message, grep `README.md`,
+  `CLAUDE.md` and `examples/psmutant.config.json` in the same commit. (#25)
 - **An equivalence declaration is a checkable claim, not a mute button.** It carries a
   written argument someone can disagree with, and the run fails if it is ever killed or
   stops matching a mutant. Before declaring one, verify the claim -- run the code without
@@ -369,18 +392,12 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
-issue; the rule is what stops the next instance.
+issue; the rule is what stops the next instance, and it moves up to "Practices to preserve"
+in the PR that closes its issue.
 
-- **Check the docs against the code when you change behaviour.** Nothing enforces this, and
-  it has already failed twice: CLAUDE.md described a coverage trap that was misattributed
-  for months, and `README.md` still documented a `sandboxSubtrees` default the code never
-  had. When you change a default, a threshold or an operator set, grep `README.md`,
-  `CLAUDE.md` and `examples/psmutant.config.json` for it in the same commit. (#25)
-- **Validate a new config key, and make a typo name the config.** Keys are read straight off
-  the parsed JSON, so a misspelling is not rejected -- it resolves to `$null` and fails much
-  later somewhere unrelated. `mutat` for `mutate` currently ends in
-  `Access to the path '...\psmut-sandbox-<pid>' is denied`. Any key you add should be
-  validated where the config is resolved, with a message that names the key. (#24)
+**This section is currently empty**, which is a state to notice rather than a milestone: it
+means the last review's findings have all landed, not that there is nothing left to find.
+The next review that turns up a maintenance gap puts it here with its issue number.
 
 ## Writing tests here
 

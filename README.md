@@ -153,8 +153,8 @@ refused rather than guessed at.
 
 | Key | Meaning |
 |---|---|
-| `mutate` | Files to mutate. Pure / I/O-free logic pays off most. |
-| `tests` | Map each mutate file → the Pester file(s) covering it (per-file test scoping). |
+| `mutate` | Files to mutate. Pure / I/O-free logic pays off most. **Required.** |
+| `tests` | Map each mutate file → the Pester file(s) covering it (per-file test scoping). **Required.** |
 | `operators` | Operator classes to inject. Default is the four expression operators; `StringLiteral`, `ConditionalBoundary`, `ConditionForcing` and `ReturnValue` are opt-in. |
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |
@@ -162,6 +162,13 @@ refused rather than guessed at.
 | `equivalents` | `file:line:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator; the run fails if one is killed or stops existing. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |
 | `reportPath` | Where the JSON report is written (relative to `-SourceRoot`). A `-RecheckFrom` run writes `<name>.recheck.json` beside it and never touches this file. |
+
+**Unrecognised keys are an error, not a warning.** A misspelling used to resolve to `null`
+and quietly weaken the run: `thresholds.brake` left the break gate unable to fail, and a
+misspelled operator name was dropped while still being recorded in the report as though it
+had been applied. The run now stops and names the key, with the nearest valid one where
+there is one. Keys starting with `_` are ignored, so you can use them for comments — JSON
+has none of its own.
 
 Reports also record `operators` and a `sourceHashes` map (SHA256 per mutated file). Those
 exist so `-RecheckFrom` can prove the mutant ids in a report still refer to the same code;
