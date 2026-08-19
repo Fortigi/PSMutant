@@ -4,6 +4,43 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
+### Changed
+- **A config key the module does not recognise is now an error** ([#24]). Keys were read
+  straight off the parsed JSON, so a misspelling was never rejected -- it resolved to `$null`
+  and made the run quietly weaker while staying green, which is the exact failure class this
+  tool exists to find in other people's code. Three verified instances:
+  - `thresholds.brake` disabled the break gate outright. `Get-PSMutationExitCode` reads
+    `$Thresholds.break`, so a repo shipping `{"brake": 100}` had a mutation gate that could
+    never fail and nothing said so.
+  - A misspelled operator name was silently dropped **and then written into the report's
+    `operators` array**, so the artifact recorded a set that was never applied. That defeats
+    the operators added in [#5]: opt into `ConditionForcing`, misspell it, and you get your
+    old vacuous score back and conclude the new operator found nothing in your code.
+    `Get-PSMutationCandidate` now throws instead of skipping.
+  - `mutat` for `mutate` surfaced as
+    `Access to the path '...\psmut-sandbox-<pid>' is denied`, mentioning neither the config
+    nor the key.
+
+  The message names the offending key and offers the nearest valid one within two edits --
+  two being what a transposition costs, which is what `brake`/`break` is. Beyond that no
+  suggestion is made, because a wrong guess sends the reader off to fix a key that was never
+  the problem. `mutate` and `tests` are now required and must be non-empty. Keys starting
+  with `_` are exempt: JSON has no comments, and the shipped configs use them. An error and
+  not a warning, deliberately -- a warning in a CI log is indistinguishable from silence.
+- **`coveredLinesOnly` now defaults to `true`, matching what the README has always promised**
+  ([#25]). It was the only config value with no resolver at all: the orchestrator cast the
+  raw value inline, and `[bool]$null` is `$false`, so omitting the key silently opted into
+  mutating uncovered lines. Every mutant on an uncovered line is a guaranteed survivor, so a
+  consumer who trusted the table and omitted the key got a materially worse score than the
+  tool is designed to give, with nothing to explain why -- and the number measured coverage
+  rather than test quality, which is a separate gate. Set `"coveredLinesOnly": false`
+  explicitly to keep the old behaviour.
+
+  The documented defaults are now pinned by tests rather than by prose, so the README config
+  table cannot drift from the resolvers again. It had drifted twice: this one, and
+  `sandboxSubtrees`, documented as `["tools","test","setup"]` -- a value the code has never
+  had -- and corrected when [#45] moved that constant.
+
 ### Internal
 - The rules that closed issues were supposed to leave behind are now actually written down,
   and two workflows gained the guard [#42] only ever applied to one of them. An audit of the

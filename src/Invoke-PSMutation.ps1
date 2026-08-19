@@ -69,6 +69,7 @@ function Invoke-PSMutation {
 
     $root = (Resolve-Path $SourceRoot).Path
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
+    Assert-PSMutationConfig -Cfg $cfg
     Assert-PSMutationPester
     Clear-PSMutationStaleSandbox
 
@@ -84,7 +85,7 @@ function Invoke-PSMutation {
         if (-not $Quiet) { Write-Host ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout) -ForegroundColor Green }
 
         $ops = Get-PSMutationOperatorList -Cfg $cfg
-        $cands = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly ([bool]$cfg.coveredLinesOnly) -CoveredLines $baseline.CoveredLines
+        $cands = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly (Get-PSMutationCoveredLinesOnly -Cfg $cfg) -CoveredLines $baseline.CoveredLines
         $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $sandbox
         $reportPath = Join-Path $root $cfg.reportPath
 
