@@ -4,7 +4,11 @@
 # the ORDER within it is not: every cross-file reference happens inside a function body, so
 # it resolves at call time once all seven are dot-sourced. Verified by loading them in exact
 # reverse order, which behaves identically. This comment previously claimed order mattered.
-# Nothing enforces the layering the order was meant to express; see issue #52.
+#
+# Keep the order anyway. It is a topological order of the real dependency graph -- pure
+# layers, then the runner, then the entry point -- so reading the list top to bottom is the
+# cheapest description of the architecture anyone gets. It is a readable convention, not a
+# constraint, and nothing enforces the direction it expresses; see issue #52.
 
 $src = Join-Path $PSScriptRoot 'src'
 foreach ($file in @(
