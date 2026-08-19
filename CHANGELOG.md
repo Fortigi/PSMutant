@@ -28,6 +28,14 @@ All notable changes to PSMutant are documented here. Format follows
     ([#33]) and the `GateDecisions.ps1` rule ([#27], cited by number after it closed). Both
     moved to "Practices to preserve", and the rule for next time is to move a rule across in
     the same PR that closes its issue.
+  - `code-scanning.yml` installed its two pinned modules unconditionally with
+    `Install-Module -Force`, where `ci.yml` skips the install when the runner image already
+    has the pinned version and then asserts it is present. The unconditional form collides
+    with the PSScriptAnalyzer the image ships: the install warns "currently in use" and
+    continues, and `Invoke-ScriptAnalyzer` then dies with a bare "Object reference not set to
+    an instance of an object" naming neither a file nor a rule. This surfaced by failing the
+    **required** check on a green branch; a re-run with no code change passed. Same class as
+    [#33] -- two workflows agreeing on a version but not on how they obtain it.
   - The Gates table documented `ci.yml` only. The publish path had grown real gates from [#26]
     and [#37] and the required code-scanning check was absent entirely, so the file described
     a project whose one irreversible action looked ungated -- which is what #26 was about. The
