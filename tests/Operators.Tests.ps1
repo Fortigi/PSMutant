@@ -503,4 +503,69 @@ Describe 'Get-PSMutationKnownOperator' {
             'BinaryOperator', 'BooleanLiteral', 'ConditionalBoundary', 'ConditionForcing',
             'NegationRemoval', 'NumberLiteral', 'ReturnValue', 'StringLiteral')
     }
+
+    It 'lists them sorted, so the error message reads predictably' {
+        # Should-BeCollection above ignores order, so it cannot make this claim. Joined and
+        # compared as a string, which is the only way to assert a sequence here.
+        (Get-PSMutationKnownOperator) -join ',' | Should-Be (((Get-PSMutationKnownOperator) | Sort-Object) -join ',')
+    }
+}
+
+Describe 'mutant ids do not depend on the order operators were listed in' {
+    BeforeAll {
+        # Two operators that interleave in the source, so walk order and source order
+        # genuinely differ -- a fixture where one operator's candidates all preceded the
+        # other's would pass no matter how ids were assigned.
+        $script:orderFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-order-$PID.ps1"
+        @'
+function Test-Thing {
+    param($a, $b)
+    if ($a -eq 1) { return $true }
+    if (-not $b) { return $false }
+    return $a + 2
+}
+'@ | Set-Content $script:orderFixture
+    }
+
+    AfterAll { Remove-Item $script:orderFixture -ErrorAction SilentlyContinue }
+
+    It 'assigns the same id to the same mutant whichever order the operators are listed in' {
+        # THE #29 defect. Ids came from walk order, so swapping two entries in a config's
+        # `operators` array renumbered everything -- while Write-PSMutationReport records
+        # that array SORTED, so Test-PSMutationRecheckCompatible saw no change and a
+        # recheck matched survivors by id against a different set of mutants.
+        $forward = Get-PSMutationCandidate -Path $script:orderFixture -Operators @('BinaryOperator', 'BooleanLiteral')
+        $reverse = Get-PSMutationCandidate -Path $script:orderFixture -Operators @('BooleanLiteral', 'BinaryOperator')
+
+        $key = { param($c) '{0}|{1}|{2}' -f $c.Id, $c.StartOffset, $c.Description }
+        @($reverse | ForEach-Object { & $key $_ }) |
+            Should-BeCollection @($forward | ForEach-Object { & $key $_ })
+    }
+
+    It 'numbers in source order, so an id means a position in the file' {
+        # Pins WHICH canonical order, not merely that one exists. Without this, sorting by
+        # something arbitrary but stable would satisfy the test above and still make ids
+        # unreadable.
+        #
+        # Joined to a string deliberately: Should-BeCollection compares collections WITHOUT
+        # regard to order, so `51,124,67,101` and `51,67,101,124` pass against it. Written
+        # that way this test passed against the very defect it exists to catch -- checked by
+        # running it against the pre-fix source.
+        $c = @(Get-PSMutationCandidate -Path $script:orderFixture -Operators @('BinaryOperator', 'BooleanLiteral'))
+        $byId = @($c | Sort-Object Id | ForEach-Object { $_.StartOffset }) -join ','
+        $ascending = @($c | ForEach-Object { $_.StartOffset } | Sort-Object) -join ','
+        $byId | Should-Be $ascending
+    }
+
+    It 'separates two mutants that share an offset and an operator' {
+        # ConditionForcing emits both the $true and the $false forcing at ONE extent, so
+        # (StartOffset, Operator) is not a unique key. If the sort were keyed only on those,
+        # the tie would fall back to walk order and #29 would survive for this operator.
+        $forward = Get-PSMutationCandidate -Path $script:orderFixture -Operators @('ConditionForcing', 'ReturnValue')
+        $reverse = Get-PSMutationCandidate -Path $script:orderFixture -Operators @('ReturnValue', 'ConditionForcing')
+
+        @($forward | Where-Object { $_.Operator -eq 'ConditionForcing' }).Count | Should-BeGreaterThan 1
+        @($reverse | ForEach-Object { '{0}|{1}' -f $_.Id, $_.Description }) |
+            Should-BeCollection @($forward | ForEach-Object { '{0}|{1}' -f $_.Id, $_.Description })
+    }
 }

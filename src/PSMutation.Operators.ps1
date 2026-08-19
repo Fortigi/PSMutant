@@ -318,10 +318,40 @@ function Get-PSMutationCandidate {
         & $fn -Ast $ast -File $Path -Ranges $ranges | ForEach-Object { $out.Add($_) }
     }
 
+    # Canonical order BEFORE numbering, not walk order. Ids used to come from the order
+    # the operator list happened to be written in, so swapping two entries in a config's
+    # `operators` array renumbered every mutant -- while the report records that array
+    # SORTED, so the recheck compatibility gate saw no change and matched survivors by id
+    # against a different set (#29). A formatter or an alphabetising editor plugin does
+    # that unprompted.
+    #
+    # Description is part of the key because (StartOffset, Operator) is not unique:
+    # ConditionForcing emits both the $true and the $false forcing at one extent.
+    # Typed, not @()-wrapped: @(...) infers System.Object[], which does not match the
+    # declared [pscustomobject[]] and trips PSUseOutputTypeCorrectly -- an Information rule
+    # the lint gate's -Severity filter hides but code scanning reports. The cast is free,
+    # every element is already a pscustomobject, and it makes the declaration true rather
+    # than widening it to cover a vaguer type.
+    # The cast is on the EXPRESSION, and @() stays inside it. Both halves matter: without
+    # the @() an empty candidate set casts to $null instead of an empty array, and with the
+    # cast on the variable rather than the expression the analyzer still infers
+    # System.Object[] and reports PSUseOutputTypeCorrectly against the declared type.
+    $ordered = [pscustomobject[]]@($out | Sort-Object -Property StartOffset, Operator, Description)
+
+    # Numbering happens here, over the UNFILTERED set, and Select-PSMutationCandidate
+    # applies the covered-lines filter afterwards. That order is load-bearing rather than
+    # incidental (#59): ids assigned over the whole set survive a coverage change, which is
+    # exactly what a recheck needs, because writing the assertions that kill survivors is
+    # the very thing that widens coverage. The compatibility gate deliberately does not
+    # inspect coverage, and it does not have to while this holds.
+    #
+    # So do NOT "optimise" this by filtering first, or by moving the numbering into
+    # Select-PSMutationCandidate. That reads like an obvious improvement and silently makes
+    # a recheck answer confidently about the wrong mutants.
     $i = 0
-    foreach ($c in $out) { $c.Id = ++$i }
+    foreach ($c in $ordered) { $c.Id = ++$i }
     # NO comma-wrap here: this result is piped directly (Select-PSMutationCandidate),
     # and `, $array` would enter the pipeline as ONE item, so Where-Object would run
     # once against the whole array. Emit enumerated; callers that need an array wrap @().
-    return $out.ToArray()
+    return $ordered
 }

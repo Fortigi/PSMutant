@@ -5,6 +5,45 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Changed
+- **Mutant ids no longer depend on the order the config listed its operators in** ([#29]).
+  Ids came from the order the operator list was iterated, while `Write-PSMutationReport`
+  records that list **sorted** and `Test-PSMutationRecheckCompatible` compares it sorted. So
+  swapping two entries in `"operators"` renumbered every mutant while the recorded set stayed
+  byte-identical: the gate saw no change, accepted the report, and a `-RecheckFrom` run matched
+  survivors by id against a different set of mutants. A formatter or an alphabetising editor
+  plugin does that unprompted.
+
+  Reproduced before fixing: with `["BinaryOperator","BooleanLiteral"]`, id 1 was `-eq -> -ne`
+  at offset 51; with the two swapped, id 1 was `$true -> $false` at offset 67. That is the
+  confident-wrong-answer case `PSMutation.Recheck.ps1` says it prevents, reachable by
+  reordering a JSON array.
+
+  Candidates are now sorted into a canonical order -- `StartOffset`, then `Operator`, then
+  `Description` -- before ids are assigned, so an id means a position in the file. `Description`
+  is part of the key because `ConditionForcing` emits both the `$true` and the `$false` forcing
+  at one extent, so offset and operator together are not unique. The compatibility gate is
+  unchanged and still compares the operator set sorted, which is now simply correct: a reorder
+  no longer changes anything, so refusing one would be a nuisance rather than a guard.
+
+  **Existing reports are invalidated once.** Ids for a given source and operator set change with
+  this release, so a `-RecheckFrom` against a report written by an earlier version will match
+  the wrong mutants. Run the full set once to regenerate.
+- `Get-PSMutationCandidate` and `Get-PSMutantUnloadedFile` now cast their returned array to the
+  type they declare, silencing two `PSUseOutputTypeCorrectly` findings. The first was introduced
+  by the sort above; the second had been sitting in `tools/GateDecisions.ps1` unnoticed. Neither
+  was visible to the lint gate, which filters to Error and Warning, while the **required**
+  code-scanning check evaluates Information rules too -- an asymmetry now tracked as [#76].
+  The cast goes on the *expression* with `@()` inside it: casting the variable leaves the
+  analyzer inferring `System.Object[]` regardless, and dropping the `@()` turns an empty result
+  into `$null` rather than an empty array, which four tests caught immediately.
+- The invariant that mutant ids are assigned **before** the covered-lines filter is now stated
+  at the numbering site and pinned by a test ([#59]). It was correct but undocumented, and it is
+  what lets a recheck match survivors across a coverage change -- which matters because writing
+  the assertions that kill survivors is exactly what widens coverage, and the compatibility gate
+  deliberately does not inspect coverage. The plausible refactor is "do not number candidates you
+  are about to discard": move the numbering into `Select-PSMutationCandidate` and a recheck
+  starts answering confidently about the wrong mutants, with every gate still green. The test
+  fails the moment that happens.
 - **PSMutant no longer declares Pester in `RequiredModules`, and no longer imports one when
   you import PSMutant** ([#30]). `ModuleVersion` in `RequiredModules` is a *minimum*, and
   PowerShell satisfies it by importing the **newest installed** version -- at import time,

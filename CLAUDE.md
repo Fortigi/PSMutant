@@ -420,9 +420,22 @@ Gaps in how the repo is maintained, as rules rather than as a backlog. Each has 
 issue; the rule is what stops the next instance, and it moves up to "Practices to preserve"
 in the PR that closes its issue.
 
-**This section is currently empty**, which is a state to notice rather than a milestone: it
-means the last review's findings have all landed, not that there is nothing left to find.
-The next review that turns up a maintenance gap puts it here with its issue number.
+- **The two PSScriptAnalyzer gates must analyse the same way, not just the same files.** They
+  share `PSSA_PATHS` and `PSScriptAnalyzerSettings.psd1`, but `ci.yml` filters to
+  `-Severity Error, Warning` and `code-scanning.yml` -- a **required** check -- does not. So an
+  **Information** finding passes the lint gate, locally and in CI, and then surfaces as a code
+  scanning alert where nobody was looking.
+
+  Not hypothetical: sorting candidates in #29 made `PSUseOutputTypeCorrectly` fire on
+  `Get-PSMutationCandidate`, because the inferred `System.Object[]` stopped matching the
+  declared `[pscustomobject[]]`, and a second instance had been sitting unseen in
+  `tools/GateDecisions.ps1`. Until that is aligned, **run the analyzer with no `-Severity`
+  before pushing**, not the filtered form the lint step uses. (#76)
+
+  The fix for that rule specifically: cast the **expression**, keeping `@()` inside it --
+  `[pscustomobject[]]@(...)`. Casting the *variable* leaves the analyzer inferring
+  `System.Object[]` anyway, and dropping the `@()` turns an empty result into `$null` instead
+  of an empty array, which the suite catches immediately.
 
 ## Writing tests here
 
@@ -481,6 +494,11 @@ Two traps worth knowing when adding assertions:
 - `Should-Be` **errors** if the expected value is a collection — use
   `Should-BeCollection`. This bites on a parenthesised range (`(1..$n)`) just as much as
   on `@(...)`.
+- `Should-BeCollection` **ignores order**, and has no switch to make it strict — its only
+  parameters are `Actual`, `Expected`, `Because` and `Count`. `51,124,67,101` passes against
+  an expected `51,67,101,124`. That is right for a set, and silently vacuous when the *order*
+  is the claim: a test written that way passed against the exact defect it was added to catch
+  (#29). When sequence matters, join both sides and use `Should-Be`.
 - `Should-BeTrue`/`Should-BeFalse` are **strict** in v6 (`$true`/`$false` only), where
   the classic ones accepted anything truthy/falsy. Every use here is a real boolean, so
   strict is correct — reach for `Should-BeTruthy`/`Should-BeFalsy` only if that changes.
