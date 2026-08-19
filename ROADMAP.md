@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-19. 37 issues open.
+Snapshot 2026-08-19. 36 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -120,11 +120,6 @@ had happen twice with its own documentation.
 
 Pick these up between waves; none blocks anything.
 
-- **#30** `RequiredModules` auto-imports the newest Pester, above the layer that guards against
-  it. Small, consumer-facing, no dependencies -- the best early win of anything left, and
-  cheaper now than when this was written: #45 created `PSMutation.Pester.ps1`, so the single
-  enforcement point it needs already exists and is tested. It is the last live instance of the
-  #16 class, one layer up.
 - **#46** `switch`/ternary blind spot. Natural follow-up to the operators #5 landed.
 - **#55** nothing asserts Pester's result vocabulary is two-valued. Small, and it guards the
   external boundary the module deliberately does not abstract.
