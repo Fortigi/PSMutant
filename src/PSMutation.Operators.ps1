@@ -33,6 +33,26 @@ $script:PSMutationBoundaryMap = @{ '-gt' = '-ge'; '-ge' = '-gt'; '-lt' = '-le'; 
 # repo gating on thresholds.break would go red purely from upgrading the module.
 $script:PSMutationDefaultOperators = @('BinaryOperator', 'BooleanLiteral', 'NumberLiteral', 'NegationRemoval')
 
+function Get-PSMutationOperatorList {
+    # Which mutation operators to apply; unset means the default set above.
+    #
+    # Note the truthiness test is deliberate and matches the behaviour this replaced:
+    # an EMPTY operators list falls back to the defaults rather than selecting none.
+    # Arguably an explicit [] should mean "none", but that is a behaviour change, not
+    # a refactor, so it is left alone here.
+    #
+    # Config resolution normally lives in PSMutation.Config.ps1, and this is the one
+    # exception: Get-PSMutationCandidate is EXPORTED with $script:PSMutationDefaultOperators
+    # as its -Operators default, so that constant cannot move without breaking the public
+    # promise -- and a constant read from another file leaves neither file readable on its
+    # own (#38). The resolver comes to the default rather than the other way round.
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param($Cfg)
+    if ($Cfg.operators) { return [string[]]@($Cfg.operators) }
+    return [string[]]$script:PSMutationDefaultOperators
+}
+
 function Set-PSMutationText {
     # Produce the mutated source for a single candidate -- a pure offset splice.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
@@ -84,20 +104,40 @@ function Test-PSMutationInLoop {
     return $false
 }
 
+function Get-PSMutationSwapCandidate {
+    # Every binary-operator swap: find each binary expression, look its operator token
+    # up in a map, emit the replacement. Shared body, so the two callers below cannot
+    # drift.
+    #
+    # They were the same twelve lines twice, differing only in map and operator name
+    # (#38) -- which meant the loop-condition guard, the ErrorPosition trick and the
+    # lowercasing all had to be maintained in both, or silently fixed in one.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param(
+        $Ast,
+        [string]$File,
+        [object[]]$Ranges = @(),
+        [Parameter(Mandatory)] [hashtable]$Map,
+        [Parameter(Mandatory)] [string]$Operator
+    )
+    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst] }, $true)
+    foreach ($n in $nodes) {
+        $ext = $n.ErrorPosition
+        $key = $ext.Text.ToLowerInvariant()
+        if (-not $Map.ContainsKey($key)) { continue }
+        if (Test-PSMutationInLoop -Extent $ext -Ranges $Ranges) { continue }
+        $to = $Map[$key]
+        New-PSMutationCandidate -Extent $ext -File $File -Original $ext.Text -Mutated $to -Operator $Operator -Description "$($ext.Text) -> $to"
+    }
+}
+
 function Get-PSMutationBinaryCandidate {
     # -eq<->-ne, -and<->-or, +<->-, ...  (operator token located via ErrorPosition)
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst] }, $true)
-    foreach ($n in $nodes) {
-        $ext = $n.ErrorPosition
-        $key = $ext.Text.ToLowerInvariant()
-        if (-not $script:PSMutationBinaryMap.ContainsKey($key)) { continue }
-        if (Test-PSMutationInLoop -Extent $ext -Ranges $Ranges) { continue }
-        $to = $script:PSMutationBinaryMap[$key]
-        New-PSMutationCandidate -Extent $ext -File $File -Original $ext.Text -Mutated $to -Operator 'BinaryOperator' -Description "$($ext.Text) -> $to"
-    }
+    Get-PSMutationSwapCandidate -Ast $Ast -File $File -Ranges $Ranges -Map $script:PSMutationBinaryMap -Operator 'BinaryOperator'
 }
 
 function Get-PSMutationBooleanCandidate {
@@ -164,15 +204,7 @@ function Get-PSMutationBoundaryCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst] }, $true)
-    foreach ($n in $nodes) {
-        $ext = $n.ErrorPosition
-        $key = $ext.Text.ToLowerInvariant()
-        if (-not $script:PSMutationBoundaryMap.ContainsKey($key)) { continue }
-        if (Test-PSMutationInLoop -Extent $ext -Ranges $Ranges) { continue }
-        $to = $script:PSMutationBoundaryMap[$key]
-        New-PSMutationCandidate -Extent $ext -File $File -Original $ext.Text -Mutated $to -Operator 'ConditionalBoundary' -Description "$($ext.Text) -> $to"
-    }
+    Get-PSMutationSwapCandidate -Ast $Ast -File $File -Ranges $Ranges -Map $script:PSMutationBoundaryMap -Operator 'ConditionalBoundary'
 }
 
 function Get-PSMutationConditionCandidate {

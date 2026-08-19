@@ -465,3 +465,20 @@ function Test-LoopGuard {
         @($script:guard | Where-Object { $_.Operator -eq 'ConditionalBoundary' -and $_.Original -eq '-gt' }).Count | Should-Be 1
     }
 }
+
+Describe 'Get-PSMutationOperatorList' {
+    It 'uses the operators the config names' {
+        Get-PSMutationOperatorList -Cfg ([pscustomobject]@{ operators = @('BinaryOperator') }) |
+            Should-BeCollection @('BinaryOperator')
+    }
+    It 'falls back to the default set when the config is silent' {
+        $ops = Get-PSMutationOperatorList -Cfg ([pscustomobject]@{})
+        $ops | Should-ContainCollection 'BinaryOperator'
+        $ops | Should-ContainCollection 'BooleanLiteral'
+        $ops | Should-ContainCollection 'NumberLiteral'
+        $ops | Should-ContainCollection 'NegationRemoval'
+        # StringLiteral is NOT on by default: emptying every string in a repo produces
+        # a flood of survivors that say nothing about behaviour.
+        $ops | Should-NotContainCollection 'StringLiteral'
+    }
+}

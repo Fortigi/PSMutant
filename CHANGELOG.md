@@ -5,6 +5,94 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Internal
+- The rules that closed issues were supposed to leave behind are now actually written down,
+  and two workflows gained the guard [#42] only ever applied to one of them. An audit of the
+  nine issues closed so far found four gaps:
+  - `publish.yml` had no `concurrency` group and `code-scanning.yml` had no `timeout-minutes`.
+    #42 fixed `ci.yml` and stopped there, and nothing said a workflow needs both, so the other
+    two each kept missing one. `publish.yml` deliberately sets `cancel-in-progress: false` --
+    a superseded CI run is waste, but a half-finished publish is a gallery version that cannot
+    be withdrawn -- so its group serialises releases instead of cancelling them.
+    `code-scanning.yml` is a **required** check, so a wedged runner there held every merge
+    behind a pending status for the six-hour default.
+  - **The lesson of [#31] was never recorded**, and it is the sharpest one available: a
+    predicate can sit at 100% coverage and survive every mutant while the pipeline stage that
+    *calls* it is deleted and the suite stays green. Coverage watched the predicate's lines
+    run; self-mutation mutated the predicate's logic; neither gate can see that the caller
+    ignores the answer. The rule is to exercise a filter through its real entry point with one
+    item kept and one dropped in the same call. A second rule came out of the same issue: the
+    test titled "does NOT sweep the sandbox of a concurrently running process" never called
+    the sweep, so a title claimed coverage the body did not provide.
+  - CLAUDE.md's "Practices to adopt" section, which says of itself that every entry is an open
+    gap with a tracked issue, held two entries that were finished work -- the `pins.env` rule
+    ([#33]) and the `GateDecisions.ps1` rule ([#27], cited by number after it closed). Both
+    moved to "Practices to preserve", and the rule for next time is to move a rule across in
+    the same PR that closes its issue.
+  - `code-scanning.yml` installed its two pinned modules unconditionally with
+    `Install-Module -Force`, where `ci.yml` skips the install when the runner image already
+    has the pinned version and then asserts it is present. The unconditional form collides
+    with the PSScriptAnalyzer the image ships: the install warns "currently in use" and
+    continues, and `Invoke-ScriptAnalyzer` then dies with a bare "Object reference not set to
+    an instance of an object" naming neither a file nor a rule. This surfaced by failing the
+    **required** check on a green branch; a re-run with no code change passed. Same class as
+    [#33] -- two workflows agreeing on a version but not on how they obtain it.
+  - The Gates table documented `ci.yml` only. The publish path had grown real gates from [#26]
+    and [#37] and the required code-scanning check was absent entirely, so the file described
+    a project whose one irreversible action looked ungated -- which is what #26 was about. The
+    mutant count is no longer quoted exactly; keeping a number like that in step by hand is
+    how the coverage figures here became folklore.
+- Each source file now holds what its docstring says it holds ([#45]), and no file reaches
+  into another's module state ([#38]). Nothing here changes behaviour; the point is that the
+  repo's own rule for where new logic goes -- "put the decision in a pure unit, keep the
+  entry point wiring" -- was only followable while the file names meant something, and four
+  files had drifted from their own synopses.
+  - **`src/PSMutation.Pester.ps1` is new** and owns the boundary with Pester: which one is
+    loaded, its path, the version guard, and the script a child runspace imports it under.
+    `Assert-PSMutationPester` and `Get-PSMutationPesterPath` were writing out the same
+    `Get-Module | Sort-Object | Select-Object -First 1` in two files that had no reason to be
+    read together -- one validating a version, the other handing a path to every child. If
+    they had ever diverged the process would have validated one Pester and mutated under
+    another, which is #16 reproduced from the inside. They now share one
+    `Get-PSMutationLoadedPester`.
+  - `Invoke-PSMutation.ps1` is one function. The Pester guard, a message constant and a
+    second complete orchestrator for the recheck mode used to live there under a synopsis
+    that said "public entry point". The recheck orchestrator moved to
+    `PSMutation.Recheck.ps1`, which now holds the whole feature instead of only its pure
+    half -- the old split was by purity rather than by feature, which is why two test files
+    each owned half of one behaviour.
+  - `PSMutation.Config.ps1` is resolvers only: `Assert-PSMutationBaselineGreen` moved beside
+    `Invoke-PSMutationBaseline`, whose output it is the only reader of, and
+    `ConvertTo-PSMutationRunResult` joined `PSMutation.Report.ps1`, which already owns the
+    other contract a consumer's CI reads. The rule this settles -- a guard lives with its
+    subject, not in a file grouped by grammatical form -- is recorded in CLAUDE.md, because
+    "someone adding a third guard has no basis for choosing" was the original complaint.
+  - The two cross-file `$script:` reads are gone, in opposite directions on purpose.
+    `$script:PSMutationDefaultOperators` stayed in `PSMutation.Operators.ps1` and
+    `Get-PSMutationOperatorList` moved to it, because `Get-PSMutationCandidate` is exported
+    with that constant as a parameter default and moving it would break the public promise.
+    The sandbox subtree default had no such claim on it, so it became
+    `$script:PSMutationDefaultSubtrees` in `PSMutation.Config.ps1` beside its only reader,
+    and `New-PSMutationSandbox -Subtrees` is now mandatory -- what to copy is a config
+    decision, and every caller already passed one.
+  - `Get-PSMutationBinaryCandidate` and `Get-PSMutationBoundaryCandidate` were the same
+    twelve lines twice, differing only in map and operator name; they now delegate to one
+    `Get-PSMutationSwapCandidate`, so the loop-condition guard and the `ErrorPosition` trick
+    cannot be fixed in one and missed in the other.
+  - `Get-PSMutationSandboxPlan` deliberately did **not** move to `PSMutation.Sandbox.ps1` as
+    #45 proposed. The stated reason for moving it -- that it would remove the cross-file
+    subtree read -- was wrong: that read was in `Get-PSMutationSubtree`, not in the plan
+    builder. It takes the parsed config as input, so it is config resolution, and
+    `Sandbox.ps1` is the one file that cannot be self-mutated, so moving it there would have
+    quietly dropped it from the mutation gate.
+  - `README.md` documented the `sandboxSubtrees` default as `["tools","test","setup"]`, which
+    the code has never had. Corrected to `["src","tests"]` here because this change moves that
+    exact constant, per the rule about grepping the docs when a default moves. The broader
+    documented-defaults audit is still [#25].
+  - The four equivalence declarations in `psmutant.self.config.json` were re-keyed. They are
+    identified by `file:line:description`, so adding lines to a docstring *above* one shifts
+    its key and the declaration stops matching -- the run then fails, correctly, reporting the
+    mutant as a survivor rather than silently ignoring a stale claim. Worth recording as a live
+    instance of [#3]: nothing here changed about the mutants or the arguments for them.
 - The fix for #2 is now actually tested ([#31]). Deleting the
   `Where-Object { Test-PSMutationSandboxAbandoned ... }` stage from
   `Clear-PSMutationStaleSandbox` reverts the module to #2 -- a concurrent run's files pulled

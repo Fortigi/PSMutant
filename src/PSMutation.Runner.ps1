@@ -5,7 +5,8 @@
     (see PSMutation.Sandbox.ps1); tracked source is never touched.
 
 .DESCRIPTION
-    Depends on PSMutation.Operators.ps1. Each function is small and single-purpose so
+    Depends on PSMutation.Operators.ps1 for candidates and PSMutation.Pester.ps1 for the
+    child runspace's import contract. Each function is small and single-purpose so
     every unit stays under the complexity ceiling. Each mutant's covering tests run in a
     cancellable runspace under a wall-clock timeout (Invoke-PSBoundedPester): the loop-
     condition guard is a speed optimisation that avoids obviously-doomed condition
@@ -56,6 +57,19 @@ function Invoke-PSMutationBaseline {
     }
 }
 
+function Assert-PSMutationBaselineGreen {
+    # Refuse to mutate against a failing suite. Every mutant would "die" for the
+    # reason the suite was already red, producing a perfect score that means nothing
+    # -- the single most misleading result this tool could hand back.
+    #
+    # Lives beside Invoke-PSMutationBaseline, whose output it is the only reader of.
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Baseline)
+    if (-not $Baseline.Passed) {
+        throw 'Baseline suite is not green - fix the tests before mutating.'
+    }
+}
+
 function Test-PSMutantCovered {
     # True if a candidate's line was executed by the baseline run. Pure.
     [OutputType([bool])]
@@ -82,70 +96,6 @@ function Select-PSMutationCandidate {
             ForEach-Object { $out.Add($_) }
     }
     return , $out.ToArray()
-}
-
-function Get-PSMutationPesterPath {
-    <#
-    .SYNOPSIS
-        File path of the Pester ALREADY LOADED in this process, so a child runspace can
-        import that one by path instead of resolving the name for itself.
-    .DESCRIPTION
-        A fresh runspace resolves `Pester` by NAME against PSModulePath and gets the
-        NEWEST version installed -- which is not necessarily the version this process
-        already loaded. Assemblies are per-process, so when the two differ the child
-        dies on "An incompatible version of the Pester.dll assembly is already loaded".
-        A child that dies produces no verdict, and a mutant with no verdict used to be
-        classified Killed: on any machine with two Pesters installed, every mutant died
-        and the run reported a silent, entirely fake 100%.
-
-        Importing by PATH is what makes the module version-agnostic in the way the
-        manifest promises: whatever Pester >= 5 the consuming repo runs, the mutant
-        runs under that same one.
-    .OUTPUTS
-        [string] path to the loaded Pester module file.
-    #>
-    [OutputType([string])]
-    [CmdletBinding()]
-    param()
-    # Highest wins: two Pester 5.x releases CAN coexist in one process (the dll guard
-    # only rejects a LOWER loaded version), and the newer of them is the one whose
-    # assembly is actually serving calls.
-    $loaded = Get-Module Pester | Sort-Object Version -Descending | Select-Object -First 1
-    if (-not $loaded) {
-        throw 'Pester is not loaded in this session, so a mutant cannot be run against it.'
-    }
-    return $loaded.Path
-}
-
-function Get-PSMutationBoundedPesterScript {
-    <#
-    .SYNOPSIS
-        The script a mutant's child runspace runs: import the pinned Pester, run the
-        covering tests, emit the one-word result.
-    .DESCRIPTION
-        Named rather than inlined because it is the child's whole contract. Two things
-        in it are load-bearing and easy to "simplify" away:
-
-        * `Import-Module $pester` imports by PATH. Importing by name lets the runspace
-          resolve Pester itself, which picks the newest installed rather than the one
-          this process loaded -- the collision Get-PSMutationPesterPath exists to stop.
-        * `-ErrorAction Stop` makes a failed import terminate the child, so the caller
-          gets an exception instead of an empty result that reads as a dead mutant.
-    .OUTPUTS
-        [string] the script text.
-    #>
-    [OutputType([string])]
-    [CmdletBinding()]
-    param()
-    return @'
-param($tests, $pester)
-Import-Module $pester -Force -ErrorAction Stop
-$c = New-PesterConfiguration
-$c.Run.Path = $tests
-$c.Run.PassThru = $true
-$c.Output.Verbosity = 'None'
-(Invoke-Pester -Configuration $c).Result
-'@
 }
 
 function Invoke-PSBoundedPester {

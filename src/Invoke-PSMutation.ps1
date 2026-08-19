@@ -1,74 +1,16 @@
 <#
 .SYNOPSIS
     Public entry point for PSMutant - mutation testing for PowerShell.
+
+.DESCRIPTION
+    One function, and deliberately nothing else: this file is WIRING. Every decision it
+    reaches for lives in a pure unit elsewhere -- guards, resolvers, scoring, the report
+    shape -- so each can be unit-tested and self-mutated on its own terms.
+
+    It used to also hold a Pester guard, a message constant and a second complete
+    orchestrator for the recheck mode, none of which the synopsis above described (#45).
+    A new decision belongs in the file that owns its subject, not here.
 #>
-
-$script:PSMutationPesterRequired = 'Pester 5+ is required. Install-Module Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser'
-
-function Assert-PSMutationPester {
-    <#
-    .SYNOPSIS
-        Make sure a usable Pester is available, WITHOUT pulling in a second one.
-    .DESCRIPTION
-        `Import-Module Pester -MinimumVersion 5.0.0` is not the no-op it looks like when
-        a satisfying Pester is already loaded: PowerShell re-resolves the name against
-        PSModulePath, picks the NEWEST version installed, and on a machine that has two
-        it collides with the Pester.dll already in the process -- which is fatal, and
-        happens before a single mutant runs.
-
-        So an already-loaded Pester is checked and accepted as it is, and the import
-        only happens when nothing is loaded at all. That is also what lets the module
-        honour the >= 5.0.0 in its manifest: it runs under the caller's Pester rather
-        than choosing one for them.
-    #>
-    [CmdletBinding()]
-    param()
-    $loaded = Get-Module Pester | Sort-Object Version -Descending | Select-Object -First 1
-    if ($loaded) {
-        if ($loaded.Version -lt [version]'5.0.0') { throw $script:PSMutationPesterRequired }
-        return
-    }
-    if (-not (Get-Module Pester -ListAvailable | Where-Object Version -ge '5.0.0')) {
-        throw $script:PSMutationPesterRequired
-    }
-    Import-Module Pester -MinimumVersion 5.0.0
-}
-
-function Invoke-PSMutationRecheckRun {
-    # The whole -RecheckFrom path, kept out of Invoke-PSMutation so the entry point
-    # stays an orchestrator rather than growing a second mode inline.
-    [OutputType([pscustomobject])]
-    [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] [string]$RecheckFrom,
-        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
-        [Parameter(Mandatory)] [hashtable]$Plan,
-        [Parameter(Mandatory)] [hashtable]$SourceHashes,
-        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Operators,
-        [Parameter(Mandatory)] [int]$TimeoutSeconds,
-        [Parameter(Mandatory)] [string]$SandboxRoot,
-        [Parameter(Mandatory)] [string]$ReportPath,
-        [switch]$Quiet
-    )
-    $prior = Get-Content $RecheckFrom -Raw | ConvertFrom-Json
-    # Refuse rather than guess. Mutant ids are AST-walk positions: if the source or
-    # the operator set moved, the ids in the report point at different mutants now,
-    # and a recheck would answer confidently about the wrong ones.
-    $why = Test-PSMutationRecheckCompatible -Report $prior -SourceHashes $SourceHashes -Operators $Operators
-    if ($why.Count -gt 0) {
-        throw ("Cannot recheck against '$RecheckFrom': " + ($why -join '; ') + '. Run the full set to regenerate the report.')
-    }
-    $targets = Select-PSMutationRecheckCandidate -Candidates $Candidates -Report $prior -SandboxRoot $SandboxRoot
-    if (-not $Quiet) { Write-Host "  Rechecking $($targets.Count) previous survivor(s)`n" -ForegroundColor Gray }
-
-    $results = Invoke-PSMutationLoop -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
-        -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -Quiet:$Quiet
-    $recheckPath = Get-PSMutationRecheckReportPath -ReportPath $ReportPath
-    $summary = Write-PSMutationRecheckReport -Results $results -ReportPath $recheckPath `
-        -PriorSurvivorCount @($prior.survivors).Count -SourceReportPath $RecheckFrom
-    if (-not $Quiet) { Show-PSMutationRecheckSummary -Summary $summary -Results $results -ReportPath $recheckPath }
-    return $summary
-}
 
 function Invoke-PSMutation {
     <#
