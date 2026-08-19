@@ -8,13 +8,17 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-19. 42 issues open.
+Snapshot 2026-08-19. 40 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
 exception, because it is one-way and cannot drift out of date the way a checklist would. Wave
 letters keep their original letters even as earlier ones disappear, so "Wave A" in an existing
 commit or PR still resolves.
+
+An entry leaves when the **work** is done, which can be slightly before its issue closes -- so
+the count above may briefly exceed what is listed here. Ordering is the only thing this file
+claims; the issues remain the record of what is open.
 
 ---
 
@@ -23,11 +27,6 @@ commit or PR still resolves.
 ```
 #47 output seam        ---> #11 annotations, #10 -ListOnly, #6 per-file scores
                             all three add a new rendering of the same data
-
-#45 + #38 file layout  ---> #24 config validation, #25 defaults, #40 colour bands,
-                            #4 merge, #6 ratchet
-                            each adds a guard, a resolver or a report field -- exactly
-                            the decision #45 says is currently ambiguous
 
 #34 report provenance  ---> #4 merge, #6 ratchet, #20 recheck chaining
                             all three read reports and would each invent field-sniffing
@@ -43,9 +42,11 @@ Two things follow that are worth stating out loud:
 
 - **#1 is the most-requested item and should not be first.** It rewrites the loop that #39 also
   needs and the output that #47 wants to abstract. Doing it early means doing parts of it twice.
-- **#24 is the highest-value single fix, and still should not be first.** It adds validation and
-  resolvers, and #45 is what decides where those live. #45 is a pure-move change with no
-  behaviour change, so the prerequisite is cheap -- it is a reordering, not a delay.
+- **#24 is the highest-value single fix, and is now unblocked.** It adds validation and
+  resolvers, and #45 was what decided where those live -- that was its only prerequisite, and
+  it is done. So #24 no longer has to wait for the rest of Wave C: the remaining items there
+  (#34, #47, #48) block Waves D and E, not #24. If you want the largest single reduction in
+  silent-wrong-answer surface, take it next, ahead of the wave it sits in.
 - **#1 is bigger than "add a runspace pool".** The architecture review established that
   sequential evaluation is a *correctness invariant*, not a tuning default: the loop mutates one
   shared sandbox copy and runs the covering tests against the whole tree
@@ -66,15 +67,14 @@ Two things follow that are worth stating out loud:
 
 ## Wave C -- structural groundwork
 
-All four are prerequisites, and none changes behaviour. Cheaper as one "make room" pass than
-as four refactors interleaved with features.
+All three are prerequisites, and none changes behaviour. Cheaper as one "make room" pass than
+as three refactors interleaved with features.
 
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#45 + #38** together | File responsibilities and the duplication overlap: #45's proposed `PSMutation.Pester.ps1` is the home that resolves #38's duplicated Pester resolution. Doing #38 alone puts the shared helper in a file #45 then wants to split. |
-| 2 | **#34** report provenance | `schemaVersion`, producing module version, timestamp, durations. Unblocks three issues and gives #1 a before/after number it currently has no way to produce. |
-| 3 | **#47** output seam | Separate deciding what to say from saying it. Unblocks three more. |
-| 4 | **#48** candidate contract | Decide what is public before #28/#29 change it. May resolve by simply un-exporting `Set-PSMutationText`. |
+| 1 | **#34** report provenance | `schemaVersion`, producing module version, timestamp, durations. Unblocks three issues and gives #1 a before/after number it currently has no way to produce. |
+| 2 | **#47** output seam | Separate deciding what to say from saying it. Unblocks three more. |
+| 3 | **#48** candidate contract | Decide what is public before #28/#29 change it. May resolve by simply un-exporting `Set-PSMutationText`. |
 
 #47 can slip to just before Wave E if you want output features sooner -- but then #11, #10 and #6
 each pay for it separately.
@@ -85,7 +85,7 @@ claimed dot-source order enforced the dependency direction -- is done. Option (b
 scheduled: do it with whichever of **#1**, **#8** or **#47** is picked up first. Those are the
 three changes that add edges in the region where a shortcut reads as reasonable in review, and an
 allowlist is worth most written just before the code that would violate it, rather than ageing
-quietly while nothing touches the graph. Within this wave that trigger is item 3.
+quietly while nothing touches the graph. Within this wave that trigger is #47.
 
 ## Wave D -- the silent-wrong-answer cluster
 
