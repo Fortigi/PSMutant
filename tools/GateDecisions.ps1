@@ -106,5 +106,15 @@ function Get-PSMutantUnloadedFile {
     )
     # No comma-wrap: callers wrap in @(), and a comma would hand them one item containing
     # the array (see #38).
-    return @($ShippedName | Where-Object { $RootModuleText -notmatch [regex]::Escape($_) })
+    #
+    # Typed rather than @()-wrapped, for the same reason as Get-PSMutationCandidate: @(...)
+    # infers System.Object[] and trips PSUseOutputTypeCorrectly, an Information rule the lint
+    # gate's -Severity filter hides and code scanning reports.
+    # The cast is on the EXPRESSION, and @() stays inside it. Both halves matter: without
+    # the @() an empty result casts to $null instead of an empty array, and with the cast on
+    # the variable rather than the expression the analyzer still infers System.Object[] and
+    # reports PSUseOutputTypeCorrectly -- an Information rule the lint gate's -Severity
+    # filter hides and code scanning surfaces.
+    $unloaded = [string[]]@($ShippedName | Where-Object { $RootModuleText -notmatch [regex]::Escape($_) })
+    return $unloaded
 }

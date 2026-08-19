@@ -327,7 +327,16 @@ function Get-PSMutationCandidate {
     #
     # Description is part of the key because (StartOffset, Operator) is not unique:
     # ConditionForcing emits both the $true and the $false forcing at one extent.
-    $ordered = @($out | Sort-Object -Property StartOffset, Operator, Description)
+    # Typed, not @()-wrapped: @(...) infers System.Object[], which does not match the
+    # declared [pscustomobject[]] and trips PSUseOutputTypeCorrectly -- an Information rule
+    # the lint gate's -Severity filter hides but code scanning reports. The cast is free,
+    # every element is already a pscustomobject, and it makes the declaration true rather
+    # than widening it to cover a vaguer type.
+    # The cast is on the EXPRESSION, and @() stays inside it. Both halves matter: without
+    # the @() an empty candidate set casts to $null instead of an empty array, and with the
+    # cast on the variable rather than the expression the analyzer still infers
+    # System.Object[] and reports PSUseOutputTypeCorrectly against the declared type.
+    $ordered = [pscustomobject[]]@($out | Sort-Object -Property StartOffset, Operator, Description)
 
     # Numbering happens here, over the UNFILTERED set, and Select-PSMutationCandidate
     # applies the covered-lines filter afterwards. That order is load-bearing rather than
