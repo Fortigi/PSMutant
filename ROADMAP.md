@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-19. 40 issues open.
+Snapshot 2026-08-19. 38 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -42,11 +42,6 @@ Two things follow that are worth stating out loud:
 
 - **#1 is the most-requested item and should not be first.** It rewrites the loop that #39 also
   needs and the output that #47 wants to abstract. Doing it early means doing parts of it twice.
-- **#24 is the highest-value single fix, and is now unblocked.** It adds validation and
-  resolvers, and #45 was what decided where those live -- that was its only prerequisite, and
-  it is done. So #24 no longer has to wait for the rest of Wave C: the remaining items there
-  (#34, #47, #48) block Waves D and E, not #24. If you want the largest single reduction in
-  silent-wrong-answer surface, take it next, ahead of the wave it sits in.
 - **#1 is bigger than "add a runspace pool".** The architecture review established that
   sequential evaluation is a *correctness invariant*, not a tuning default: the loop mutates one
   shared sandbox copy and runs the covering tests against the whole tree
@@ -93,13 +88,11 @@ Now has a home to land in. This is the wave with the most user-visible value.
 
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#24** config validation | Largest remaining silent-wrong-answer surface: `"brake"` for `"break"` makes the gate unable to fail. |
-| 2 | **#25** documented defaults | `coveredLinesOnly` needs the resolver #24's work introduces. Same file, same review. |
-| 3 | **#40** 0% prints green | Threshold-band resolution: again the same file. Do 1, 2 and 3 together. |
-| 4 | **#29** operator-order renumbering | Reordering a JSON array silently invalidates recheck reports. |
-| 5 | **#28** identity collision, with **#3** and **#59** | Same identity scheme, three different defects: a colliding key, a stale key, and an id whose stability rests on an unstated ordering. Fix once. |
-| 6 | **#54**, **#56** | The run-result shape and the score function's fused scope. #56 blocks per-file scores in Wave E. |
-| 7 | **#60**, **#61** | Two files documented Pure that do I/O, and `-Quiet` implemented two ways. Both are small, both are prerequisites for #47/#11 being done cleanly. |
+| 1 | **#40** 0% prints green | Threshold-band resolution, in the resolver file #24 and #25 have just shaped -- the same review, one wave later, and the cheapest thing left in this wave. |
+| 2 | **#29** operator-order renumbering | Reordering a JSON array silently invalidates recheck reports. |
+| 3 | **#28** identity collision, with **#3** and **#59** | Same identity scheme, three different defects: a colliding key, a stale key, and an id whose stability rests on an unstated ordering. Fix once. |
+| 4 | **#54**, **#56** | The run-result shape and the score function's fused scope. #56 blocks per-file scores in Wave E. |
+| 5 | **#60**, **#61** | Two files documented Pure that do I/O, and `-Quiet` implemented two ways. Both are small, both are prerequisites for #47/#11 being done cleanly. |
 
 ## Wave E -- output features
 
