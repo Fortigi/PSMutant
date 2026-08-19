@@ -207,6 +207,29 @@ function Get-PSMutationSubtree {
     return [string[]]$script:PSMutationDefaultSubtrees
 }
 
+function Get-PSMutationScoreBand {
+    # The bands the console summary colours the score by: at or above High is green, at or
+    # above Low is yellow, below Low is red.
+    #
+    # Resolved here, with defaults, because the raw config values used to be read straight
+    # into the comparison -- and in PowerShell any number `-ge $null` is $true. So a config
+    # with no thresholds, or the entirely reasonable `{"thresholds":{"break":80}}`, made the
+    # first branch always win and printed EVERY score green, including
+    # `Mutation score: 0%  (0 killed / 42)` in a run that exits 0. That is the smallest
+    # possible instance of the failure this tool exists to prevent, in front of exactly the
+    # person least able to spot it: a new adopter whose thresholds are not tuned yet (#40).
+    #
+    # Tested with `$null -ne`, not for truthiness like the resolvers above. A band of 0 is a
+    # meaningful setting -- "never colour this red" -- and 0 is falsy, so a truthiness test
+    # would silently substitute the default for it.
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param($Cfg)
+    $high = if ($null -ne $Cfg.thresholds.high) { $Cfg.thresholds.high } else { 85 }
+    $low = if ($null -ne $Cfg.thresholds.low) { $Cfg.thresholds.low } else { 70 }
+    return @{ High = [double]$high; Low = [double]$low }
+}
+
 function Get-PSMutationTimeout {
     # Per-mutant timeout in whole seconds.
     #
