@@ -5,6 +5,58 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Internal
+- Each source file now holds what its docstring says it holds ([#45]), and no file reaches
+  into another's module state ([#38]). Nothing here changes behaviour; the point is that the
+  repo's own rule for where new logic goes -- "put the decision in a pure unit, keep the
+  entry point wiring" -- was only followable while the file names meant something, and four
+  files had drifted from their own synopses.
+  - **`src/PSMutation.Pester.ps1` is new** and owns the boundary with Pester: which one is
+    loaded, its path, the version guard, and the script a child runspace imports it under.
+    `Assert-PSMutationPester` and `Get-PSMutationPesterPath` were writing out the same
+    `Get-Module | Sort-Object | Select-Object -First 1` in two files that had no reason to be
+    read together -- one validating a version, the other handing a path to every child. If
+    they had ever diverged the process would have validated one Pester and mutated under
+    another, which is #16 reproduced from the inside. They now share one
+    `Get-PSMutationLoadedPester`.
+  - `Invoke-PSMutation.ps1` is one function. The Pester guard, a message constant and a
+    second complete orchestrator for the recheck mode used to live there under a synopsis
+    that said "public entry point". The recheck orchestrator moved to
+    `PSMutation.Recheck.ps1`, which now holds the whole feature instead of only its pure
+    half -- the old split was by purity rather than by feature, which is why two test files
+    each owned half of one behaviour.
+  - `PSMutation.Config.ps1` is resolvers only: `Assert-PSMutationBaselineGreen` moved beside
+    `Invoke-PSMutationBaseline`, whose output it is the only reader of, and
+    `ConvertTo-PSMutationRunResult` joined `PSMutation.Report.ps1`, which already owns the
+    other contract a consumer's CI reads. The rule this settles -- a guard lives with its
+    subject, not in a file grouped by grammatical form -- is recorded in CLAUDE.md, because
+    "someone adding a third guard has no basis for choosing" was the original complaint.
+  - The two cross-file `$script:` reads are gone, in opposite directions on purpose.
+    `$script:PSMutationDefaultOperators` stayed in `PSMutation.Operators.ps1` and
+    `Get-PSMutationOperatorList` moved to it, because `Get-PSMutationCandidate` is exported
+    with that constant as a parameter default and moving it would break the public promise.
+    The sandbox subtree default had no such claim on it, so it became
+    `$script:PSMutationDefaultSubtrees` in `PSMutation.Config.ps1` beside its only reader,
+    and `New-PSMutationSandbox -Subtrees` is now mandatory -- what to copy is a config
+    decision, and every caller already passed one.
+  - `Get-PSMutationBinaryCandidate` and `Get-PSMutationBoundaryCandidate` were the same
+    twelve lines twice, differing only in map and operator name; they now delegate to one
+    `Get-PSMutationSwapCandidate`, so the loop-condition guard and the `ErrorPosition` trick
+    cannot be fixed in one and missed in the other.
+  - `Get-PSMutationSandboxPlan` deliberately did **not** move to `PSMutation.Sandbox.ps1` as
+    #45 proposed. The stated reason for moving it -- that it would remove the cross-file
+    subtree read -- was wrong: that read was in `Get-PSMutationSubtree`, not in the plan
+    builder. It takes the parsed config as input, so it is config resolution, and
+    `Sandbox.ps1` is the one file that cannot be self-mutated, so moving it there would have
+    quietly dropped it from the mutation gate.
+  - `README.md` documented the `sandboxSubtrees` default as `["tools","test","setup"]`, which
+    the code has never had. Corrected to `["src","tests"]` here because this change moves that
+    exact constant, per the rule about grepping the docs when a default moves. The broader
+    documented-defaults audit is still [#25].
+  - The four equivalence declarations in `psmutant.self.config.json` were re-keyed. They are
+    identified by `file:line:description`, so adding lines to a docstring *above* one shifts
+    its key and the declaration stops matching -- the run then fails, correctly, reporting the
+    mutant as a survivor rather than silently ignoring a stale claim. Worth recording as a live
+    instance of [#3]: nothing here changed about the mutants or the arguments for them.
 - The fix for #2 is now actually tested ([#31]). Deleting the
   `Where-Object { Test-PSMutationSandboxAbandoned ... }` stage from
   `Clear-PSMutationStaleSandbox` reverts the module to #2 -- a concurrent run's files pulled

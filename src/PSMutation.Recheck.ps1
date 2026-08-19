@@ -28,6 +28,11 @@
     set -- and meaningless if either changed. Rather than silently matching the
     wrong mutants, a recheck refuses to run when the recorded source hash or
     operator set no longer matches. That is why the report carries both.
+
+    This file holds the WHOLE feature, pure parts and orchestration alike. It used to
+    hold only the pure half, with Invoke-PSMutationRecheckRun sitting in the entry
+    point -- a split by purity rather than by feature, which nothing documented and
+    which is why two test files each owned half of one behaviour (#45).
 #>
 
 function Get-PSMutationSourceHash {
@@ -175,4 +180,41 @@ function Show-PSMutationRecheckSummary {
     Write-Host "  Not a mutation score - this run skipped every mutant that was already killed." -ForegroundColor DarkGray
     Write-Host "  Run the full set before trusting a number: edited tests can revive mutants this run never saw." -ForegroundColor DarkGray
     Write-Host "  Report: $ReportPath" -ForegroundColor Gray
+}
+
+function Invoke-PSMutationRecheckRun {
+    # The whole -RecheckFrom path. Impure -- it reads the prior report and drives the
+    # loop -- so tests mock Invoke-PSMutationLoop rather than evaluating real mutants,
+    # which is what keeps this file's covering suite cheap enough to self-mutate.
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$RecheckFrom,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
+        [Parameter(Mandatory)] [hashtable]$Plan,
+        [Parameter(Mandatory)] [hashtable]$SourceHashes,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Operators,
+        [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        [Parameter(Mandatory)] [string]$SandboxRoot,
+        [Parameter(Mandatory)] [string]$ReportPath,
+        [switch]$Quiet
+    )
+    $prior = Get-Content $RecheckFrom -Raw | ConvertFrom-Json
+    # Refuse rather than guess. Mutant ids are AST-walk positions: if the source or
+    # the operator set moved, the ids in the report point at different mutants now,
+    # and a recheck would answer confidently about the wrong ones.
+    $why = Test-PSMutationRecheckCompatible -Report $prior -SourceHashes $SourceHashes -Operators $Operators
+    if ($why.Count -gt 0) {
+        throw ("Cannot recheck against '$RecheckFrom': " + ($why -join '; ') + '. Run the full set to regenerate the report.')
+    }
+    $targets = Select-PSMutationRecheckCandidate -Candidates $Candidates -Report $prior -SandboxRoot $SandboxRoot
+    if (-not $Quiet) { Write-Host "  Rechecking $($targets.Count) previous survivor(s)`n" -ForegroundColor Gray }
+
+    $results = Invoke-PSMutationLoop -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
+        -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -Quiet:$Quiet
+    $recheckPath = Get-PSMutationRecheckReportPath -ReportPath $ReportPath
+    $summary = Write-PSMutationRecheckReport -Results $results -ReportPath $recheckPath `
+        -PriorSurvivorCount @($prior.survivors).Count -SourceReportPath $RecheckFrom
+    if (-not $Quiet) { Show-PSMutationRecheckSummary -Summary $summary -Results $results -ReportPath $recheckPath }
+    return $summary
 }

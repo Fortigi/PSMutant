@@ -8,6 +8,7 @@
     "src/PSMutation.Operators.ps1",
     "src/PSMutation.Report.ps1",
     "src/PSMutation.Recheck.ps1",
+    "src/PSMutation.Pester.ps1",
     "src/PSMutation.Config.ps1",
     "src/PSMutation.Runner.ps1",
     "src/Invoke-PSMutation.ps1"
@@ -21,6 +22,9 @@
     ],
     "src/PSMutation.Recheck.ps1": [
       "tests/Recheck.Tests.ps1"
+    ],
+    "src/PSMutation.Pester.ps1": [
+      "tests/Pester.Tests.ps1"
     ],
     "src/PSMutation.Config.ps1": [
       "tests/Config.Tests.ps1"
@@ -44,10 +48,10 @@
   ],
   "_equivalentsComment": "Mutants that provably cannot change behaviour, excluded from the denominator so the score means 'every catchable fault is caught'. Each needs a reason, and the run FAILS if one is ever killed or stops existing - a declaration is a checkable claim, not a mute button. Everything else here was killed by a test; nothing is listed merely because it was inconvenient.",
   "equivalents": {
-    "src/PSMutation.Report.ps1:125:6 -> 7": "ConvertTo-Json -Depth N and -Depth N+1 emit byte-identical output for any object graph shallower than N. The report nests 4 deep at its worst (root -> mutants[] -> row -> scalar), so 6 and 7 cannot differ. Killing this would need a fixture built for no purpose but to out-nest the serializer, which would assert nothing about the report.",
-    "src/PSMutation.Recheck.ps1:149:6 -> 7": "Same as the Report.ps1 entry: the recheck report nests 4 deep at most (root -> mutants[] -> row -> scalar), so -Depth 6 and 7 serialise identically.",
-    "src/PSMutation.Report.ps1:25:condition -> $false": "An early return, not a decision. With $Equivalents null, $null.PSObject is null and so is .Properties, so the foreach below runs zero times and returns the same empty map the guard returns directly - verified by running the loop with the guard removed. Forcing the condition false therefore cannot change the output for any input. (Forcing it TRUE is killed: it would return an empty map even when declarations exist.)",
-    "src/PSMutation.Report.ps1:56:condition -> $true": "$matched is only ever queried for keys that ARE declared - the stale loop iterates $declared.Keys. Forcing this guard true also records keys for undeclared mutants, and by construction those keys are absent from $declared.Keys, so no lookup can ever observe the difference. (Forcing it FALSE is killed: every declaration would then read as stale.)"
+    "src/PSMutation.Report.ps1:126:6 -> 7": "ConvertTo-Json -Depth N and -Depth N+1 emit byte-identical output for any object graph shallower than N. The report nests 4 deep at its worst (root -> mutants[] -> row -> scalar), so 6 and 7 cannot differ. Killing this would need a fixture built for no purpose but to out-nest the serializer, which would assert nothing about the report.",
+    "src/PSMutation.Recheck.ps1:154:6 -> 7": "Same as the Report.ps1 entry: the recheck report nests 4 deep at most (root -> mutants[] -> row -> scalar), so -Depth 6 and 7 serialise identically.",
+    "src/PSMutation.Report.ps1:26:condition -> $false": "An early return, not a decision. With $Equivalents null, $null.PSObject is null and so is .Properties, so the foreach below runs zero times and returns the same empty map the guard returns directly - verified by running the loop with the guard removed. Forcing the condition false therefore cannot change the output for any input. (Forcing it TRUE is killed: it would return an empty map even when declarations exist.)",
+    "src/PSMutation.Report.ps1:57:condition -> $true": "$matched is only ever queried for keys that ARE declared - the stale loop iterates $declared.Keys. Forcing this guard true also records keys for undeclared mutants, and by construction those keys are absent from $declared.Keys, so no lookup can ever observe the difference. (Forcing it FALSE is killed: every declaration would then read as stale.)"
   },
   "thresholds": {
     "high": 85,

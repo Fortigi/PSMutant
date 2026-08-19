@@ -2,10 +2,14 @@
 # do when they didn't say" decisions. These lived inside Invoke-PSMutation, past the
 # nested Pester run that destroys the outer run's coverage breakpoints, so they could
 # not be measured there. Out here they are ordinary pure functions.
+#
+# Resolvers only. The baseline guard and the public result shape were tested here while
+# they lived in Config.ps1; they are now covered beside the baseline they judge
+# (Runner.Tests.ps1) and the report contract they belong to (Report.Tests.ps1) -- #45.
 
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
-    foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Config.ps1') {
+    foreach ($f in 'PSMutation.Sandbox.ps1', 'PSMutation.Config.ps1') {
         . (Join-Path $src $f)
     }
 }
@@ -90,23 +94,6 @@ Describe 'Get-PSMutationSubtree' {
     }
 }
 
-Describe 'Get-PSMutationOperatorList' {
-    It 'uses the operators the config names' {
-        Get-PSMutationOperatorList -Cfg ([pscustomobject]@{ operators = @('BinaryOperator') }) |
-            Should-BeCollection @('BinaryOperator')
-    }
-    It 'falls back to the default set when the config is silent' {
-        $ops = Get-PSMutationOperatorList -Cfg ([pscustomobject]@{})
-        $ops | Should-ContainCollection 'BinaryOperator'
-        $ops | Should-ContainCollection 'BooleanLiteral'
-        $ops | Should-ContainCollection 'NumberLiteral'
-        $ops | Should-ContainCollection 'NegationRemoval'
-        # StringLiteral is NOT on by default: emptying every string in a repo produces
-        # a flood of survivors that say nothing about behaviour.
-        $ops | Should-NotContainCollection 'StringLiteral'
-    }
-}
-
 Describe 'Get-PSMutationTimeout' {
     It 'scales the budget with the baseline duration' {
         # 10s baseline x the default factor of 4.
@@ -139,44 +126,5 @@ Describe 'Get-PSMutationTimeout' {
         $t = Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFloorSeconds = 1 }) -BaselineSeconds 2.6
         $t | Should-HaveType ([int])
         $t | Should-Be 10
-    }
-}
-
-Describe 'Assert-PSMutationBaselineGreen' {
-    It 'refuses to mutate against a red suite' {
-        # The most misleading result this tool could produce: against a failing
-        # suite every mutant "dies" for the reason the suite was already red, and
-        # the run reports a perfect score.
-        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $false }) } |
-            Should-Throw -ExceptionMessage '*Baseline suite is not green*'
-    }
-    It 'lets a green baseline through' {
-        # A guard that lets the run continue emits nothing at all. Calling it directly
-        # covers the refusal case too: an exception here fails the test on its own,
-        # which is why v6 offers no "does not throw" assertion to wrap it in.
-        Should-BeNull -Actual (Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $true }))
-    }
-}
-
-Describe 'ConvertTo-PSMutationRunResult' {
-    It 'exposes the score, the counts and the exit code' {
-        # This object is the module's public contract -- CI reads .Score and .ExitCode.
-        $s = [pscustomobject]@{ Score = 64.3; Killed = 164; Survived = 91; Total = 255 }
-
-        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 1
-
-        $r.Score    | Should-Be 64.3
-        $r.Killed   | Should-Be 164
-        $r.Survived | Should-Be 91
-        $r.Total    | Should-Be 255
-        $r.ExitCode | Should-Be 1
-    }
-
-    It 'keeps killed and survived distinct' {
-        # Numbers chosen so a swapped pair cannot pass: equal counts would hide it.
-        $s = [pscustomobject]@{ Score = 50; Killed = 3; Survived = 7; Total = 10 }
-        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 0
-        $r.Killed   | Should-Be 3
-        $r.Survived | Should-Be 7
     }
 }

@@ -5,19 +5,35 @@
 
 .DESCRIPTION
     These used to be inline in Invoke-PSMutation, between the baseline call and the
-    mutation loop. That put them past a NESTED Pester run, and a nested run clobbers
-    the outer run's coverage breakpoints -- so lines that demonstrably execute (the
-    startup banner among them) were reported as never run, and no amount of testing
-    could show otherwise.
+    mutation loop. Out here they are ordinary pure functions: a config object in, a
+    value out, no side effects and nothing to sandbox, so each is worth unit-testing
+    and self-mutating on its own terms.
 
-    Pulled out here they are ordinary pure functions: a config object in, a value
-    out, no side effects and nothing to sandbox. That makes them measurable, and it
-    makes them worth self-mutating (see psmutant.self.config.json), which the
-    orchestrator's own body cannot be.
+    NOTE: this docstring used to say they had to be pulled out because a nested Pester
+    run destroys the outer run's coverage breakpoints, and that Invoke-PSMutation's own
+    body therefore could not be measured. The tracer teardown was real, but the fix was
+    CodeCoverage.UseBreakpoints, not this file: the orchestrator measures at 100% and is
+    self-mutated. Isolating decisions is still the right reason to keep them here.
 
     Defaults live here rather than at the call site so there is exactly one place to
-    read for "what happens if the config omits this".
+    read for "what happens if the config omits this". The one default that cannot is
+    the operator set: Get-PSMutationCandidate is EXPORTED and its -Operators default is
+    part of the public promise, so that default and the resolver that falls back to it
+    both live in PSMutation.Operators.ps1 instead.
+
+    This file holds resolvers only. A run guard and the public result shape used to sit
+    here too, neither of which the synopsis above described (#45); they now live beside
+    the baseline they judge and the report contract they belong to.
 #>
+
+# Default subtrees copied into the sandbox when the config does not name any. A neutral
+# module convention; a consuming repo overrides it with `sandboxSubtrees`.
+#
+# It lives here, next to its only reader, rather than in PSMutation.Sandbox.ps1 where it
+# used to. The sandbox is mechanism and should be told what to copy rather than hold an
+# opinion about the repo's layout -- and a constant one file writes while another reads
+# leaves neither file readable on its own (#38).
+$script:PSMutationDefaultSubtrees = @('src', 'tests')
 
 function Get-PSMutationSandboxPlan {
     # Translate the config's source-relative mutate/tests into sandbox absolute paths.
@@ -51,21 +67,7 @@ function Get-PSMutationSubtree {
     [CmdletBinding()]
     param($Cfg)
     if ($Cfg.sandboxSubtrees) { return [string[]]@($Cfg.sandboxSubtrees) }
-    return [string[]]$script:PSMutationSandboxSubtrees
-}
-
-function Get-PSMutationOperatorList {
-    # Which mutation operators to apply; unset means the default set.
-    #
-    # Note the truthiness test is deliberate and matches the behaviour this replaced:
-    # an EMPTY operators list falls back to the defaults rather than selecting none.
-    # Arguably an explicit [] should mean "none", but that is a behaviour change, not
-    # a refactor, so it is left alone here.
-    [OutputType([string[]])]
-    [CmdletBinding()]
-    param($Cfg)
-    if ($Cfg.operators) { return [string[]]@($Cfg.operators) }
-    return [string[]]$script:PSMutationDefaultOperators
+    return [string[]]$script:PSMutationDefaultSubtrees
 }
 
 function Get-PSMutationTimeout {
@@ -83,30 +85,4 @@ function Get-PSMutationTimeout {
     $factor = if ($Cfg.timeoutFactor) { $Cfg.timeoutFactor } else { 4 }
     $floor = if ($Cfg.timeoutFloorSeconds) { $Cfg.timeoutFloorSeconds } else { 15 }
     return [int][math]::Max($floor, $BaselineSeconds * $factor)
-}
-
-function Assert-PSMutationBaselineGreen {
-    # Refuse to mutate against a failing suite. Every mutant would "die" for the
-    # reason the suite was already red, producing a perfect score that means nothing
-    # -- the single most misleading result this tool could hand back.
-    [CmdletBinding()]
-    param([Parameter(Mandatory)] $Baseline)
-    if (-not $Baseline.Passed) {
-        throw 'Baseline suite is not green - fix the tests before mutating.'
-    }
-}
-
-function ConvertTo-PSMutationRunResult {
-    # The public shape of a completed run. Kept out of the orchestrator body so the
-    # contract callers depend on is pinned somewhere measurable.
-    [OutputType([pscustomobject])]
-    [CmdletBinding()]
-    param([Parameter(Mandatory)] $Summary, [Parameter(Mandatory)] [int]$ExitCode)
-    return [pscustomobject]@{
-        Score    = $Summary.Score
-        Killed   = $Summary.Killed
-        Survived = $Summary.Survived
-        Total    = $Summary.Total
-        ExitCode = $ExitCode
-    }
 }

@@ -14,17 +14,18 @@
     confined here.
 #>
 
-# Default subtrees copied into the sandbox. Neutral module convention; a consuming
-# repo overrides this via the config's `sandboxSubtrees` to match its own layout.
-$script:PSMutationSandboxSubtrees = @('src', 'tests')
-
 function New-PSMutationSandbox {
     # Copy the source subtrees into a fresh temp dir; return its root path.
+    #
+    # -Subtrees is mandatory rather than defaulted. The default used to live here as
+    # $script:PSMutationSandboxSubtrees, which PSMutation.Config.ps1 then reached across
+    # and read (#38); it is now that file's $script:PSMutationDefaultSubtrees. What to
+    # copy is a config decision, and every caller already passed one.
     [OutputType([string])]
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
     param(
         [Parameter(Mandatory)] [string]$RepoRoot,
-        [string[]]$Subtrees = $script:PSMutationSandboxSubtrees,
+        [Parameter(Mandatory)] [string[]]$Subtrees,
         [string]$Name = "psmut-sandbox-$PID"
     )
     $root = Join-Path ([System.IO.Path]::GetTempPath()) $Name
