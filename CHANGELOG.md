@@ -5,6 +5,34 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Internal
+- The rules that closed issues were supposed to leave behind are now actually written down,
+  and two workflows gained the guard [#42] only ever applied to one of them. An audit of the
+  nine issues closed so far found four gaps:
+  - `publish.yml` had no `concurrency` group and `code-scanning.yml` had no `timeout-minutes`.
+    #42 fixed `ci.yml` and stopped there, and nothing said a workflow needs both, so the other
+    two each kept missing one. `publish.yml` deliberately sets `cancel-in-progress: false` --
+    a superseded CI run is waste, but a half-finished publish is a gallery version that cannot
+    be withdrawn -- so its group serialises releases instead of cancelling them.
+    `code-scanning.yml` is a **required** check, so a wedged runner there held every merge
+    behind a pending status for the six-hour default.
+  - **The lesson of [#31] was never recorded**, and it is the sharpest one available: a
+    predicate can sit at 100% coverage and survive every mutant while the pipeline stage that
+    *calls* it is deleted and the suite stays green. Coverage watched the predicate's lines
+    run; self-mutation mutated the predicate's logic; neither gate can see that the caller
+    ignores the answer. The rule is to exercise a filter through its real entry point with one
+    item kept and one dropped in the same call. A second rule came out of the same issue: the
+    test titled "does NOT sweep the sandbox of a concurrently running process" never called
+    the sweep, so a title claimed coverage the body did not provide.
+  - CLAUDE.md's "Practices to adopt" section, which says of itself that every entry is an open
+    gap with a tracked issue, held two entries that were finished work -- the `pins.env` rule
+    ([#33]) and the `GateDecisions.ps1` rule ([#27], cited by number after it closed). Both
+    moved to "Practices to preserve", and the rule for next time is to move a rule across in
+    the same PR that closes its issue.
+  - The Gates table documented `ci.yml` only. The publish path had grown real gates from [#26]
+    and [#37] and the required code-scanning check was absent entirely, so the file described
+    a project whose one irreversible action looked ungated -- which is what #26 was about. The
+    mutant count is no longer quoted exactly; keeping a number like that in step by hand is
+    how the coverage figures here became folklore.
 - Each source file now holds what its docstring says it holds ([#45]), and no file reaches
   into another's module state ([#38]). Nothing here changes behaviour; the point is that the
   repo's own rule for where new logic goes -- "put the decision in a pure unit, keep the

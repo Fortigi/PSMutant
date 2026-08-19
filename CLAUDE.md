@@ -37,8 +37,27 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 | Unit tests | whole `tests/` directory, must be 0 failures |
 | Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
 | Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
-| Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100 (~6 min: 303 mutants) |
+| Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100. Around 300 mutants and a handful of minutes; treat both as orders of magnitude, not figures to keep in step |
 | Pester compatibility | `tools/Test-PSMutantPesterCompatibility.ps1` — a real mutation run under the Pester version the suite does *not* use |
+
+`ci.yml` is not the whole story, and reading only this table is how #26 happened — publishing
+used to run about one sixth of the merge gates with the package never once loaded.
+
+**`code-scanning.yml`** runs PSScriptAnalyzer again over `PSSA_PATHS` and uploads SARIF. It is
+a **required** check, so it can block a merge on its own. It shares `PSSA_PATHS` with the lint
+gate above precisely so the two cannot disagree about scope.
+
+**`publish.yml`** gates the one irreversible action in the project — a gallery version cannot
+be withdrawn — and runs, in order:
+
+| Gate | What it is |
+|---|---|
+| Unit tests | the suite again, on the tagged commit, under the pinned Pester |
+| CI must have passed | the `ci.yml` conclusion for this exact commit is queried and required |
+| Tag vs `ModuleVersion` | refuses when the git tag and the manifest disagree |
+| Release consistency | `tools/Test-PSMutantRelease.ps1` — `ModuleVersion`, the newest CHANGELOG heading and the shipped `ReleaseNotes` must agree |
+| Already published | skips rather than fails when that version is on the gallery, and warns that it skipped |
+| Package smoke test | `tools/Test-PSMutantPackage.ps1` — loads the *staged* package in a fresh process, asserts every exported name resolves, asserts every shipped `src/*.ps1` is dot-sourced by the root module, and runs a real mutation whose fixture must leave survivors |
 
 ---
 
@@ -276,30 +295,6 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   a `utils.ps1` starts, and it would have split the Pester guard from the Pester resolution
   that #38 had just finished deduplicating. Issue #45 proposed exactly that grouping; this is
   a deliberate departure from it.
-- **An equivalence declaration is a checkable claim, not a mute button.** It carries a
-  written argument someone can disagree with, and the run fails if it is ever killed or
-  stops matching a mutant. Before declaring one, verify the claim -- run the code without
-  the guard and confirm the output is identical.
-- **A "this is filtered" assertion pairs the filtered case with a kept one.** A fixture that
-  lacks the construct being filtered makes the assertion pass without proving anything.
-  This is not hypothetical: two such tests were written and shipped green in the #5 work,
-  and only the self-mutation gate caught them.
-
-## Practices to adopt
-
-Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
-issue; the rule is what stops the next instance.
-
-- **Check the docs against the code when you change behaviour.** Nothing enforces this, and
-  it has already failed twice: CLAUDE.md described a coverage trap that was misattributed
-  for months, and `README.md` still documented a `sandboxSubtrees` default the code never
-  had. When you change a default, a threshold or an operator set, grep `README.md`,
-  `CLAUDE.md` and `examples/psmutant.config.json` for it in the same commit. (#25)
-- **Validate a new config key, and make a typo name the config.** Keys are read straight off
-  the parsed JSON, so a misspelling is not rejected -- it resolves to `$null` and fails much
-  later somewhere unrelated. `mutat` for `mutate` currently ends in
-  `Access to the path '...\psmut-sandbox-<pid>' is denied`. Any key you add should be
-  validated where the config is resolved, with a message that names the key. (#24)
 - **Add a new pinned dependency to `.github/pins.env`, never inline.** Every workflow loads
   that file into its environment after checkout and asserts each key arrived, so the gates
   cannot analyse with different analyzers or test against different Pesters. `PSSA_PATHS`
@@ -322,7 +317,61 @@ issue; the rule is what stops the next instance.
   execute them and each mutant would cost a full gate run -- the same wall that makes
   `Sandbox.ps1` impossible to self-mutate. `tools/` is also outside `sandboxSubtrees`, so it
   is not copied into the sandbox at all. Coverage stays measured over `src/`; the gates are
-  proven by running for real in CI. (#27)
+  proven by running for real in CI.
+
+  *This bullet lived under "Practices to adopt" citing #27 after #27 had been closed, which
+  made a finished mechanism read as owed work. Two of that section's four entries were done;
+  when you close an issue whose rule is written there, move the rule here in the same PR.*
+- **A workflow gets a concurrency group and a `timeout-minutes`.** All three have both. A
+  superseded run that keeps going is waste, and a wedged runner holds a **required** check
+  pending for the six-hour default, which blocks every merge behind it.
+
+  `cancel-in-progress` is the part to think about rather than copy: `ci.yml` and
+  `code-scanning.yml` cancel on pull requests, because a superseded run answers a question
+  nobody is asking any more. `publish.yml` must **never** cancel -- a half-finished publish
+  is a gallery version that cannot be withdrawn -- so its group serialises releases and a
+  second tag waits. #42 fixed only `ci.yml`; the other two each went on missing one of the
+  two guards until this was written down.
+- **An equivalence declaration is a checkable claim, not a mute button.** It carries a
+  written argument someone can disagree with, and the run fails if it is ever killed or
+  stops matching a mutant. Before declaring one, verify the claim -- run the code without
+  the guard and confirm the output is identical.
+- **A "this is filtered" assertion pairs the filtered case with a kept one.** A fixture that
+  lacks the construct being filtered makes the assertion pass without proving anything.
+  This is not hypothetical: two such tests were written and shipped green in the #5 work,
+  and only the self-mutation gate caught them.
+- **Covering a predicate is not covering its application, and both gates will tell you it
+  is.** `Test-PSMutationSandboxAbandoned` was at 100% line coverage and survived every
+  mutant, and the pipeline stage in `Clear-PSMutationStaleSandbox` that *called* it could
+  still be deleted with all 246 tests green -- reverting issue #2, a fixed bug, in silence.
+  Coverage saw the predicate's lines execute; self-mutation mutated the predicate's logic.
+  Neither gate has any way to notice that the caller ignores the answer.
+
+  So exercise a filter **through the real entry point**, with one item that survives and one
+  that does not in the same call. Two items, because a single-outcome fixture passes just as
+  well against a stage that was deleted. This is the strongest routine check in the repo and
+  it has exactly this blind spot; nothing else will catch it for you. (#31)
+- **A test's title names what the test calls.** The test titled "does NOT sweep the sandbox
+  of a concurrently running process" never called the sweep. It was not wrong about anything
+  -- it asserted a true fact about the predicate -- but its title claimed coverage of the
+  behaviour above it, which is what let the gap sit unnoticed. When a title says a *verb*,
+  the body invokes that verb.
+
+## Practices to adopt
+
+Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
+issue; the rule is what stops the next instance.
+
+- **Check the docs against the code when you change behaviour.** Nothing enforces this, and
+  it has already failed twice: CLAUDE.md described a coverage trap that was misattributed
+  for months, and `README.md` still documented a `sandboxSubtrees` default the code never
+  had. When you change a default, a threshold or an operator set, grep `README.md`,
+  `CLAUDE.md` and `examples/psmutant.config.json` for it in the same commit. (#25)
+- **Validate a new config key, and make a typo name the config.** Keys are read straight off
+  the parsed JSON, so a misspelling is not rejected -- it resolves to `$null` and fails much
+  later somewhere unrelated. `mutat` for `mutate` currently ends in
+  `Access to the path '...\psmut-sandbox-<pid>' is denied`. Any key you add should be
+  validated where the config is resolved, with a message that names the key. (#24)
 
 ## Writing tests here
 

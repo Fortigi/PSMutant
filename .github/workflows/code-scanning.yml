@@ -22,6 +22,9 @@ jobs:
   analyze:
     name: Analyze (PSScriptAnalyzer)
     runs-on: ubuntu-latest
+    # Bounded so a wedged runner fails in minutes rather than holding a REQUIRED check
+    # pending for the 6-hour default, which blocks every merge behind it.
+    timeout-minutes: 15
     permissions:
       security-events: write
       contents: read
