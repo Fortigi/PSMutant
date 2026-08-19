@@ -8,8 +8,13 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot taken 2026-08-18. Updated the same day after a dedicated architecture review, which
-added #52-#57, #59 and #60-#63, and re-priced #1 (see below). 48 issues open.
+Snapshot 2026-08-19. 42 issues open.
+
+Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
+plan, and this file holds no status by design -- that lives in the issues. Removal is the one
+exception, because it is one-way and cannot drift out of date the way a checklist would. Wave
+letters keep their original letters even as earlier ones disappear, so "Wave A" in an existing
+commit or PR still resolves.
 
 ---
 
@@ -59,35 +64,13 @@ Two things follow that are worth stating out loud:
 
 ---
 
-## Wave A -- harden the release path
-
-Independent of everything else, touches only `.github/` and `tools/`, and protects the one
-irreversible action in the project.
-
-| Order | Issue | Why here |
-|---|---|---|
-| 1 | **#42** CI hygiene | Four lines (`concurrency`, `timeout-minutes`, module cache). Do it first because it makes every later wave's CI cheaper, and CI just went from 1m39s to 6m20s. |
-| 2 | **#26** publish gate + artifact smoke test | A gallery version cannot be withdrawn, and publishing runs about one sixth of the merge gates with the package never once loaded. Highest consequence in the backlog. |
-| 3 | **#37** version / CHANGELOG / ReleaseNotes gate | Five lines, same file as #26. Would have caught 0.2.2 shipping while its entry was still under `[Unreleased]`. |
-| 4 | **#33** workflow pin divergence | Same area again. This is the drift class that produced #16. |
-
-Land 2, 3 and 4 as one PR if convenient -- they are all `publish.yml` and `code-scanning.yml`.
-
-## Wave B -- make the numbers trustworthy
-
-| Order | Issue | Why here |
-|---|---|---|
-| 1 | **#27** `tools/` untested | The two scripts asserting "100% coverage" and "Pester >= 5 works" have no tests, no coverage and no mutants. Until this is done, every other number in the project is unverified. |
-| 2 | **#31** sweep guard untested | The #2 fix can be deleted with the suite staying green. One test closes the only place a fixed bug can silently return. |
-
 ## Wave C -- structural groundwork
 
-All three are prerequisites, and none changes behaviour. Cheaper as one "make room" pass than
-as three refactors interleaved with features.
+All four are prerequisites, and none changes behaviour. Cheaper as one "make room" pass than
+as four refactors interleaved with features.
 
 | Order | Issue | Why here |
 |---|---|---|
-| 0 | **#52** layering has no enforcement | Decide whether to gate the layering or stop claiming it is enforced. Cheap, and it settles the ground the rest of this wave moves. |
 | 1 | **#45 + #38** together | File responsibilities and the duplication overlap: #45's proposed `PSMutation.Pester.ps1` is the home that resolves #38's duplicated Pester resolution. Doing #38 alone puts the shared helper in a file #45 then wants to split. |
 | 2 | **#34** report provenance | `schemaVersion`, producing module version, timestamp, durations. Unblocks three issues and gives #1 a before/after number it currently has no way to produce. |
 | 3 | **#47** output seam | Separate deciding what to say from saying it. Unblocks three more. |
@@ -95,6 +78,14 @@ as three refactors interleaved with features.
 
 #47 can slip to just before Wave E if you want output features sooner -- but then #11, #10 and #6
 each pay for it separately.
+
+**#52 is deliberately not a position here.** Option (a) -- correcting the three places that
+claimed dot-source order enforced the dependency direction -- is done. Option (b), the
+`tests/Layering.Tests.ps1` edge allowlist, is specified on the issue and is triggered rather than
+scheduled: do it with whichever of **#1**, **#8** or **#47** is picked up first. Those are the
+three changes that add edges in the region where a shortcut reads as reasonable in review, and an
+allowlist is worth most written just before the code that would violate it, rather than ageing
+quietly while nothing touches the graph. Within this wave that trigger is item 3.
 
 ## Wave D -- the silent-wrong-answer cluster
 
@@ -117,7 +108,7 @@ All three want #47; #6 also wants #34.
 
 ## Wave F -- the loop
 
-**Do not start until B and C are done, and do not write the design before you are ready to
+**Do not start until C is done, and do not write the design before you are ready to
 build it** -- a design for a loop nobody is rebuilding goes stale, which this repo has already
 had happen twice with its own documentation.
 
@@ -128,8 +119,8 @@ had happen twice with its own documentation.
    Note #57 records the existing stance, so the design pass starts from a written baseline.
 3. **#1** parallelism and **#39** resumability together -- but see the re-pricing above; these
    sit on different halves of the loop and #1 is the larger of the two by some margin.
-3. **#7** TimedOut as a distinct status.
-4. **#8** diff-scoped runs.
+4. **#7** TimedOut as a distinct status.
+5. **#8** diff-scoped runs.
 
 ---
 
@@ -137,8 +128,9 @@ had happen twice with its own documentation.
 
 Pick these up between waves; none blocks anything.
 
-- **#30** `RequiredModules` auto-imports the newest Pester. Small, consumer-facing, no dependencies -- the best early win outside Wave A.
-- **#46** `switch`/ternary blind spot. Natural follow-up to #5.
+- **#30** `RequiredModules` auto-imports the newest Pester. Small, consumer-facing, no
+  dependencies -- the best early win of anything left.
+- **#46** `switch`/ternary blind spot. Natural follow-up to the operators #5 landed.
 - **#55** nothing asserts Pester's result vocabulary is two-valued. Small, and it guards the
   external boundary the module deliberately does not abstract.
 - **#63** no run-context object, so each new mode threads another long parameter list. Decide
@@ -148,6 +140,7 @@ Pick these up between waves; none blocks anything.
 - **#49** child runspace script is an unparsed string.
 - **#41** help surface / missing `about_PSMutant`.
 - **#36** end-to-end exact counts, **#43** cross-Context `$script:` coupling, **#35** consumer-shaped layout.
-- **#32** Windows CI matrix -- after #42, since it adds runner time.
+- **#32** Windows CI matrix. Adds runner time, but the caching and concurrency work it was
+  waiting on has landed, so it is affordable now.
 - **#22** sandbox self-mutation, **#14** recheck skips declared equivalents, **#9** killed-by map.
 - **#20** recheck chaining and **#4** merge into baseline -- both after #34.
