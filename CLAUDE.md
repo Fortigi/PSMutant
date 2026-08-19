@@ -481,6 +481,11 @@ Two traps worth knowing when adding assertions:
 - `Should-Be` **errors** if the expected value is a collection — use
   `Should-BeCollection`. This bites on a parenthesised range (`(1..$n)`) just as much as
   on `@(...)`.
+- `Should-BeCollection` **ignores order**, and has no switch to make it strict — its only
+  parameters are `Actual`, `Expected`, `Because` and `Count`. `51,124,67,101` passes against
+  an expected `51,67,101,124`. That is right for a set, and silently vacuous when the *order*
+  is the claim: a test written that way passed against the exact defect it was added to catch
+  (#29). When sequence matters, join both sides and use `Should-Be`.
 - `Should-BeTrue`/`Should-BeFalse` are **strict** in v6 (`$true`/`$false` only), where
   the classic ones accepted anything truthy/falsy. Every use here is a real boolean, so
   strict is correct — reach for `Should-BeTruthy`/`Should-BeFalsy` only if that changes.

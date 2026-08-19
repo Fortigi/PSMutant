@@ -373,3 +373,35 @@ Describe 'Assert-PSMutationBaselineGreen' {
         Should-BeNull -Actual (Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $true }))
     }
 }
+
+Describe 'ids are assigned before the coverage filter, not after' {
+    It 'keeps a candidate id the same whether or not covered-lines filtering ran' {
+        # The invariant #59 named: numbering happens in Get-PSMutationCandidate over the
+        # UNFILTERED set, and Select-PSMutationCandidate filters afterwards. It is what lets
+        # a recheck match survivors by id across a coverage change -- and coverage changing
+        # is precisely what happens when you write the assertions that kill survivors, so
+        # the compatibility gate can stay narrow and not inspect coverage at all.
+        #
+        # This test fails the moment someone "optimises" by filtering first, or by moving
+        # the numbering into Select-PSMutationCandidate. That refactor looks obviously
+        # correct and silently makes a recheck answer about the wrong mutants.
+        # Assigned directly, NOT wrapped in @(). Select-PSMutationCandidate comma-wraps its
+        # return to preserve a single-element array, so @(...) hands back one item that IS
+        # the array and every count below reads 1 (see the convention note in #38).
+        $all = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false
+        $all.Count | Should-BeGreaterThan 1
+
+        # Admit only the lines of the LAST candidate, so any renumbering shows up as id 1.
+        $full = [System.IO.Path]::GetFullPath($script:fixture)
+        $last = $all[-1]
+        $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@($last.Line) }
+        $filtered = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
+
+        $filtered.Count | Should-BeLessThan $all.Count
+        # The surviving candidate keeps the id it had in the full set. Renumbering after
+        # filtering would make this 1.
+        $filtered[-1].Id | Should-Be $last.Id
+    }
+}
