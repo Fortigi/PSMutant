@@ -28,6 +28,14 @@ All notable changes to PSMutant are documented here. Format follows
   **Existing reports are invalidated once.** Ids for a given source and operator set change with
   this release, so a `-RecheckFrom` against a report written by an earlier version will match
   the wrong mutants. Run the full set once to regenerate.
+- `Get-PSMutationCandidate` and `Get-PSMutantUnloadedFile` now cast their returned array to the
+  type they declare, silencing two `PSUseOutputTypeCorrectly` findings. The first was introduced
+  by the sort above; the second had been sitting in `tools/GateDecisions.ps1` unnoticed. Neither
+  was visible to the lint gate, which filters to Error and Warning, while the **required**
+  code-scanning check evaluates Information rules too -- an asymmetry now tracked as [#76].
+  The cast goes on the *expression* with `@()` inside it: casting the variable leaves the
+  analyzer inferring `System.Object[]` regardless, and dropping the `@()` turns an empty result
+  into `$null` rather than an empty array, which four tests caught immediately.
 - The invariant that mutant ids are assigned **before** the covered-lines filter is now stated
   at the numbering site and pinned by a test ([#59]). It was correct but undocumented, and it is
   what lets a recheck match survivors across a coverage change -- which matters because writing
