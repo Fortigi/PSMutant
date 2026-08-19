@@ -261,3 +261,26 @@ Describe 'Show-PSMutationSummary' {
         $script:colours | Should-ContainCollection $Expected
     }
 }
+
+Describe 'ConvertTo-PSMutationRunResult' {
+    It 'exposes the score, the counts and the exit code' {
+        # This object is the module's public contract -- CI reads .Score and .ExitCode.
+        $s = [pscustomobject]@{ Score = 64.3; Killed = 164; Survived = 91; Total = 255 }
+
+        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 1
+
+        $r.Score    | Should-Be 64.3
+        $r.Killed   | Should-Be 164
+        $r.Survived | Should-Be 91
+        $r.Total    | Should-Be 255
+        $r.ExitCode | Should-Be 1
+    }
+
+    It 'keeps killed and survived distinct' {
+        # Numbers chosen so a swapped pair cannot pass: equal counts would hide it.
+        $s = [pscustomobject]@{ Score = 50; Killed = 3; Survived = 7; Total = 10 }
+        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 0
+        $r.Killed   | Should-Be 3
+        $r.Survived | Should-Be 7
+    }
+}

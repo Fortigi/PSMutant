@@ -22,6 +22,9 @@ jobs:
   analyze:
     name: Analyze (PSScriptAnalyzer)
     runs-on: ubuntu-latest
+    # Bounded so a wedged runner fails in minutes rather than holding a REQUIRED check
+    # pending for the 6-hour default, which blocks every merge behind it.
+    timeout-minutes: 15
     permissions:
       security-events: write
       contents: read
@@ -54,9 +57,32 @@ jobs:
       - name: Run PSScriptAnalyzer → SARIF
         shell: pwsh
         run: |
-          Install-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION -Force -Scope CurrentUser
-          Install-Module ConvertToSARIF -RequiredVersion $env:CONVERTTOSARIF_VERSION -Force -Scope CurrentUser
-          Import-Module ConvertToSARIF
+          # Install only what the runner image does not already have, exactly as ci.yml does.
+          # An unconditional -Force here collides with the PSScriptAnalyzer the image ships:
+          # the install warns "currently in use" and carries on, and Invoke-ScriptAnalyzer then
+          # dies with a bare "Object reference not set to an instance of an object" that names
+          # neither a file nor a rule. That failed this REQUIRED check on a green branch, and
+          # a re-run with no code change passed -- so it blocks merges at random.
+          $wanted = @(
+            @{ Name = 'PSScriptAnalyzer'; Version = $env:PSSA_VERSION }
+            @{ Name = 'ConvertToSARIF';   Version = $env:CONVERTTOSARIF_VERSION }
+          )
+          foreach ($m in $wanted) {
+            if (Get-Module -ListAvailable -Name $m.Name | Where-Object { $_.Version -eq [version]$m.Version }) {
+              Write-Host "cached   $($m.Name) $($m.Version)"
+              continue
+            }
+            Write-Host "install  $($m.Name) $($m.Version)"
+            Install-Module $m.Name -RequiredVersion $m.Version -Force -Scope CurrentUser
+          }
+          # Fail here, naming the module, rather than inside the analyzer with a null reference.
+          foreach ($m in $wanted) {
+            if (-not (Get-Module -ListAvailable -Name $m.Name | Where-Object { $_.Version -eq [version]$m.Version })) {
+              throw "$($m.Name) $($m.Version) is not available after install"
+            }
+          }
+          Import-Module PSScriptAnalyzer -RequiredVersion $env:PSSA_VERSION
+          Import-Module ConvertToSARIF -RequiredVersion $env:CONVERTTOSARIF_VERSION
           # The same paths and settings the lint gate uses. It used to scan '.', which
           # happened to coincide because PSScriptAnalyzer only reads .ps1/.psm1/.psd1 --
           # a coincidence, not an agreement, and this is a required check.

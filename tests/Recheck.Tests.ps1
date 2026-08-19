@@ -12,6 +12,7 @@
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     . (Join-Path $src 'PSMutation.Sandbox.ps1')    # ConvertFrom-PSMutationSandboxPath
+    . (Join-Path $src 'PSMutation.Runner.ps1')     # Invoke-PSMutationLoop, mocked below
     . (Join-Path $src 'PSMutation.Recheck.ps1')
 
     function Get-FakeReport {
@@ -303,5 +304,69 @@ Describe 'Get-PSMutationSourceHash' {
         $a = Join-Path $TestDrive 'same1.ps1'; Set-Content -Path $a -Value '$x = 1' -NoNewline
         $b = Join-Path $TestDrive 'same2.ps1'; Set-Content -Path $b -Value '$x = 1' -NoNewline
         (Get-PSMutationSourceHash -Path $a) | Should-Be (Get-PSMutationSourceHash -Path $b)
+    }
+}
+
+Describe 'Invoke-PSMutationRecheckRun' {
+    BeforeEach {
+        $script:reportFile = Join-Path $TestDrive 'prior.json'
+        '{ "survivors": [ { "Id": 1, "File": "src/a.ps1" }, { "Id": 2, "File": "src/a.ps1" } ] }' |
+            Set-Content $script:reportFile -Encoding utf8
+        $script:plan = @{ TestsByFile = @{}; AllTests = @('tests/a.Tests.ps1') }
+    }
+
+    It 'refuses, naming the reason, when the report no longer matches the source' {
+        # Mutant ids are AST-walk positions: if the source moved, id 7 in the report
+        # is a different mutant now, and a recheck would answer confidently about the
+        # wrong one. Refusing is the whole point of the guard.
+        Mock Test-PSMutationRecheckCompatible { @('source changed for src/a.ps1') }
+
+        { Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @() -Plan $script:plan `
+                -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+                -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet } |
+            Should-Throw -ExceptionMessage '*Cannot recheck*source changed for src/a.ps1*regenerate*'
+    }
+
+    It 'evaluates only the prior survivors and returns the recheck summary' {
+        $script:quiet = [System.Collections.Generic.List[string]]::new()
+        Mock Write-Host { $script:quiet.Add([string]$Object) }
+        Mock Test-PSMutationRecheckCompatible { @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
+        Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Killed' }) }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 1; StillSurviving = 1 } }
+        Mock Show-PSMutationRecheckSummary { }
+
+        $s = Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a', 'b', 'c') -Plan $script:plan `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+            -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet
+
+        $s.NowKilled | Should-Be 1
+        # The narrowed set is what makes a recheck cheap; passing all candidates
+        # through would just be a full run wearing a recheck's label.
+        Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { @($Candidates).Count -eq 2 }
+        # The prior survivor COUNT comes from the report, not from the loop results.
+        Should-Invoke Write-PSMutationRecheckReport -Exactly 1 -ParameterFilter { $PriorSurvivorCount -eq 2 }
+        Should-Invoke Show-PSMutationRecheckSummary -Exactly 0
+        # -Quiet has to silence the progress line too, not merely the closing summary.
+        ($script:quiet -join "`n") | Should-NotBeLikeString '*Rechecking*'
+    }
+
+    It 'reports progress and a summary when not quiet' {
+        $script:said = [System.Collections.Generic.List[string]]::new()
+        Mock Write-Host { $script:said.Add([string]$Object) }
+        Mock Test-PSMutationRecheckCompatible { @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Status = 'Survived' }) }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0 } }
+        Mock Show-PSMutationRecheckSummary { }
+
+        Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+            -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') | Out-Null
+
+        ($script:said -join "`n") | Should-MatchString 'Rechecking 2 previous survivor'
+        Should-Invoke Show-PSMutationRecheckSummary -Exactly 1
     }
 }

@@ -37,8 +37,27 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 | Unit tests | whole `tests/` directory, must be 0 failures |
 | Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
 | Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
-| Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100 (~6 min: 303 mutants) |
+| Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100. Around 300 mutants and a handful of minutes; treat both as orders of magnitude, not figures to keep in step |
 | Pester compatibility | `tools/Test-PSMutantPesterCompatibility.ps1` — a real mutation run under the Pester version the suite does *not* use |
+
+`ci.yml` is not the whole story, and reading only this table is how #26 happened — publishing
+used to run about one sixth of the merge gates with the package never once loaded.
+
+**`code-scanning.yml`** runs PSScriptAnalyzer again over `PSSA_PATHS` and uploads SARIF. It is
+a **required** check, so it can block a merge on its own. It shares `PSSA_PATHS` with the lint
+gate above precisely so the two cannot disagree about scope.
+
+**`publish.yml`** gates the one irreversible action in the project — a gallery version cannot
+be withdrawn — and runs, in order:
+
+| Gate | What it is |
+|---|---|
+| Unit tests | the suite again, on the tagged commit, under the pinned Pester |
+| CI must have passed | the `ci.yml` conclusion for this exact commit is queried and required |
+| Tag vs `ModuleVersion` | refuses when the git tag and the manifest disagree |
+| Release consistency | `tools/Test-PSMutantRelease.ps1` — `ModuleVersion`, the newest CHANGELOG heading and the shipped `ReleaseNotes` must agree |
+| Already published | skips rather than fails when that version is on the gallery, and warns that it skipped |
+| Package smoke test | `tools/Test-PSMutantPackage.ps1` — loads the *staged* package in a fresh process, asserts every exported name resolves, asserts every shipped `src/*.ps1` is dot-sourced by the root module, and runs a real mutation whose fixture must leave survivors |
 
 ---
 
@@ -55,13 +74,16 @@ Two different things. Conflating them is what caused #16.
   consuming repo already has. The pin above narrows nothing about that.
 
 The second promise is the fragile one, because it only breaks when **two** versions are
-installed:
+installed. Everything below lives in `src/PSMutation.Pester.ps1`, which exists so that the
+answer to "which Pester" is given **once**: the two functions used to resolve it separately,
+in two files, and if they had ever disagreed the process would validate one version and
+mutate under another -- this same bug, from the inside.
 
 - A child runspace resolves `Pester` by **name** and gets the newest installed, not the
   one this process loaded. Assemblies are per-process, so a mismatch kills the child
   outright. Fixed by `Get-PSMutationPesterPath`, which hands the child the loaded
-  module's **path**; the child script itself lives in `Get-PSMutationBoundedPesterScript`
-  so that contract sits in one named place.
+  module's **path** (from the shared `Get-PSMutationLoadedPester`); the child script itself
+  lives in `Get-PSMutationBoundedPesterScript` so that contract sits in one named place.
 - `Import-Module Pester -MinimumVersion 5.0.0` is **not** a no-op when a satisfying Pester
   is already loaded — PowerShell re-resolves the name to the newest installed and
   collides. Fixed by `Assert-PSMutationPester`, which accepts what is already loaded.
@@ -112,6 +134,7 @@ self-mutating on their own terms. Keep new decisions there rather than in the bo
 | `PSMutation.Operators.ps1` | 100% | yes |
 | `PSMutation.Report.ps1` | 100% | yes |
 | `PSMutation.Recheck.ps1` | 100% | yes |
+| `PSMutation.Pester.ps1` | 100% | yes |
 | `PSMutation.Config.ps1` | 100% | yes |
 | `PSMutation.Runner.ps1` | 100% | yes |
 | `Invoke-PSMutation.ps1` | 100% | yes |
@@ -163,13 +186,14 @@ Two consequences worth knowing before you touch the operator set:
 ## Layout
 
 ```
-src/PSMutation.Operators.ps1   AST walk -> mutation candidates. Pure.
+src/PSMutation.Operators.ps1   AST walk -> mutation candidates; the operator set. Pure.
 src/PSMutation.Sandbox.ps1     temp sandbox: create, path-map, sweep. Side-effects.
-src/PSMutation.Config.ps1      config resolution + run guards + sandbox plan. Pure.
-src/PSMutation.Report.ps1      scoring, thresholds, equivalents, report JSON. Pure.
-src/PSMutation.Recheck.ps1     -RecheckFrom: compatibility + candidate selection. Pure.
-src/PSMutation.Runner.ps1      baseline, per-mutant execution, the Pester pin, the loop.
-src/Invoke-PSMutation.ps1      public entry point: the Pester guard and the wiring.
+src/PSMutation.Pester.ps1      the boundary with Pester: which one, its path, the child's contract.
+src/PSMutation.Config.ps1      config resolution: subtrees, timeout, the sandbox plan. Pure.
+src/PSMutation.Report.ps1      scoring, thresholds, equivalents, report JSON, run result. Pure.
+src/PSMutation.Recheck.ps1     -RecheckFrom, whole: compatibility, selection, the run.
+src/PSMutation.Runner.ps1      baseline + its green guard, per-mutant execution, the loop.
+src/Invoke-PSMutation.ps1      public entry point. Wiring, and nothing else.
 tools/                         the committed coverage and compatibility gates.
 ```
 
@@ -179,7 +203,7 @@ missing from the list still ships (see #26).
 
 The **order** in that list does not matter, despite what this file and `PSMutant.psm1` used to
 claim. Every cross-file reference sits inside a function body and resolves at call time, so
-loading all seven in reverse order behaves identically — verified.
+loading all eight in reverse order behaves identically — verified.
 
 Keep it in that order regardless. It is a topological order of the real dependency graph, so
 reading the list top to bottom is the cheapest description of the architecture anyone gets —
@@ -203,7 +227,8 @@ suite; `tests/Orchestrator.Tests.ps1` dot-sources `src/` and is the covering sui
 produces mutants that *disable* the timeout, and against a real child runspace each of
 those runs until the outer per-mutant deadline -- minutes apiece, for a verdict a mocked
 child reaches in seconds. So `tests/Runner.Tests.ps1` covers `PSMutation.Runner.ps1` on
-its own, mocking `Get-PSMutationBoundedPesterScript` and `Get-PSMutationPesterPath`;
+its own, mocking `Get-PSMutationBoundedPesterScript` and `Get-PSMutationPesterPath` (both
+now in `PSMutation.Pester.ps1`, tested for real by `tests/Pester.Tests.ps1`);
 `tests/Mutant.Tests.ps1` keeps the real-runspace proofs (a genuinely non-terminating
 mutant, the isolate-and-restore guarantee) and is deliberately *not* a covering suite.
 Both branches of every runner decision are reachable from the mocked file, which is what
@@ -245,7 +270,77 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   that shape; do not special-case an operator inside `Get-PSMutationCandidate`.
 - **Decisions live in pure units; the entry point is wiring.** A new *decision* belongs in
   `PSMutation.Config.ps1` or another pure file, where it can be unit-tested and
-  self-mutated on its own terms.
+  self-mutated on its own terms. `Invoke-PSMutation.ps1` is one function and should stay
+  one function.
+- **A `$script:` constant is read only in the file that writes it.** No file reaches into
+  another's module state. Two did (#38), and the fix went in opposite directions on purpose,
+  which is the part worth remembering: `$script:PSMutationDefaultOperators` stayed put and
+  its resolver came to it, because `Get-PSMutationCandidate` is **exported** with that
+  constant as a parameter default and moving it would break the public promise; the sandbox
+  subtree default had no such claim on it, so it moved to `PSMutation.Config.ps1` beside its
+  only reader and `New-PSMutationSandbox -Subtrees` became mandatory. Ask which side owns the
+  default before deciding which one moves.
+
+  *This rule used to say the cross-file reads "work only because of dot-source order". That
+  was wrong -- they are inside function bodies and resolve at call time, so reverse-loading
+  every file behaves identically. Recorded rather than deleted, per the practice above.*
+- **A file's docstring is a claim about its contents, and a guard lives with its subject.**
+  When you add a function, either it fits the file's stated purpose or that file is the wrong
+  home -- and if you move it, fix the docstring and the layout table above in the same commit.
+
+  The rule for *where* is the subject, not the grammatical form: `Assert-PSMutationPester`
+  guards which Pester is loaded, so it sits in `PSMutation.Pester.ps1` beside the resolution
+  it shares; `Assert-PSMutationBaselineGreen` judges a baseline, so it sits beside
+  `Invoke-PSMutationBaseline`. Grouping by form instead -- one file for "the guards" -- is how
+  a `utils.ps1` starts, and it would have split the Pester guard from the Pester resolution
+  that #38 had just finished deduplicating. Issue #45 proposed exactly that grouping; this is
+  a deliberate departure from it.
+- **Add a new pinned dependency to `.github/pins.env`, never inline.** Every workflow loads
+  that file into its environment after checkout and asserts each key arrived, so the gates
+  cannot analyse with different analyzers or test against different Pesters. `PSSA_PATHS`
+  lives there too, so the lint gate and the required code-scanning check cannot disagree
+  about what they look at. Before this existed the two coincided only because
+  PSScriptAnalyzer ignores non-PowerShell files -- a coincidence, not an agreement.
+
+  The one thing the file cannot hold is a `uses:` action SHA, because `uses:` does not
+  expand variables. Those stay written out per workflow, all SHA-pinned with the version in
+  a trailing comment, and have to be kept in step by hand.
+
+  **Install a pinned module only if it is not already there, then assert it is.** Both
+  workflows now do this. An unconditional `Install-Module -Force` collides with what the
+  runner image already ships: the install warns "currently in use" and carries on, and the
+  tool then fails somewhere else entirely -- `code-scanning.yml` died inside
+  `Invoke-ScriptAnalyzer` with a bare "Object reference not set to an instance of an object"
+  naming neither a file nor a rule, on a branch that was green, and a re-run with no code
+  change passed. Agreeing on the version is not enough if the workflows disagree about how
+  they get it.
+- **A pass/fail decision in `tools/` belongs in `tools/GateDecisions.ps1`, behind a pure
+  function with tests.** A gate that silently stops being able to fail looks exactly like a
+  green build, and these are the scripts that decide whether every other number here is true.
+  The decisions are arithmetic and string comparison -- free to test, and where an inversion
+  hides.
+
+  The orchestration around them is deliberately **not** tested or mutated, and that is a
+  decision rather than an omission. Three of the four scripts are side effects end to end
+  (run Pester, stage a package, spawn a child process), so a covering suite would have to
+  execute them and each mutant would cost a full gate run -- the same wall that makes
+  `Sandbox.ps1` impossible to self-mutate. `tools/` is also outside `sandboxSubtrees`, so it
+  is not copied into the sandbox at all. Coverage stays measured over `src/`; the gates are
+  proven by running for real in CI.
+
+  *This bullet lived under "Practices to adopt" citing #27 after #27 had been closed, which
+  made a finished mechanism read as owed work. Two of that section's four entries were done;
+  when you close an issue whose rule is written there, move the rule here in the same PR.*
+- **A workflow gets a concurrency group and a `timeout-minutes`.** All three have both. A
+  superseded run that keeps going is waste, and a wedged runner holds a **required** check
+  pending for the six-hour default, which blocks every merge behind it.
+
+  `cancel-in-progress` is the part to think about rather than copy: `ci.yml` and
+  `code-scanning.yml` cancel on pull requests, because a superseded run answers a question
+  nobody is asking any more. `publish.yml` must **never** cancel -- a half-finished publish
+  is a gallery version that cannot be withdrawn -- so its group serialises releases and a
+  second tag waits. #42 fixed only `ci.yml`; the other two each went on missing one of the
+  two guards until this was written down.
 - **An equivalence declaration is a checkable claim, not a mute button.** It carries a
   written argument someone can disagree with, and the run fails if it is ever killed or
   stops matching a mutant. Before declaring one, verify the claim -- run the code without
@@ -254,6 +349,22 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   lacks the construct being filtered makes the assertion pass without proving anything.
   This is not hypothetical: two such tests were written and shipped green in the #5 work,
   and only the self-mutation gate caught them.
+- **Covering a predicate is not covering its application, and both gates will tell you it
+  is.** `Test-PSMutationSandboxAbandoned` was at 100% line coverage and survived every
+  mutant, and the pipeline stage in `Clear-PSMutationStaleSandbox` that *called* it could
+  still be deleted with all 246 tests green -- reverting issue #2, a fixed bug, in silence.
+  Coverage saw the predicate's lines execute; self-mutation mutated the predicate's logic.
+  Neither gate has any way to notice that the caller ignores the answer.
+
+  So exercise a filter **through the real entry point**, with one item that survives and one
+  that does not in the same call. Two items, because a single-outcome fixture passes just as
+  well against a stage that was deleted. This is the strongest routine check in the repo and
+  it has exactly this blind spot; nothing else will catch it for you. (#31)
+- **A test's title names what the test calls.** The test titled "does NOT sweep the sandbox
+  of a concurrently running process" never called the sweep. It was not wrong about anything
+  -- it asserted a true fact about the predicate -- but its title claimed coverage of the
+  behaviour above it, which is what let the gap sit unnoticed. When a title says a *verb*,
+  the body invokes that verb.
 
 ## Practices to adopt
 
@@ -270,44 +381,6 @@ issue; the rule is what stops the next instance.
   later somewhere unrelated. `mutat` for `mutate` currently ends in
   `Access to the path '...\psmut-sandbox-<pid>' is denied`. Any key you add should be
   validated where the config is resolved, with a message that names the key. (#24)
-- **Add a new pinned dependency to `.github/pins.env`, never inline.** Every workflow loads
-  that file into its environment after checkout and asserts each key arrived, so the gates
-  cannot analyse with different analyzers or test against different Pesters. `PSSA_PATHS`
-  lives there too, so the lint gate and the required code-scanning check cannot disagree
-  about what they look at. Before this existed the two coincided only because
-  PSScriptAnalyzer ignores non-PowerShell files -- a coincidence, not an agreement.
-
-  The one thing the file cannot hold is a `uses:` action SHA, because `uses:` does not
-  expand variables. Those stay written out per workflow, all SHA-pinned with the version in
-  a trailing comment, and have to be kept in step by hand.
-- **Keep a `$script:` constant in the file that reads it.** `PSMutation.Config.ps1` reads
-  `$script:PSMutationSandboxSubtrees` from `PSMutation.Sandbox.ps1` and
-  `$script:PSMutationDefaultOperators` from `PSMutation.Operators.ps1`. Move them or pass them
-  in -- not because it is fragile, but because a file that reaches into two others' module
-  state cannot be read on its own. (#38)
-
-  *This rule previously said the reads "work only because of dot-source order". That was wrong:
-  they are inside function bodies and resolve at call time, so reverse-loading every file
-  behaves identically. Recorded rather than deleted, per the practice above.*
-- **Treat a file's docstring as a claim about its contents.** When you add a function,
-  either it fits the file's stated purpose or that file is the wrong home -- and if you move
-  it, fix the docstring and the layout table above in the same commit. Right now two guards
-  of the same kind live in different files (`Assert-PSMutationPester` in the entry point,
-  `Assert-PSMutationBaselineGreen` in `Config.ps1`), which leaves the next guard with no
-  basis for choosing. (#45)
-- **A pass/fail decision in `tools/` belongs in `tools/GateDecisions.ps1`, behind a pure
-  function with tests.** A gate that silently stops being able to fail looks exactly like a
-  green build, and these are the scripts that decide whether every other number here is true.
-  The decisions are arithmetic and string comparison -- free to test, and where an inversion
-  hides.
-
-  The orchestration around them is deliberately **not** tested or mutated, and that is a
-  decision rather than an omission. Three of the four scripts are side effects end to end
-  (run Pester, stage a package, spawn a child process), so a covering suite would have to
-  execute them and each mutant would cost a full gate run -- the same wall that makes
-  `Sandbox.ps1` impossible to self-mutate. `tools/` is also outside `sandboxSubtrees`, so it
-  is not copied into the sandbox at all. Coverage stays measured over `src/`; the gates are
-  proven by running for real in CI. (#27)
 
 ## Writing tests here
 

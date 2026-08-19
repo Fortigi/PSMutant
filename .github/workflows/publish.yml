@@ -23,6 +23,13 @@ on:
         type: boolean
         default: true
 
+# NEVER cancel-in-progress here, unlike ci.yml and code-scanning.yml. A superseded CI run
+# is waste; a half-finished publish is a gallery version that cannot be withdrawn. The group
+# serialises releases instead, so a second tag waits rather than racing the first.
+concurrency:
+  group: publish
+  cancel-in-progress: false
+
 permissions:
   contents: read
   checks: read
