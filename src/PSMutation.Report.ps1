@@ -127,17 +127,37 @@ function Write-PSMutationReport {
     return $summary
 }
 
+function Get-PSMutationScoreColour {
+    # Green at or above High, yellow at or above Low, red below it.
+    #
+    # A pure three-way decision taking resolved numbers, so the null that used to make every
+    # score green cannot reach it -- see Get-PSMutationScoreBand for what that looked like.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [double]$Score,
+        [Parameter(Mandatory)] [double]$High,
+        [Parameter(Mandatory)] [double]$Low
+    )
+    if ($Score -ge $High) { return 'Green' }
+    if ($Score -ge $Low) { return 'Yellow' }
+    return 'Red'
+}
+
 function Show-PSMutationSummary {
     # Human-readable summary + the list of survivors to go add assertions for.
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Summary,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
-        $Thresholds,
+        [Parameter(Mandatory)] [double]$High,
+        [Parameter(Mandatory)] [double]$Low,
         [string]$ReportPath,
         $Equivalents
     )
-    $col = if ($Summary.Score -ge $Thresholds.high) { 'Green' } elseif ($Summary.Score -ge $Thresholds.low) { 'Yellow' } else { 'Red' }
+    # Resolved numbers in, not the raw config: this used to take $Thresholds and compare
+    # against $Thresholds.high directly, which is null for most configs (#40).
+    $col = Get-PSMutationScoreColour -Score $Summary.Score -High $High -Low $Low
     Write-Host "`n----------------------------------------------" -ForegroundColor DarkGray
     Write-Host ("  Mutation score: {0}%  ({1} killed / {2})" -f $Summary.Score, $Summary.Killed, $Summary.Total) -ForegroundColor $col
     # Printed next to the score, not buried in the report: a 100% built on a dozen

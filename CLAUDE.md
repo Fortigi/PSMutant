@@ -355,6 +355,22 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   shipped configs use them.
 
   Adding a key means adding it to that list and to the README table in the same commit. (#24)
+- **Never compare a raw config value; compare a resolved one.** Both of PowerShell's
+  null coercions fail *open* -- `$anyNumber -ge $null` is `$true`, and `[bool]$null` is
+  `$false` -- so an unresolved config value does not produce an error, it produces a
+  confident wrong answer in whichever direction flatters the run.
+
+  Both have already shipped. `[bool]$cfg.coveredLinesOnly` silently meant "mutate uncovered
+  lines too" (#25), and `$Summary.Score -ge $Thresholds.high` printed **every** score green,
+  `0%` included, for any config without colour bands (#40). Each config value gets a resolver
+  in `PSMutation.Config.ps1` with a documented default. The one legitimate exception is a
+  value whose *absence is meaningful* -- `thresholds.break` being unset means report-only --
+  and that one guards with an explicit `$null -ne` before it compares.
+
+  A corollary worth stating separately: a resolver tests `$null -ne`, not truthiness, whenever
+  `0` or `''` is a legal setting. `Get-PSMutationScoreBand` has to, because a band of `0`
+  means "never colour this red"; `Get-PSMutationOperatorList` deliberately does not, because
+  an empty operator list means "use the defaults".
 - **A documented default is pinned by a test, not by prose.** `tests/Config.Tests.ps1` has a
   Describe asserting every default the README config table claims, so the table cannot drift
   from the resolvers again. It had drifted twice: `sandboxSubtrees` was documented as a value

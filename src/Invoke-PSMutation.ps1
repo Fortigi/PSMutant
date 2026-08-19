@@ -100,7 +100,8 @@ function Invoke-PSMutation {
         $results = Invoke-PSMutationLoop -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests -TimeoutSeconds $timeout -SandboxRoot $sandbox -Quiet:$Quiet
         $summary = Write-PSMutationReport -Results $results -ReportPath $reportPath -Thresholds $cfg.thresholds `
             -SourceHashes $hashes -Operators $ops -Equivalents $cfg.equivalents
-        if (-not $Quiet) { Show-PSMutationSummary -Summary $summary -Results $results -Thresholds $cfg.thresholds -ReportPath $reportPath -Equivalents $cfg.equivalents }
+        $band = Get-PSMutationScoreBand -Cfg $cfg
+        if (-not $Quiet) { Show-PSMutationSummary -Summary $summary -Results $results -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents }
 
         $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds
         return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit
