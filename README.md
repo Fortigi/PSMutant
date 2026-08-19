@@ -22,6 +22,14 @@ Install-Module PSMutant -Scope CurrentUser
 
 Requires PowerShell 7.2+ and Pester 5+.
 
+**PSMutant does not import a Pester for you, and does not declare one as a required module.**
+It runs under whichever Pester >= 5.0.0 your session already has, and only imports one if none
+is loaded at all. That is what makes the >= 5 promise real: a manifest dependency is a
+*minimum* that PowerShell satisfies with the newest version installed, so declaring one would
+mean choosing your Pester before you got a say. The trade is that `Install-Module PSMutant`
+will not install Pester for you -- `Install-Module Pester -MinimumVersion 5.0.0` if you need
+it, which is also what the error message says.
+
 ## Use
 
 Create a config pointing at the pure modules you want to test and the Pester files that
