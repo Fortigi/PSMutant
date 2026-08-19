@@ -353,11 +353,21 @@ function Invoke-Phase {
             $script:returns.Count | Should-BeGreaterThan 0
         }
 
-        It 'ignores an operator name it does not know, rather than failing the run' {
-            # A typo in a config's `operators` list must not take the whole run down --
-            # and must not silently be treated as "all operators" either.
-            @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('NoSuchOperator')).Count | Should-Be 0
-            @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('NoSuchOperator', 'ReturnValue')).Count |
+        It 'refuses an operator name it does not know, naming the alternatives' {
+            # THE inversion of #24. This test used to assert the opposite -- that an
+            # unknown name was ignored so a typo could not take the run down -- and that
+            # was the bug: a repo opting into ConditionForcing and misspelling it got its
+            # old vacuous score back, with the typo written into the report's `operators`
+            # array as though it had been applied. Asking for an operator that does not
+            # exist is a broken config, not an empty result.
+            { Get-PSMutationCandidate -Path $script:structFixture -Operators @('NoSuchOperator') } |
+                Should-Throw -ExceptionMessage "*Unknown mutation operator 'NoSuchOperator'*ConditionForcing*"
+        }
+
+        It 'still emits for a valid operator, so the refusal above is not blanket' {
+            # Pairs the rejected name with an accepted one. Without this, a change that
+            # made EVERY operator throw would keep the test above green.
+            @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('ReturnValue')).Count |
                 Should-BeGreaterThan 0
         }
     }
@@ -480,5 +490,17 @@ Describe 'Get-PSMutationOperatorList' {
         # StringLiteral is NOT on by default: emptying every string in a repo produces
         # a flood of survivors that say nothing about behaviour.
         $ops | Should-NotContainCollection 'StringLiteral'
+    }
+}
+
+Describe 'Get-PSMutationKnownOperator' {
+    It 'names every operator the dispatcher can run' {
+        # The config validator quotes this list back at a user who misspelled an operator,
+        # so a name missing here reads as "not a valid operator" for something that is.
+        # Asserting the exact set also fails loudly when an operator is added without a
+        # thought for whether it belongs in the default set.
+        Get-PSMutationKnownOperator | Should-BeCollection @(
+            'BinaryOperator', 'BooleanLiteral', 'ConditionalBoundary', 'ConditionForcing',
+            'NegationRemoval', 'NumberLiteral', 'ReturnValue', 'StringLiteral')
     }
 }

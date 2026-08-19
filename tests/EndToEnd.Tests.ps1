@@ -271,3 +271,27 @@ Describe 'Get-Sign (asserts nothing useful)' {
         finally { Remove-Item $lax -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe 'the config files this repo ships' {
+    # Lives here, not in Config.Tests.ps1: this reads files from the repo ROOT, and the
+    # self-mutation sandbox copies only src/ and tests/. A covering suite that reaches
+    # outside them fails in the sandbox and takes the whole baseline red -- which is
+    # exactly what happened when this check was written there first.
+    BeforeAll {
+        # Dot-sourced, not taken from the imported module: the validator is internal and
+        # FunctionsToExport does not list it.
+        $srcDir = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'src'
+        . (Join-Path -Path $srcDir -ChildPath 'PSMutation.Operators.ps1')
+        . (Join-Path -Path $srcDir -ChildPath 'PSMutation.Config.ps1')
+    }
+
+    It 'validates <Name>' -ForEach @(
+        @{ Name = 'psmutant.self.config.json' }
+        @{ Name = 'examples/psmutant.config.json' }
+    ) {
+        # A shipped config that the validator rejects would be a broken example and a
+        # broken gate on the same day #24 landed.
+        $path = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath $Name
+        Assert-PSMutationConfig -Cfg (Get-Content $path -Raw | ConvertFrom-Json)
+    }
+}
