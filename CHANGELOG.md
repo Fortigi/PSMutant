@@ -4,27 +4,33 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
-### Fixed
-- **A 0% mutation score no longer prints in green** ([#40]). The console summary compared the
-  score against `$Thresholds.high` and `$Thresholds.low` straight off the parsed config, and
-  in PowerShell any number `-ge $null` is `$true` -- so with no `thresholds` at all, or with
-  the entirely reasonable `{"thresholds":{"break":80}}`, the first branch always won and
-  **every** score rendered green. `Mutation score: 0%  (0 killed / 42)`, in green, in a
-  report-only run that exits 0.
-
-  It appeared in exactly the situation a new adopter is in -- minimal config, bands not tuned
-  yet -- so the first impression of a tool built to expose flattering numbers was a green
-  zero. The bands are now resolved in `PSMutation.Config.ps1` like every other config value
-  (defaults 85 / 70, which the README documented only by example), and the colour is decided
-  by a pure `Get-PSMutationScoreColour` taking resolved numbers, so the null cannot reach the
-  comparison. `thresholds.high` and `thresholds.low` are now documented rows in the README
-  config table, pinned by the same tests that pin every other documented default.
-
-  The resolver tests `$null -ne` rather than truthiness, unlike its neighbours: a band of `0`
-  is a meaningful setting -- never colour this red -- and `0` is falsy, so a truthiness test
-  would have quietly substituted the default for it.
-
 ### Changed
+- **PSMutant no longer declares Pester in `RequiredModules`, and no longer imports one when
+  you import PSMutant** ([#30]). `ModuleVersion` in `RequiredModules` is a *minimum*, and
+  PowerShell satisfies it by importing the **newest installed** version -- at import time,
+  before `Assert-PSMutationPester` or `Get-PSMutationPesterPath` can have a say. Every #16 fix
+  operates one layer below the thing that had already chosen a Pester.
+
+  Verified on a machine holding 6.1.0, 5.8.0, 5.7.1 and 3.4.0: a clean session went from no
+  Pester to **6.1.0** purely by importing PSMutant. The consumer-visible symptom was worse than
+  a wrong version -- `Import-Module PSMutant` followed by
+  `Import-Module Pester -RequiredVersion 5.7.1` died on
+  `Could not load file or assembly 'Pester, Version=5.7.1.0' ... Assembly with same name is
+  already loaded`, cascaded into `Should operator 'Be' is not registered`, and left the caller
+  on 6.1.0 anyway. The **same two lines in the other order worked fine**, because
+  `RequiredModules` was then already satisfied. Order-dependent, with no diagnostic pointing at
+  the cause.
+
+  Pester is a **run-time** dependency, and `Assert-PSMutationPester` already enforces it: it
+  accepts an already-loaded Pester >= 5, imports one only when none is loaded, and refuses with
+  an actionable message otherwise. It is now the single point of enforcement, which is what
+  makes the manifest's >= 5.0.0 promise something the module honours rather than pre-empts.
+
+  **The trade, stated plainly:** `Install-Module PSMutant` will no longer install Pester for
+  you. That is deliberate for a module whose whole promise is running under *your* Pester, and
+  the dependency stays documented in the manifest description, the README and the error
+  message. Run `Install-Module Pester -MinimumVersion 5.0.0` if you do not already have it.
+
 - **A config key the module does not recognise is now an error** ([#24]). Keys were read
   straight off the parsed JSON, so a misspelling was never rejected -- it resolved to `$null`
   and made the run quietly weaker while staying green, which is the exact failure class this
@@ -60,6 +66,26 @@ All notable changes to PSMutant are documented here. Format follows
   table cannot drift from the resolvers again. It had drifted twice: this one, and
   `sandboxSubtrees`, documented as `["tools","test","setup"]` -- a value the code has never
   had -- and corrected when [#45] moved that constant.
+
+### Fixed
+- **A 0% mutation score no longer prints in green** ([#40]). The console summary compared the
+  score against `$Thresholds.high` and `$Thresholds.low` straight off the parsed config, and
+  in PowerShell any number `-ge $null` is `$true` -- so with no `thresholds` at all, or with
+  the entirely reasonable `{"thresholds":{"break":80}}`, the first branch always won and
+  **every** score rendered green. `Mutation score: 0%  (0 killed / 42)`, in green, in a
+  report-only run that exits 0.
+
+  It appeared in exactly the situation a new adopter is in -- minimal config, bands not tuned
+  yet -- so the first impression of a tool built to expose flattering numbers was a green
+  zero. The bands are now resolved in `PSMutation.Config.ps1` like every other config value
+  (defaults 85 / 70, which the README documented only by example), and the colour is decided
+  by a pure `Get-PSMutationScoreColour` taking resolved numbers, so the null cannot reach the
+  comparison. `thresholds.high` and `thresholds.low` are now documented rows in the README
+  config table, pinned by the same tests that pin every other documented default.
+
+  The resolver tests `$null -ne` rather than truthiness, unlike its neighbours: a band of `0`
+  is a meaningful setting -- never colour this red -- and `0` is falsy, so a truthiness test
+  would have quietly substituted the default for it.
 
 ### Internal
 - The rules that closed issues were supposed to leave behind are now actually written down,
