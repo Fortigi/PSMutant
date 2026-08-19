@@ -4,7 +4,8 @@
 
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
-    foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Runner.ps1') { . (Join-Path $src $f) }
+    foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
+        'PSMutation.Runner.ps1') { . (Join-Path $src $f) }
 
     # A tiny fixture "project": a module function + a covering test that dot-sources it.
     $script:proj = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-mut-$([System.Guid]::NewGuid().ToString('N'))"

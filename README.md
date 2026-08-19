@@ -157,7 +157,7 @@ refused rather than guessed at.
 | `tests` | Map each mutate file → the Pester file(s) covering it (per-file test scoping). |
 | `operators` | Operator classes to inject. Default is the four expression operators; `StringLiteral`, `ConditionalBoundary`, `ConditionForcing` and `ReturnValue` are opt-in. |
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
-| `sandboxSubtrees` | Directories copied into the sandbox (default `["tools","test","setup"]`; set to your layout, e.g. `["src","tests"]`). |
+| `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |
 | `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, baseline × factor)` (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
 | `equivalents` | `file:line:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator; the run fails if one is killed or stops existing. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |

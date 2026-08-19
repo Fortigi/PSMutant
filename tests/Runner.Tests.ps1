@@ -1,11 +1,17 @@
 # Unit tests for the runner's pure selection/coverage helpers. The execution functions
 # (baseline, per-mutant Pester, loop) are integration-tested by the self-mutation run;
 # here we pin the pure parts that decide WHICH mutants to evaluate.
+#
+# Get-PSMutationPesterPath and Get-PSMutationBoundedPesterScript are MOCKED here and
+# tested in Pester.Tests.ps1. That is what keeps this file cheap enough to be the
+# covering suite: mutating a timeout necessarily produces mutants that DISABLE it, and
+# against a real child runspace each one burns the whole per-mutant deadline.
 
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     . (Join-Path $src 'PSMutation.Operators.ps1')
     . (Join-Path $src 'PSMutation.Sandbox.ps1')
+    . (Join-Path $src 'PSMutation.Pester.ps1')     # Get-PSMutationPesterPath, mocked below
     . (Join-Path $src 'PSMutation.Runner.ps1')
 
     $script:fixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-runner-$PID.ps1"
@@ -235,28 +241,6 @@ Describe 'Invoke-PSMutationBaseline' {
     }
 }
 
-Describe 'Get-PSMutationPesterPath' {
-    It 'returns the path of the newest Pester loaded in this process' {
-        # Two Pester 5.x releases CAN sit in one process -- the dll guard only rejects a
-        # LOWER loaded version -- and the newer is the one actually serving calls.
-        # Handing the child the older path reintroduces the collision it exists to stop.
-        Mock Get-Module {
-            @(
-                [pscustomobject]@{ Version = [version]'5.8.0'; Path = 'C:\p\5.8.0\Pester.psd1' }
-                [pscustomobject]@{ Version = [version]'6.1.0'; Path = 'C:\p\6.1.0\Pester.psd1' }
-            )
-        }
-        Get-PSMutationPesterPath | Should-Be 'C:\p\6.1.0\Pester.psd1'
-    }
-
-    It 'refuses when no Pester is loaded at all' {
-        # With no path to hand over, the child would resolve the name itself and pick
-        # whatever is newest on disk -- exactly the behaviour being prevented.
-        Mock Get-Module { }
-        { Get-PSMutationPesterPath } | Should-Throw -ExceptionMessage '*not loaded*'
-    }
-}
-
 Describe 'Get-PSMutationRunspaceError' {
     It 'joins every message the child wrote to its error stream' {
         $fake = [pscustomobject]@{ Streams = [pscustomobject]@{ Error = @(
@@ -271,20 +255,6 @@ Describe 'Get-PSMutationRunspaceError' {
         # report "produced no result: " and name nothing at all.
         $fake = [pscustomobject]@{ Streams = [pscustomobject]@{ Error = @() } }
         Get-PSMutationRunspaceError -Runspace $fake | Should-Be 'the child runspace reported no error'
-    }
-}
-
-Describe 'Get-PSMutationBoundedPesterScript' {
-    It 'imports the pinned Pester by path and stops the child if that fails' {
-        # Both halves are load-bearing and easy to "simplify" away. Importing by NAME
-        # lets the runspace resolve Pester itself and pick the newest installed, which
-        # is the collision the pin exists to stop; without -ErrorAction Stop a failed
-        # import leaves the child running on to produce nothing, which used to read as
-        # a killed mutant.
-        $script = Get-PSMutationBoundedPesterScript
-        $script | Should-BeLikeString '*Import-Module $pester*'
-        $script | Should-BeLikeString '*-ErrorAction Stop*'
-        $script | Should-NotBeLikeString '*Import-Module Pester*'
     }
 }
 
@@ -385,5 +355,21 @@ Describe 'Invoke-PSBoundedPester' {
 
         $outcome | Should-Be 'TimedOut'
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 20   # cut off, not waited out
+    }
+}
+
+Describe 'Assert-PSMutationBaselineGreen' {
+    It 'refuses to mutate against a red suite' {
+        # The most misleading result this tool could produce: against a failing
+        # suite every mutant "dies" for the reason the suite was already red, and
+        # the run reports a perfect score.
+        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $false }) } |
+            Should-Throw -ExceptionMessage '*Baseline suite is not green*'
+    }
+    It 'lets a green baseline through' {
+        # A guard that lets the run continue emits nothing at all. Calling it directly
+        # covers the refusal case too: an exception here fails the test on its own,
+        # which is why v6 offers no "does not throw" assertion to wrap it in.
+        Should-BeNull -Actual (Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $true }))
     }
 }

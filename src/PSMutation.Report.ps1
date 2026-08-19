@@ -1,6 +1,7 @@
 <#
 .SYNOPSIS
-    Scoring, JSON report, and console summary for the PowerShell mutation runner.
+    Scoring, JSON report, console summary, and the public run-result shape for the
+    PowerShell mutation runner. Everything a consumer's CI reads is decided here.
     Split from the execution engine so each unit stays small and independently testable.
 #>
 
@@ -161,4 +162,22 @@ function Show-PSMutationSummary {
         }
     }
     Write-Host "  Report: $ReportPath" -ForegroundColor Gray
+}
+
+function ConvertTo-PSMutationRunResult {
+    # The public shape of a completed run: what a consumer's CI reads off Invoke-PSMutation.
+    #
+    # Here rather than in Config.ps1, where it used to sit: it is derived entirely from a
+    # summary this file produces, and this file already owns the other contract CI depends
+    # on -- the report JSON. Two halves of one promise, in one place (#45).
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Summary, [Parameter(Mandatory)] [int]$ExitCode)
+    return [pscustomobject]@{
+        Score    = $Summary.Score
+        Killed   = $Summary.Killed
+        Survived = $Summary.Survived
+        Total    = $Summary.Total
+        ExitCode = $ExitCode
+    }
 }
