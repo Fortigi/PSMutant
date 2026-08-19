@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-19. 38 issues open.
+Snapshot 2026-08-19. 37 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -88,11 +88,10 @@ Now has a home to land in. This is the wave with the most user-visible value.
 
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#40** 0% prints green | Threshold-band resolution, in the resolver file #24 and #25 have just shaped -- the same review, one wave later, and the cheapest thing left in this wave. |
-| 2 | **#29** operator-order renumbering | Reordering a JSON array silently invalidates recheck reports. |
-| 3 | **#28** identity collision, with **#3** and **#59** | Same identity scheme, three different defects: a colliding key, a stale key, and an id whose stability rests on an unstated ordering. Fix once. |
-| 4 | **#54**, **#56** | The run-result shape and the score function's fused scope. #56 blocks per-file scores in Wave E. |
-| 5 | **#60**, **#61** | Two files documented Pure that do I/O, and `-Quiet` implemented two ways. Both are small, both are prerequisites for #47/#11 being done cleanly. |
+| 1 | **#29** operator-order renumbering | Reordering a JSON array silently invalidates recheck reports. |
+| 2 | **#28** identity collision, with **#3** and **#59** | Same identity scheme, three different defects: a colliding key, a stale key, and an id whose stability rests on an unstated ordering. Fix once -- three separate touches would invalidate existing reports for `-RecheckFrom` three times. |
+| 3 | **#54**, **#56** | The run-result shape and the score function's fused scope. #56 blocks per-file scores in Wave E. |
+| 4 | **#60**, **#61** | Two files documented Pure that do I/O, and `-Quiet` implemented two ways. Both are small, both are prerequisites for #47/#11 being done cleanly. |
 
 ## Wave E -- output features
 
@@ -121,8 +120,11 @@ had happen twice with its own documentation.
 
 Pick these up between waves; none blocks anything.
 
-- **#30** `RequiredModules` auto-imports the newest Pester. Small, consumer-facing, no
-  dependencies -- the best early win of anything left.
+- **#30** `RequiredModules` auto-imports the newest Pester, above the layer that guards against
+  it. Small, consumer-facing, no dependencies -- the best early win of anything left, and
+  cheaper now than when this was written: #45 created `PSMutation.Pester.ps1`, so the single
+  enforcement point it needs already exists and is tested. It is the last live instance of the
+  #16 class, one layer up.
 - **#46** `switch`/ternary blind spot. Natural follow-up to the operators #5 landed.
 - **#55** nothing asserts Pester's result vocabulary is two-valued. Small, and it guards the
   external boundary the module deliberately does not abstract.
