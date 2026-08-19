@@ -160,6 +160,7 @@ refused rather than guessed at.
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |
 | `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, baseline × factor)` (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
 | `equivalents` | `file:line:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator; the run fails if one is killed or stops existing. |
+| `thresholds.high` / `thresholds.low` | Colour bands for the console score: green at or above `high`, yellow at or above `low`, red below (defaults 85 / 70). They affect the printed colour only, never the exit code. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |
 | `reportPath` | Where the JSON report is written (relative to `-SourceRoot`). A `-RecheckFrom` run writes `<name>.recheck.json` beside it and never touches this file. |
 

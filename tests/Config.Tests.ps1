@@ -327,8 +327,56 @@ Describe 'the defaults the README documents' {
         Get-PSMutationTimeout -Cfg ('{}' | ConvertFrom-Json) -BaselineSeconds 100 | Should-Be 400
     }
 
+    It 'defaults the colour bands to high 85 and low 70' {
+        $band = Get-PSMutationScoreBand -Cfg ('{}' | ConvertFrom-Json)
+        $band.High | Should-Be 85
+        $band.Low | Should-Be 70
+    }
+
     It 'defaults operators to the four expression operators' {
         Get-PSMutationOperatorList -Cfg ('{}' | ConvertFrom-Json) |
             Should-BeCollection @('BinaryOperator', 'BooleanLiteral', 'NumberLiteral', 'NegationRemoval')
+    }
+}
+
+Describe 'Get-PSMutationScoreBand' {
+    It 'defaults to 85 / 70 when the config has no thresholds at all' {
+        # THE #40 case. These used to be read straight into the comparison, and any number
+        # `-ge $null` is $true in PowerShell, so every score printed green -- including
+        # `Mutation score: 0%` in a run that exits 0.
+        $band = Get-PSMutationScoreBand -Cfg ('{ "mutate": ["a"] }' | ConvertFrom-Json)
+        $band.High | Should-Be 85
+        $band.Low | Should-Be 70
+    }
+
+    It 'defaults both when thresholds carries only break' {
+        # The realistic shape, and the one a new adopter writes first: gating configured,
+        # colours not. A resolver keyed on "is thresholds present" would pass the test
+        # above and fail here.
+        $band = Get-PSMutationScoreBand -Cfg ('{ "thresholds": { "break": 80 } }' | ConvertFrom-Json)
+        $band.High | Should-Be 85
+        $band.Low | Should-Be 70
+    }
+
+    It 'honours bands the config does set' {
+        $band = Get-PSMutationScoreBand -Cfg ('{ "thresholds": { "high": 95, "low": 60 } }' | ConvertFrom-Json)
+        $band.High | Should-Be 95
+        $band.Low | Should-Be 60
+    }
+
+    It 'honours a band of zero rather than treating it as unset' {
+        # Zero is falsy, so a truthiness test -- which is what every other resolver here
+        # uses -- would silently substitute 85/70 for a deliberate "never colour this red".
+        $band = Get-PSMutationScoreBand -Cfg ('{ "thresholds": { "high": 0, "low": 0 } }' | ConvertFrom-Json)
+        $band.High | Should-Be 0
+        $band.Low | Should-Be 0
+    }
+
+    It 'resolves each band independently' {
+        # Pairs a set value with an unset one in a single config: a resolver that decided
+        # both from one key would still pass every test above.
+        $band = Get-PSMutationScoreBand -Cfg ('{ "thresholds": { "low": 40 } }' | ConvertFrom-Json)
+        $band.High | Should-Be 85
+        $band.Low | Should-Be 40
     }
 }
