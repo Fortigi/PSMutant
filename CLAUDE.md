@@ -179,8 +179,13 @@ missing from the list still ships (see #26).
 
 The **order** in that list does not matter, despite what this file and `PSMutant.psm1` used to
 claim. Every cross-file reference sits inside a function body and resolves at call time, so
-loading all seven in reverse order behaves identically — verified. Nothing enforces the layering
-the order was supposed to express; that is #52.
+loading all seven in reverse order behaves identically — verified.
+
+Keep it in that order regardless. It is a topological order of the real dependency graph, so
+reading the list top to bottom is the cheapest description of the architecture anyone gets —
+a readable convention rather than a constraint. What is *not* true is that anything enforces
+the direction it expresses: the graph is acyclic today because nobody has added a shortcut
+edge, not because a gate would catch one. That is #52.
 
 **Mutants must never touch tracked source.** Everything runs in a temp sandbox and the
 real files are never written, even transiently, so a hard kill cannot leave a mutated
