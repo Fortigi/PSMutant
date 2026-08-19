@@ -104,12 +104,13 @@ jobs:
       - name: Lint (PSScriptAnalyzer)
         shell: pwsh
         run: |
-          $paths = ($env:PSSA_PATHS -split ' ') | Where-Object { $_ }
-          $findings = $paths | ForEach-Object {
-            Invoke-ScriptAnalyzer -Path $_ -Recurse -Settings ./PSScriptAnalyzerSettings.psd1 -Severity Error, Warning
-          }
+          # One committed script, shared with code-scanning.yml. This step used to spell the
+          # invocation out and pass -Severity Error, Warning while code scanning passed no
+          # filter, so every Information-severity rule was invisible to the gate that FAILS
+          # and visible to the gate that BLOCKS -- see #76 and the script's own header.
+          $findings = ./tools/Invoke-PSMutantAnalyzer.ps1
           if ($findings) {
-            $findings | Format-Table RuleName, ScriptName, Line, Message -AutoSize
+            $findings | Format-Table Severity, RuleName, ScriptName, Line, Message -AutoSize
             throw "$($findings.Count) PSScriptAnalyzer finding(s) -- lint gate failed"
           }
           Write-Host 'Lint clean.'
