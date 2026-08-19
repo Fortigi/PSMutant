@@ -5,7 +5,7 @@
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
     Copyright         = '(c) Fortigi. MIT licensed.'
-    Description       = 'Mutation testing for PowerShell. Injects small faults (flip -eq to -ne, $true to $false, N to N+1, drop -not) into your scripts using the PowerShell AST and reports how many your Pester suite catches - the metric line coverage cannot give you. Runs mutants in a throwaway sandbox so your source is never modified.'
+    Description       = 'Mutation testing for PowerShell. Injects small faults (flip -eq to -ne, $true to $false, N to N+1, drop -not) into your scripts using the PowerShell AST and reports how many your Pester suite catches - the metric line coverage cannot give you. Runs mutants in a throwaway sandbox so your source is never modified. Requires Pester 5.0.0 or later AT RUN TIME, and deliberately does not declare it as a RequiredModule: PSMutant runs under whichever Pester >= 5 you have loaded rather than importing one for you. Install Pester yourself if you do not already have it.'
     PowerShellVersion = '7.2'
 
     FunctionsToExport = @('Invoke-PSMutation', 'Get-PSMutationCandidate', 'Set-PSMutationText')
@@ -13,7 +13,18 @@
     VariablesToExport = @()
     AliasesToExport   = @()
 
-    RequiredModules   = @(@{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' })
+    # NO RequiredModules entry for Pester, deliberately. ModuleVersion there is a MINIMUM
+    # and PowerShell satisfies it by importing the NEWEST installed version -- at import
+    # time, before Assert-PSMutationPester or Get-PSMutationPesterPath can have a say. That
+    # made `Import-Module PSMutant` followed by `Import-Module Pester -RequiredVersion 5.7.1`
+    # fail on an assembly collision and leave the caller on 6.1.0, while the same two lines
+    # in the other order worked -- issue #16's failure one layer up, with no diagnostic.
+    #
+    # Pester is needed at RUN time, not import time, and Assert-PSMutationPester is the single
+    # point that enforces it: it accepts an already-loaded Pester >= 5, imports one only when
+    # none is loaded, and refuses with an actionable message otherwise. The cost is that
+    # Install-Module PSMutant no longer pulls Pester in for you; that is stated in the
+    # description, the README and the error message.
 
     PrivateData = @{
         PSData = @{
