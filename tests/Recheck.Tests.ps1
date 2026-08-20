@@ -13,6 +13,7 @@ BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     . (Join-Path $src 'PSMutation.Sandbox.ps1')    # ConvertFrom-PSMutationSandboxPath
     . (Join-Path $src 'PSMutation.Runner.ps1')     # Invoke-PSMutationLoop, mocked below
+    . (Join-Path $src 'PSMutation.Report.ps1')     # the equivalence key, to skip declared ones
     . (Join-Path $src 'PSMutation.Recheck.ps1')
 
     function Get-FakeReport {
@@ -368,5 +369,74 @@ Describe 'Invoke-PSMutationRecheckRun' {
 
         ($script:said -join "`n") | Should-MatchString 'Rechecking 2 previous survivor'
         Should-Invoke Show-PSMutationRecheckSummary -Exactly 1
+    }
+}
+
+Describe 'a recheck skips what the config already argued cannot be killed' {
+    BeforeAll {
+        # A declared equivalent appears in `survivors` legitimately -- it survived, it was
+        # merely excluded from the denominator -- so the recheck used to re-run it.
+        $script:eqReport = [pscustomobject]@{
+            survivors = @(
+                [pscustomobject]@{ File = 'src/a.ps1'; Id = 1; Function = 'Get-Thing'; Line = 7; Description = '6 -> 7' }
+                [pscustomobject]@{ File = 'src/a.ps1'; Id = 2; Function = 'Get-Thing'; Line = 9; Description = '1 -> 2' }
+            )
+        }
+        $script:eqCandidates = @(
+            [pscustomobject]@{ File = (Join-Path $TestDrive 'src/a.ps1'); Id = 1 }
+            [pscustomobject]@{ File = (Join-Path $TestDrive 'src/a.ps1'); Id = 2 }
+        )
+    }
+
+    It 'drops a declared equivalent and keeps the genuine survivor' {
+        # THE #14 defect, and the pairing is the point: a filter that dropped everything
+        # would satisfy "the equivalent is gone" on its own. In the case that prompted the
+        # issue this was 16 of 20 mutants -- work re-run to confirm what the config asserts
+        # in writing -- and it grows as a repo declares more.
+        $eq = [pscustomobject]@{ 'src/a.ps1:Get-Thing:6 -> 7' = 'provably identical output' }
+        $out = Select-PSMutationRecheckCandidate -Candidates $script:eqCandidates -Report $script:eqReport `
+            -SandboxRoot $TestDrive -Equivalents $eq
+        @($out).Count | Should-Be 1
+        @($out)[0].Id | Should-Be 2
+    }
+
+    It 'keeps both when nothing is declared' {
+        # The unfiltered case, so the assertion above cannot pass by the filter being broken.
+        $out = Select-PSMutationRecheckCandidate -Candidates $script:eqCandidates -Report $script:eqReport `
+            -SandboxRoot $TestDrive -Equivalents $null
+        @($out).Count | Should-Be 2
+    }
+
+    It 'honours a declaration written in the line form too' {
+        # Both key forms are accepted everywhere else; a recheck that only understood one
+        # would re-run mutants the scoring path excludes.
+        $eq = [pscustomobject]@{ 'src/a.ps1:9:1 -> 2' = 'provably identical output' }
+        $out = Select-PSMutationRecheckCandidate -Candidates $script:eqCandidates -Report $script:eqReport `
+            -SandboxRoot $TestDrive -Equivalents $eq
+        @($out).Count | Should-Be 1
+        @($out)[0].Id | Should-Be 1
+    }
+}
+
+Describe 'the recheck report path does not grow a suffix per round' {
+    It 'appends .recheck to a full report' {
+        Get-PSMutationRecheckReportPath -ReportPath 'reports/run.json' |
+            Should-BeLikeString '*run.recheck.json'
+    }
+
+    It 'leaves an already-recheck path alone' {
+        # Chaining used to imply run.recheck.recheck.json, then another, then another (#20).
+        # Each round overwrites the previous scratch report instead; the FULL report is the
+        # one that must never be clobbered, and this function never returns it.
+        Get-PSMutationRecheckReportPath -ReportPath 'reports/run.recheck.json' |
+            Should-BeLikeString '*run.recheck.json'
+        Get-PSMutationRecheckReportPath -ReportPath 'reports/run.recheck.json' |
+            Should-NotBeLikeString '*recheck.recheck*'
+    }
+
+    It 'never returns the path it was given for a full report' {
+        # The guarantee the whole design rests on: a partial run cannot overwrite the
+        # baseline CI reads.
+        Get-PSMutationRecheckReportPath -ReportPath 'reports/run.json' | Should-NotBeLikeString 'reports/run.json'
     }
 }
