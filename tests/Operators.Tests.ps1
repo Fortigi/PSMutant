@@ -646,3 +646,104 @@ function Test-Multi {
         finally { Remove-Item $f -ErrorAction SilentlyContinue }
     }
 }
+
+Describe 'an equivalence declaration survives an unrelated edit' {
+    BeforeAll {
+        $script:stableSrc = @'
+function Get-Thing {
+    param($n)
+    return $n + 1
+}
+'@
+    }
+
+    It 'keeps the function-form key when a line is inserted above the mutant' {
+        # THE #3 defect, reproduced. A declaration keyed on the line number goes stale
+        # whenever anything ABOVE it is edited -- a comment, an import, another function --
+        # although the mutant it argues about has not changed. It happened on the first run
+        # after the feature shipped, and twice more while fixing #28.
+        $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-stable-$PID.ps1"
+        try {
+            $script:stableSrc | Set-Content $f
+            $before = @(Get-PSMutationCandidate -Path $f -Operators @('NumberLiteral'))[0]
+
+            # An edit that changes nothing about the mutant: a comment, above it.
+            "# an unrelated comment`n" + $script:stableSrc | Set-Content $f
+            $after = @(Get-PSMutationCandidate -Path $f -Operators @('NumberLiteral'))[0]
+
+            # The line moved -- that is the whole premise of the test.
+            ($after.Line -eq $before.Line) | Should-BeFalse
+            # The function-form key did not.
+            $after.Function | Should-Be $before.Function
+            $after.Description | Should-Be $before.Description
+        }
+        finally { Remove-Item $f -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Get-PSMutationEnclosingFunction' {
+    BeforeAll {
+        $script:nested = @'
+function Outer {
+    function Inner { return 1 }
+    return 2
+}
+$topLevel = 3
+'@
+        $script:nestedFile = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-nested-$PID.ps1"
+        $script:nested | Set-Content $script:nestedFile
+    }
+
+    AfterAll { Remove-Item $script:nestedFile -ErrorAction SilentlyContinue }
+
+    It 'names the innermost function, not the outermost' {
+        # A nested function is the more specific answer and the one a reader would name.
+        # Returning the outer one would make two different mutants share a key.
+        $c = @(Get-PSMutationCandidate -Path $script:nestedFile -Operators @('NumberLiteral'))
+        ($c | Where-Object Description -eq '1 -> 2').Function | Should-Be 'Inner'
+        ($c | Where-Object Description -eq '2 -> 3').Function | Should-Be 'Outer'
+    }
+
+    It 'returns empty for code at file scope' {
+        # Module top-level statements are mutable too and have no function to be addressed
+        # by, so they keep falling back to the line number rather than getting a wrong name.
+        $c = @(Get-PSMutationCandidate -Path $script:nestedFile -Operators @('NumberLiteral'))
+        ($c | Where-Object Description -eq '3 -> 4').Function | Should-BeEmptyString
+    }
+
+    It 'returns empty when there are no functions at all' {
+        Get-PSMutationEnclosingFunction -Offset 5 -Ranges @() | Should-BeEmptyString
+    }
+
+    It 'treats <Case> as <Expected>' -ForEach @(
+        # The range is half-open: Start is inside, End is not. Boundary values, because a
+        # comfortable offset in the middle passes against -gt as happily as -ge.
+        @{ Case = 'the first character of a function'; Offset = 10; Expected = 'F' }
+        @{ Case = 'one before the function';           Offset = 9;  Expected = '' }
+        @{ Case = 'the last character of a function';  Offset = 19; Expected = 'F' }
+        @{ Case = 'the end offset itself';             Offset = 20; Expected = '' }
+    ) {
+        $ranges = @([pscustomobject]@{ Name = 'F'; Start = 10; End = 20 })
+        Get-PSMutationEnclosingFunction -Offset $Offset -Ranges $ranges | Should-Be $Expected
+    }
+
+    It 'requires the offset to be inside BOTH bounds, not either' {
+        # Guards the -and. With -or, an offset past the end still satisfies "at or after
+        # start" and every mutant in the file would be attributed to the last function.
+        $ranges = @([pscustomobject]@{ Name = 'F'; Start = 10; End = 20 })
+        Get-PSMutationEnclosingFunction -Offset 99 -Ranges $ranges | Should-BeEmptyString
+    }
+
+    It 'takes the last containing range, which document order makes the innermost' {
+        # The ordering invariant the implementation leans on, pinned rather than assumed:
+        # FindAll returns functions in document order and a nested function always follows
+        # the one enclosing it, so "last containing" and "innermost" are the same range.
+        $ranges = @(
+            [pscustomobject]@{ Name = 'Outer'; Start = 0;  End = 100 }
+            [pscustomobject]@{ Name = 'Inner'; Start = 20; End = 40 }
+        )
+        Get-PSMutationEnclosingFunction -Offset 30 -Ranges $ranges | Should-Be 'Inner'
+        # Outside the nested one, the enclosing function is still the answer.
+        Get-PSMutationEnclosingFunction -Offset 50 -Ranges $ranges | Should-Be 'Outer'
+    }
+}

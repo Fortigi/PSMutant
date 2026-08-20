@@ -152,6 +152,35 @@ All notable changes to PSMutant are documented here. Format follows
   had -- and corrected when [#45] moved that constant.
 
 ### Fixed
+- **An equivalence declaration no longer goes stale when an unrelated line moves** ([#3]).
+  Keys were `file:line:description`, so editing anything **above** a declared mutant -- a
+  comment, an import, another function entirely -- invalidated the declaration although the
+  mutant itself was untouched. That happened on the very first run after the feature shipped,
+  and twice more while fixing [#28]: once when doc comments moved a mutant from line 126 to
+  140, and again when extracting a function moved it to 165. Neither edit changed any
+  behaviour.
+
+  The key is now `file:function:description`, stable under every edit that does not move the
+  mutant out of its function. The report's mutant rows carry a `Function` field to make that
+  possible -- a deliberate widening of the contract [#48] pinned, which is what the pinning
+  test is for; it failed when the field was added.
+
+  `file:line:description` is **still accepted**, so existing configs keep working: a fix for
+  key churn that invalidated every key would be a poor trade. It is also the only form
+  available for code outside any function, which has no name to be addressed by.
+
+  Worth knowing before reaching for the new form: **it is not universally more specific.** A
+  function containing three `if ($isDeclared)` guards makes
+  `Get-PSMutationScore:$isDeclared -> $true` match all three, so [#28]'s check refuses it as
+  ambiguous and such a declaration has to stay keyed by line. Keeping both forms is what makes
+  that case expressible at all.
+
+  One of this repo's four equivalence declarations **retired** rather than moving. It argued
+  that counting undeclared keys into `$matched` could not be observed, because `$matched` is
+  only read for keys that are declared. That was true when written, and stopped being true
+  here: the key is now `$null` for an undeclared mutant, `$matched[$null]` throws, and the
+  suite kills all three of those mutants outright. A declaration is a checkable claim, and
+  this is what it looks like when one stops being needed.
 - **One equivalence declaration could silently exclude every mutant sharing its line and
   description** ([#28]). The key is `File:Line:Description`, and four operators emitted a
   description that said nothing about what was mutated -- `remove negation`,

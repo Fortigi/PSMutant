@@ -424,7 +424,11 @@ Describe 'the mutant row the report publishes' {
         $r = Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
 
+        # Function joined this list in #3, deliberately: an equivalence declaration keyed on
+        # a line number goes stale whenever anything above the mutant is edited, so the row
+        # carries the function it lives in. Widening the contract is what this assertion is
+        # for -- it failed when the field was added, which is the pin working.
         @($r)[0].PSObject.Properties.Name |
-            Should-BeCollection @('Id', 'File', 'Line', 'Operator', 'Description', 'Status')
+            Should-BeCollection @('Id', 'Function', 'File', 'Line', 'Operator', 'Description', 'Status')
     }
 }

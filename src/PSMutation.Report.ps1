@@ -6,13 +6,51 @@
 #>
 
 function Get-PSMutationEquivalentKey {
-    # The identity a config declares an equivalent mutant by. Line + description
-    # rather than mutant id: a declaration should survive an unrelated edit
-    # elsewhere in the file, which renumbers ids but does not move this mutant.
-    [OutputType([string])]
+    # Every string a config may use to declare THIS mutant equivalent, stablest first.
+    #
+    # Not the mutant id: ids are AST-walk positions and renumber whenever an earlier mutant
+    # is added or removed. Not the line number alone either, which was the original scheme
+    # and the defect: editing anything ABOVE a declared mutant -- a comment, an import,
+    # another function entirely -- moved the line and the declaration went stale although
+    # the mutant was untouched. That happened on the first run after the feature shipped,
+    # and twice more while fixing #28 (#3).
+    #
+    # `File:Function:Description` is stable under every edit that does not move the mutant
+    # out of its function. `File:Line:Description` is still accepted, second, so existing
+    # configs keep working -- a fix for key churn that invalidated every key would be a
+    # poor trade. Code at file scope has no function to be addressed by, so it keeps only
+    # the line form.
+    [OutputType([string[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Result)
-    return "$($Result.File):$($Result.Line):$($Result.Description)"
+    # NO comma-wrap, unlike Get-PSMutationLoopRange. That one wraps because an empty @()
+    # unrolls to $null and breaks a mandatory binding downstream; this never returns empty
+    # and its caller iterates it, so wrapping would hand the foreach one item that IS the
+    # array -- which is exactly what it did on the first attempt (see #38).
+    # Cast on the EXPRESSION, @() inside it: casting the variable leaves the analyzer
+    # inferring the branch types (string here, object[] there) against the declared
+    # [string[]], and dropping the @() turns a single key into a scalar the cast cannot
+    # widen. Same shape as Get-PSMutationCandidate, same reason (#76).
+    $byLine = "$($Result.File):$($Result.Line):$($Result.Description)"
+    if ([string]::IsNullOrEmpty([string]$Result.Function)) { return [string[]]@($byLine) }
+    return [string[]]@("$($Result.File):$($Result.Function):$($Result.Description)", $byLine)
+}
+
+function Get-PSMutationDeclaredKey {
+    # The declaration covering this mutant, or $null when none does.
+    #
+    # Stablest form wins when a config declares both, so the count that decides ambiguity
+    # is never inflated by one mutant answering to two of its own keys.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Result,
+        [Parameter(Mandatory)] [hashtable]$Declared
+    )
+    foreach ($k in Get-PSMutationEquivalentKey -Result $Result) {
+        if ($Declared.ContainsKey($k)) { return $k }
+    }
+    return $null
 }
 
 function Get-PSMutationDeclaredEquivalent {
@@ -90,8 +128,8 @@ function Get-PSMutationScore {
 
     $killed = 0; $survived = 0; $excluded = 0
     foreach ($r in $Results) {
-        $key = Get-PSMutationEquivalentKey -Result $r
-        $isDeclared = $declared.ContainsKey($key)
+        $key = Get-PSMutationDeclaredKey -Result $r -Declared $declared
+        $isDeclared = $null -ne $key
         if ($isDeclared) { $matched[$key] = 1 + [int]$matched[$key] }
         if ($r.Status -eq 'Killed') {
             $killed++
@@ -213,7 +251,7 @@ function Show-PSMutationSummary {
     # the reader after a mutant the config already argued is unkillable, which is
     # how a good declaration gets "fixed" with a meaningless test.
     $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
-    $open = @($Results | Where-Object { $_.Status -eq 'Survived' -and -not $declared.ContainsKey((Get-PSMutationEquivalentKey -Result $_)) })
+    $open = @($Results | Where-Object { $_.Status -eq 'Survived' -and -not (Get-PSMutationDeclaredKey -Result $_ -Declared $declared) })
     if ($open.Count -gt 0) {
         Write-Host "  Survivors (add assertions to kill these):" -ForegroundColor Yellow
         $open | ForEach-Object {
