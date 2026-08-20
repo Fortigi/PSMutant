@@ -77,7 +77,19 @@ function Test-PSMutationRecheckCompatible {
     $reasons = [System.Collections.Generic.List[string]]::new()
 
     if (-not $Report.PSObject.Properties.Name.Contains('sourceHashes') -or $null -eq $Report.sourceHashes) {
-        $reasons.Add('the report predates source-hash recording, so the mutants it lists cannot be matched to the current source -- run the full set once to regenerate it')
+        # Name the schema when the report has one. Without it the message could only guess,
+        # and it guessed wrong for a whole class of report: it said "predates source-hash
+        # recording" to anyone chaining a recheck, when the real reason was that recheck
+        # reports did not carry hashes at all (#20). A version number is what lets the
+        # message distinguish "too old" from "not that kind of report" (#34).
+        # No Contains() guard, unlike the sourceHashes check above. There, absent and
+        # present-but-null are different cases and a test pins each; here they mean the same
+        # thing -- no usable version -- and a missing property already reads as $null, so the
+        # extra half is a condition nothing can ever distinguish. The mutation gate said so.
+        $schema = if ($Report.schemaVersion) {
+            "schema version $($Report.schemaVersion)"
+        } else { 'no schema version, so it predates provenance recording' }
+        $reasons.Add("the report carries no source hashes ($schema), so the mutants it lists cannot be matched to the current source -- run the full set once to regenerate it")
         return , $reasons.ToArray()
     }
 
@@ -158,12 +170,19 @@ function Write-PSMutationRecheckReport {
         # Copied from the report this chained off, so the next round can validate against
         # them exactly as it would against a full report (#20).
         [hashtable]$SourceHashes,
-        [AllowEmptyCollection()] [string[]]$Operators = @()
+        [AllowEmptyCollection()] [string[]]$Operators = @(),
+        [hashtable]$Provenance = @{}
     )
     $killed = @($Results | Where-Object Status -eq 'Killed').Count
     New-Item -ItemType Directory -Path (Split-Path $ReportPath -Parent) -Force | Out-Null
     [pscustomobject]@{
         generatedFrom      = 'PSMutant'
+        # Same block as a full report, so a consumer can read provenance the same way from
+        # either shape rather than learning two conventions (#34).
+        schemaVersion      = $Provenance.schemaVersion
+        producedBy         = $Provenance.producedBy
+        generatedAt        = $Provenance.generatedAt
+        durations          = $Provenance.durations
         mode               = 'Recheck'
         note               = 'Partial run over a previous report''s survivors. Not a mutation score; a full run is required before trusting a number, because edited or deleted tests can revive mutants this run never evaluated.'
         recheckedFrom      = $SourceReportPath
@@ -230,6 +249,9 @@ function Invoke-PSMutationRecheckRun {
         [Parameter(Mandatory)] [string]$ReportPath,
         # Needed to skip declared equivalents when choosing what to re-run (#14).
         $Equivalents,
+        # A scriptblock, not a value: it is evaluated after the loop so the elapsed time it
+        # records is the whole run rather than the moment the run started (#34).
+        [scriptblock]$Provenance = { @{} },
         [switch]$Quiet
     )
     $prior = Get-Content $RecheckFrom -Raw | ConvertFrom-Json
@@ -252,7 +274,7 @@ function Invoke-PSMutationRecheckRun {
     # the gate needs to check.
     $summary = Write-PSMutationRecheckReport -Results $results -ReportPath $recheckPath `
         -PriorSurvivorCount @($prior.survivors).Count -SourceReportPath $RecheckFrom `
-        -SourceHashes $SourceHashes -Operators $Operators
+        -SourceHashes $SourceHashes -Operators $Operators -Provenance (& $Provenance)
     if (-not $Quiet) { Show-PSMutationRecheckSummary -Summary $summary -Results $results -ReportPath $recheckPath }
     return $summary
 }
