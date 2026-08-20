@@ -213,10 +213,12 @@ function Invoke-PSMutationLoop {
         $display = ConvertFrom-PSMutationSandboxPath -Path $c.File -SandboxRoot $SandboxRoot
         $row = [pscustomobject]@{
             # Function is carried so an equivalence declaration can address this mutant by
-            # the function it lives in rather than by a line number that moves whenever
-            # anything above it is edited (#3). Widening this row is a deliberate change to
-            # the report contract #48 pinned, not a side effect -- the pinning test moved
-            # with it.
+            # the function it lives in rather than by a line number, which moves whenever
+            # anything above the mutant is edited and takes the declaration stale with it.
+            #
+            # This row is the report's published shape. Adding a field widens what every
+            # consumer may depend on, so a test asserts the exact list: widening should
+            # cost a deliberate edit, not happen as a side effect of an internal rename.
             Id = $c.Id; Function = $c.Function; File = $display; Line = $c.Line
             Operator = $c.Operator; Description = $c.Description; Status = $status
         }

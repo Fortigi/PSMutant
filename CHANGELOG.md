@@ -178,6 +178,20 @@ All notable changes to PSMutant are documented here. Format follows
   the file itself. The file is the contract, and that is what the tests assert against.
 
 ### Fixed
+- **`Get-Help Invoke-PSMutation` served the wrong documentation.** PowerShell treats a `<# #>`
+  block sitting immediately before the `function` keyword as that function's comment-based
+  help, so this file's header shadowed the help written inside the body. Anyone running
+  `Get-Help` got a one-line architecture note, no parameter descriptions and no examples,
+  while the real documentation sat unreachable a few lines below. Nothing in the source looked
+  wrong -- and the source was not wrong; only the resolution was.
+
+  File headers in `src/` are `#` line comments now, and the suite asserts the public help
+  resolves to the real thing: every parameter documented and described, examples present and
+  non-empty. The audit that found this was itself fooled first, reading the shadowing block and
+  concluding the help was complete, which is how `-Quiet` turned out to be undocumented.
+
+  The help is also fuller than it was: five worked examples including the recheck loop, and a
+  written `.PARAMETER` for every parameter.
 - **The recheck loop now narrows** ([#14], [#20]). Its whole purpose is not paying for mutants
   you are not working on -- several hundred mutants with a handful of survivors should not mean
   re-running the set to report on those few -- and it was leaving two kinds of work on the table.

@@ -17,10 +17,10 @@
 function New-PSMutationSandbox {
     # Copy the source subtrees into a fresh temp dir; return its root path.
     #
-    # -Subtrees is mandatory rather than defaulted. The default used to live here as
-    # $script:PSMutationSandboxSubtrees, which PSMutation.Config.ps1 then reached across
-    # and read (#38); it is now that file's $script:PSMutationDefaultSubtrees. What to
-    # copy is a config decision, and every caller already passed one.
+    # -Subtrees is mandatory rather than defaulted. What to copy is a config decision,
+    # and this file is mechanism: giving it an opinion about the repo's layout would put
+    # the default here, where the resolver that owns it would have to reach across files
+    # to read it.
     [OutputType([string])]
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
     param(
@@ -85,8 +85,8 @@ function Get-PSMutationSandboxOwnerId {
 
 function Test-PSMutationSandboxAbandoned {
     # True when a sandbox can be deleted: its owning process is gone. A sandbox whose
-    # owner is still ALIVE belongs to a concurrent run and must be left alone -- the
-    # sweep used to take those too, which is how two runs destroyed each other.
+    # owner is still ALIVE belongs to a concurrent run and must be left alone, or two
+    # runs on one machine delete each other's working files mid-flight.
     [OutputType([bool])]
     [CmdletBinding()]
     param(

@@ -29,10 +29,7 @@
     wrong mutants, a recheck refuses to run when the recorded source hash or
     operator set no longer matches. That is why the report carries both.
 
-    This file holds the WHOLE feature, pure parts and orchestration alike. It used to
-    hold only the pure half, with Invoke-PSMutationRecheckRun sitting in the entry
-    point -- a split by purity rather than by feature, which nothing documented and
-    which is why two test files each owned half of one behaviour (#45).
+    Compatibility, selection and the run itself, in one file.
 #>
 
 function Get-PSMutationSourceHash {
@@ -77,11 +74,10 @@ function Test-PSMutationRecheckCompatible {
     $reasons = [System.Collections.Generic.List[string]]::new()
 
     if (-not $Report.PSObject.Properties.Name.Contains('sourceHashes') -or $null -eq $Report.sourceHashes) {
-        # Name the schema when the report has one. Without it the message could only guess,
-        # and it guessed wrong for a whole class of report: it said "predates source-hash
-        # recording" to anyone chaining a recheck, when the real reason was that recheck
-        # reports did not carry hashes at all (#20). A version number is what lets the
-        # message distinguish "too old" from "not that kind of report" (#34).
+        # Name the schema when the report has one. Without a version the message can only
+        # guess from which keys are present, and it guesses wrong for a whole class of
+        # report -- telling someone chaining a recheck that theirs "predates source-hash
+        # recording" when the real reason is that it is not that kind of report at all.
         # No Contains() guard, unlike the sourceHashes check above. There, absent and
         # present-but-null are different cases and a test pins each; here they mean the same
         # thing -- no usable version -- and a missing property already reads as $null, so the
@@ -120,7 +116,7 @@ function Select-PSMutationRecheckCandidate {
     # A set, not a hashtable-with-dummy-values: the value stored against each key was
     # never read (ContainsKey ignores it), so it was noise that looked like data.
     $wanted = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-    # Declared equivalents are skipped (#14). They appear in `survivors` legitimately --
+    # Declared equivalents are skipped. They appear in `survivors` legitimately --
     # they survived, they were merely excluded from the denominator -- but the config
     # states in writing that no test can kill them, so re-running one is guaranteed-wasted
     # work. In the case that prompted this it was 16 of 20 mutants, and the waste grows
@@ -142,9 +138,9 @@ function Get-PSMutationRecheckReportPath {
     # Sibling of the full report, never the same file -- a partial run must not be
     # able to overwrite the baseline it was derived from.
     #
-    # Idempotent, because a recheck can now seed another recheck (#20): without this the
-    # third round would write `report.recheck.recheck.json` and the fourth would add
-    # another. Each round overwrites the previous recheck instead. The protection that
+    # Idempotent, because a recheck can seed another recheck: without this the third round
+    # writes `report.recheck.recheck.json` and the fourth adds another suffix. Each round
+    # overwrites the previous recheck instead. The protection that
     # matters is that the FULL report is never touched, and that is unaffected -- the
     # rounds are a scratch pad, and the report worth keeping is the one CI reads.
     [OutputType([string])]
@@ -168,7 +164,7 @@ function Write-PSMutationRecheckReport {
         [Parameter(Mandatory)] [int]$PriorSurvivorCount,
         [string]$SourceReportPath,
         # Copied from the report this chained off, so the next round can validate against
-        # them exactly as it would against a full report (#20).
+        # them exactly as it would against a full report.
         [hashtable]$SourceHashes,
         [AllowEmptyCollection()] [string[]]$Operators = @(),
         [hashtable]$Provenance = @{}
@@ -178,7 +174,7 @@ function Write-PSMutationRecheckReport {
     [pscustomobject]@{
         generatedFrom      = 'PSMutant'
         # Same block as a full report, so a consumer can read provenance the same way from
-        # either shape rather than learning two conventions (#34).
+        # either shape rather than learning two conventions.
         schemaVersion      = $Provenance.schemaVersion
         producedBy         = $Provenance.producedBy
         generatedAt        = $Provenance.generatedAt
@@ -189,11 +185,10 @@ function Write-PSMutationRecheckReport {
         priorSurvivors     = $PriorSurvivorCount
         rechecked          = $Results.Count
         nowKilled          = $killed
-        # `survivors`, not `stillSurviving`. The name is what Select-PSMutationRecheckCandidate
-        # reads, and a recheck report having a differently-named list is why one could not seed
-        # another: carrying the hashes forward alone would have made the gate ACCEPT the report
-        # and then select nothing, reporting "0 of 0 previous survivor(s) now killed" -- a
-        # confident, wrong "you are done" (#20).
+        # `survivors`, not `stillSurviving`. This is the name Select-PSMutationRecheckCandidate
+        # reads, and a recheck report that names the list anything else cannot seed another
+        # round: the compatibility gate ACCEPTS it, selection then finds nothing, and the run
+        # reports "0 of 0 previous survivor(s) now killed" -- a confident, wrong "you are done".
         survivors          = @($Results | Where-Object Status -eq 'Survived')
         # The two things Test-PSMutationRecheckCompatible needs. Copied from the report this
         # round chained off, not recomputed: they describe the source these mutant ids were
@@ -247,10 +242,10 @@ function Invoke-PSMutationRecheckRun {
         [Parameter(Mandatory)] [int]$TimeoutSeconds,
         [Parameter(Mandatory)] [string]$SandboxRoot,
         [Parameter(Mandatory)] [string]$ReportPath,
-        # Needed to skip declared equivalents when choosing what to re-run (#14).
+        # Needed to skip declared equivalents when choosing what to re-run.
         $Equivalents,
         # A scriptblock, not a value: it is evaluated after the loop so the elapsed time it
-        # records is the whole run rather than the moment the run started (#34).
+        # records is the whole run rather than the moment the run started.
         [scriptblock]$Provenance = { @{} },
         [switch]$Quiet
     )

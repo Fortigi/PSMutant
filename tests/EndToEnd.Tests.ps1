@@ -438,3 +438,57 @@ Describe 'the module public surface' {
         finally { Remove-Module PSMutant -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe 'the help a user actually gets' {
+    # These read Get-Help rather than the source, because the source being correct is not
+    # the same as the help resolving to it. A file-level <# #> block sitting immediately
+    # before the `function` keyword is treated as that function's comment-based help and
+    # SHADOWS the block inside the body -- so Get-Help served this module's internal
+    # architecture notes, with no examples, while the real documentation sat unreachable a
+    # few lines below. Nothing in the source looked wrong.
+    BeforeAll {
+        Import-Module (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'PSMutant.psd1') -Force
+        $script:help = Get-Help Invoke-PSMutation -Full
+    }
+
+    It 'describes what the command does, not what the file is' {
+        # The shadowed synopsis was "Public entry point for PSMutant", which tells a user
+        # nothing they can act on.
+        $script:help.Synopsis | Should-BeLikeString '*mutation testing*'
+        $script:help.Synopsis | Should-NotBeLikeString '*entry point*'
+    }
+
+    It 'documents every parameter it accepts' {
+        # Get-Help synthesises an entry for every parameter whether or not it is written
+        # up, so this compares against the real signature: a parameter with no prose is
+        # indistinguishable here from one with prose, which is why the description check
+        # below exists too.
+        $documented = @($script:help.parameters.parameter).Name
+        $actual = @((Get-Command Invoke-PSMutation).Parameters.Keys |
+            Where-Object { $_ -notin [System.Management.Automation.PSCmdlet]::CommonParameters })
+        $documented | Should-BeCollection $actual
+    }
+
+    It 'gives every parameter a description rather than just a name' {
+        # -Quiet had none: it appeared in Get-Help because PowerShell lists parameters
+        # automatically, so its absence from the written help was invisible.
+        foreach ($p in @($script:help.parameters.parameter)) {
+            ($p.description.Text -join '') | Should-NotBeEmptyString -Because "-$($p.name) needs prose"
+        }
+    }
+
+    It 'carries examples with runnable code' {
+        # The shadowed help reported one example whose title and code were both empty.
+        # Counting examples is not enough -- an empty one still counts.
+        $examples = @($script:help.examples.example)
+        $examples.Count | Should-BeGreaterThan 3
+        foreach ($e in $examples) {
+            ($e.code -join '') | Should-BeLikeString '*Invoke-PSMutation*'
+        }
+    }
+
+    It 'shows the recheck loop, which is the least obvious thing to discover' {
+        # A recheck report seeding another recheck is the feature nobody guesses at.
+        (@($script:help.examples.example).code -join "`n") | Should-BeLikeString '*.recheck.json*'
+    }
+}
