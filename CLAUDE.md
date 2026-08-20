@@ -285,15 +285,21 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
 - **A `$script:` constant is read only in the file that writes it.** No file reaches into
   another's module state. Two did (#38), and the fix went in opposite directions on purpose,
   which is the part worth remembering: `$script:PSMutationDefaultOperators` stayed put and
-  its resolver came to it, because `Get-PSMutationCandidate` is **exported** with that
-  constant as a parameter default and moving it would break the public promise; the sandbox
-  subtree default had no such claim on it, so it moved to `PSMutation.Config.ps1` beside its
-  only reader and `New-PSMutationSandbox -Subtrees` became mandatory. Ask which side owns the
-  default before deciding which one moves.
+  its resolver came to it, while the sandbox subtree default moved to `PSMutation.Config.ps1`
+  beside its only reader and `New-PSMutationSandbox -Subtrees` became mandatory. Ask which
+  side owns the default before deciding which one moves.
 
-  *This rule used to say the cross-file reads "work only because of dot-source order". That
-  was wrong -- they are inside function bodies and resolve at call time, so reverse-loading
-  every file behaves identically. Recorded rather than deleted, per the practice above.*
+  *The reason given for that asymmetry no longer holds. It said the operator default could
+  not move because `Get-PSMutationCandidate` is **exported** with it as a parameter default,
+  so moving it would break a public promise. #48 un-exported that function, and the promise
+  went with it. What is left is a weaker but real argument -- the operator vocabulary and its
+  default belong in the file that owns the operators -- and if you ever want the two defaults
+  symmetric, nothing external stops you now. Recorded rather than rewritten, per the practice
+  above: the old reason was true when written and is worth knowing was load-bearing.*
+
+  *This rule also used to say the cross-file reads "work only because of dot-source order".
+  That was wrong -- they are inside function bodies and resolve at call time, so
+  reverse-loading every file behaves identically.*
 - **A file's docstring is a claim about its contents, and a guard lives with its subject.**
   When you add a function, either it fits the file's stated purpose or that file is the wrong
   home -- and if you move it, fix the docstring and the layout table above in the same commit.
@@ -351,6 +357,24 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   is a gallery version that cannot be withdrawn -- so its group serialises releases and a
   second tag waits. #42 fixed only `ci.yml`; the other two each went on missing one of the
   two guards until this was written down.
+- **The public surface is `Invoke-PSMutation` and the report JSON. Nothing else.** Two more
+  functions used to be exported, and between them trafficked a nine-field `[pscustomobject]`
+  that nothing declared, tested as a contract or versioned -- discoverable only by running the
+  function and reading the output, and unchangeable once someone had. Neither was ever
+  mentioned in the README, and `Set-PSMutationText` had one caller, inside this module (#48).
+
+  Un-exporting did not dissolve that contract, it **relocated** it: the mutant rows in the
+  report are a projection of the same internal object. So both surfaces are now pinned by
+  tests that assert the exact field list -- the run result in `Report.Tests.ps1`, the report's
+  top-level keys there too, and the mutant row in `Runner.Tests.ps1`, where it is actually
+  built rather than merely serialised. Widening any of the three should fail a test and be a
+  decision, not a side effect of an internal rename.
+
+  `Id` is **not** contractual. It is a walk position, it has changed once already (#29), and
+  its only consumer is this project's own `-RecheckFrom`.
+
+  When someone asks for "what would you mutate?", the answer is a rendering this module
+  controls -- #10's `-ListOnly` -- not a re-export of the AST walker.
 - **An unrecognised config key is an error, and the message names the key.** Every key is
   checked against `$script:PSMutationConfigKeys`, every `thresholds` sub-key and every
   operator name likewise, and the message offers the nearest valid name within two edits --
