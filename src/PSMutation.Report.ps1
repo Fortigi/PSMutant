@@ -1,14 +1,14 @@
 <#
 .SYNOPSIS
-    Scoring, JSON report, console summary, and the public run-result shape for the
-    PowerShell mutation runner. Everything a consumer's CI reads is decided here.
-    Split from the execution engine so each unit stays small and independently testable.
+    Scoring, JSON report, console summary, and the public run-result shape. Everything a
+    consumer's CI reads is decided here, so widening any of those shapes is a change to a
+    published contract -- tests pin the exact field list of each.
 #>
 
 # The report format's version. Bump it when a field changes MEANING or disappears -- not
 # when one is added, which readers survive. It exists so a consumer can branch on a number
-# instead of sniffing for keys: #20 had to reconcile two report shapes by hand, and #4 will
-# have to tell a merged report from a plain one.
+# instead of sniffing for keys -- this module already ships two report shapes, and anything
+# reconciling them has otherwise to recognise each by which keys it happens to carry.
 $script:PSMutationSchemaVersion = 1
 
 function New-PSMutationProvenance {
@@ -18,10 +18,11 @@ function New-PSMutationProvenance {
     # the clock and the loaded module -- are exactly what makes a function untestable. The
     # orchestrator reads them once and passes them in; this decides only the shape.
     #
-    # `durations` is not decoration. #1 is a large, risky change to the runner whose entire
-    # justification is speed, and today the only way to evaluate it is to time two runs by
-    # hand on one machine. #7 (timeouts counted as kills) is likewise invisible as a trend:
-    # nothing records that a suite is drifting toward its timeout bound until it crosses.
+    # `durations` is not decoration. Any change to the runner justified by speed is
+    # otherwise evaluated by timing two runs by hand on one machine, and a suite drifting
+    # toward its timeout bound -- where expiry is scored as a kill -- shows up only once it
+    # crosses. The timeout is recorded beside the baseline it was derived from, which is
+    # what makes the comparison mean anything.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Pure factory: returns a hashtable, changes no system state.')]
     [OutputType([hashtable])]
@@ -51,11 +52,9 @@ function Get-PSMutationEquivalentKey {
     # Every string a config may use to declare THIS mutant equivalent, stablest first.
     #
     # Not the mutant id: ids are AST-walk positions and renumber whenever an earlier mutant
-    # is added or removed. Not the line number alone either, which was the original scheme
-    # and the defect: editing anything ABOVE a declared mutant -- a comment, an import,
-    # another function entirely -- moved the line and the declaration went stale although
-    # the mutant was untouched. That happened on the first run after the feature shipped,
-    # and twice more while fixing #28 (#3).
+    # is added or removed. Not the line number alone either: editing anything ABOVE a
+    # declared mutant -- a comment, an import, another function entirely -- moves the line,
+    # and the declaration goes stale although the mutant is untouched.
     #
     # `File:Function:Description` is stable under every edit that does not move the mutant
     # out of its function. `File:Line:Description` is still accepted, second, so existing
@@ -67,12 +66,12 @@ function Get-PSMutationEquivalentKey {
     param([Parameter(Mandatory)] $Result)
     # NO comma-wrap, unlike Get-PSMutationLoopRange. That one wraps because an empty @()
     # unrolls to $null and breaks a mandatory binding downstream; this never returns empty
-    # and its caller iterates it, so wrapping would hand the foreach one item that IS the
-    # array -- which is exactly what it did on the first attempt (see #38).
+    # and its caller iterates it, so wrapping would hand the foreach a single item that IS
+    # the array.
     # Cast on the EXPRESSION, @() inside it: casting the variable leaves the analyzer
     # inferring the branch types (string here, object[] there) against the declared
     # [string[]], and dropping the @() turns a single key into a scalar the cast cannot
-    # widen. Same shape as Get-PSMutationCandidate, same reason (#76).
+    # widen. Same shape as Get-PSMutationCandidate, same reason.
     $byLine = "$($Result.File):$($Result.Line):$($Result.Description)"
     if ([string]::IsNullOrEmpty([string]$Result.Function)) { return [string[]]@($byLine) }
     return [string[]]@("$($Result.File):$($Result.Function):$($Result.Description)", $byLine)
@@ -120,7 +119,7 @@ function Get-PSMutationDeclarationFault {
     #   one      the claim is well formed; whether it is TRUE is decided elsewhere, by
     #            whether the suite killed the mutant
     #   several  it would exclude mutants nobody argued about, silently, and stale-detection
-    #            cannot notice because the key still matches something (#28)
+    #            cannot notice because the key still matches something
     #
     # A separate unit rather than two more branches inside Get-PSMutationScore: it is a
     # decision, so it is worth testing on its own terms -- and inlining it put that function
@@ -153,7 +152,7 @@ function Get-PSMutationScore {
     # line can legitimately share `File:Line:Description` -- `$prev[$j] + 1` and
     # `$curr[$j - 1] + 1` both read `1 -> 2` -- and a declaration that hits both
     # excludes a mutant nobody argued about, silently, while stale-detection stays
-    # quiet because the key still matches something (#28). A declaration is a claim
+    # quiet because the key still matches something. A declaration is a claim
     # about ONE mutant, so matching several is not a smaller claim, it is an
     # ambiguous one, and the run says so rather than banking the exclusion.
     [OutputType([pscustomobject])]
@@ -220,8 +219,7 @@ function Write-PSMutationReport {
         [hashtable]$SourceHashes,
         [string[]]$Operators,
         $Equivalents,
-        # One block rather than four more parameters: this signature is already long, and
-        # #63 is open about exactly that growth.
+        # One block rather than four more parameters: this signature is already long.
         [hashtable]$Provenance = @{}
     )
     $summary = Get-PSMutationScore -Results $Results -Equivalents $Equivalents
@@ -258,8 +256,8 @@ function Write-PSMutationReport {
 function Get-PSMutationScoreColour {
     # Green at or above High, yellow at or above Low, red below it.
     #
-    # A pure three-way decision taking resolved numbers, so the null that used to make every
-    # score green cannot reach it -- see Get-PSMutationScoreBand for what that looked like.
+    # Resolved numbers only, never a raw config value: `$score -ge $null` is $true, so an
+    # unresolved band prints every score green rather than failing.
     [OutputType([string])]
     [CmdletBinding()]
     param(
@@ -283,8 +281,9 @@ function Show-PSMutationSummary {
         [string]$ReportPath,
         $Equivalents
     )
-    # Resolved numbers in, not the raw config: this used to take $Thresholds and compare
-    # against $Thresholds.high directly, which is null for most configs (#40).
+    # Resolved numbers in, not the raw config. Comparing against $Thresholds.high directly
+    # compares against $null for every config without colour bands, and `$score -ge $null`
+    # is $true -- so every score prints green, 0% included.
     $col = Get-PSMutationScoreColour -Score $Summary.Score -High $High -Low $Low
     Write-Host "`n----------------------------------------------" -ForegroundColor DarkGray
     Write-Host ("  Mutation score: {0}%  ({1} killed / {2})" -f $Summary.Score, $Summary.Killed, $Summary.Total) -ForegroundColor $col
@@ -314,10 +313,8 @@ function Show-PSMutationSummary {
 
 function ConvertTo-PSMutationRunResult {
     # The public shape of a completed run: what a consumer's CI reads off Invoke-PSMutation.
-    #
-    # Here rather than in Config.ps1, where it used to sit: it is derived entirely from a
-    # summary this file produces, and this file already owns the other contract CI depends
-    # on -- the report JSON. Two halves of one promise, in one place (#45).
+    # A published contract -- a test pins the exact field list, so widening it is a
+    # decision rather than a side effect of a rename.
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Summary, [Parameter(Mandatory)] [int]$ExitCode)
