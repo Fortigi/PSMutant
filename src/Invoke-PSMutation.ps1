@@ -33,9 +33,14 @@ function Invoke-PSMutation {
         current directory.
 
     .PARAMETER RecheckFrom
-        Path to a report from a previous run. Evaluates ONLY the mutants that report
-        recorded as survivors, which is the fast inner loop while you are writing
-        assertions to kill them.
+        Path to a report from a previous run -- full or from an earlier recheck.
+        Evaluates ONLY the mutants that report recorded as survivors, minus any declared
+        equivalent, which is the fast inner loop while you are writing assertions.
+
+        Chaining is the point: recheck a recheck and each round evaluates only what the
+        previous one left alive, so the loop shortens as you close in rather than
+        restarting from the full set every time. Rounds overwrite one
+        <report>.recheck.json; the full report is never written by a recheck.
 
         This is not a measurement and does not produce a score: the set is filtered,
         so no percentage over it means anything, thresholds are not applied, and the
@@ -92,7 +97,7 @@ function Invoke-PSMutation {
         if ($RecheckFrom) {
             return Invoke-PSMutationRecheckRun -RecheckFrom $RecheckFrom -Candidates $cands -Plan $t `
                 -SourceHashes $hashes -Operators $ops -TimeoutSeconds $timeout -SandboxRoot $sandbox `
-                -ReportPath $reportPath -Quiet:$Quiet
+                -ReportPath $reportPath -Equivalents $cfg.equivalents -Quiet:$Quiet
         }
 
         if (-not $Quiet) { Write-Host "  Mutants to evaluate: $($cands.Count)`n" -ForegroundColor Gray }

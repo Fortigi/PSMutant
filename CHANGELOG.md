@@ -152,6 +152,33 @@ All notable changes to PSMutant are documented here. Format follows
   had -- and corrected when [#45] moved that constant.
 
 ### Fixed
+- **The recheck loop now narrows** ([#14], [#20]). Its whole purpose is not paying for mutants
+  you are not working on -- several hundred mutants with a handful of survivors should not mean
+  re-running the set to report on those few -- and it was leaving two kinds of work on the table.
+
+  **A recheck re-ran declared equivalents.** They appear in `survivors` legitimately: they
+  survived, they were merely excluded from the denominator. But the config states in writing
+  that no test can kill them, so re-evaluating one is guaranteed-wasted work -- 16 of 20 mutants
+  in the case that prompted the issue, and it grows exactly as a repo gets more disciplined
+  about declaring. They are skipped now, in both key forms.
+
+  **A recheck report could not seed another recheck**, so every round after the first went back
+  to the full report and re-ran what the previous round had already killed. Five survivors, kill
+  two, and the next round evaluated five again -- with the waste compounding as you approach
+  done, which is when the loop should be fastest. Now: five, then three, then one.
+
+  Two things were needed, and the issue named only the first. Carrying `sourceHashes` and
+  `operators` forward lets the compatibility gate accept a recheck report -- but
+  `Select-PSMutationRecheckCandidate` reads `$Report.survivors`, and a recheck report wrote that
+  list as `stillSurviving`. Provenance alone would have produced a report the gate **accepts**
+  and selection then finds nothing in: `Recheck: 0 of 0 previous survivor(s) now killed`, a
+  confident "you are done", which is a worse failure than the honest refusal it replaced. The
+  list is now `survivors`, and an end-to-end test chains two rounds and asserts the second
+  evaluates exactly what the first left alive.
+
+  `Get-PSMutationRecheckReportPath` is idempotent, so rounds overwrite one scratch report
+  instead of growing `report.recheck.recheck.json` and worse. The guarantee that matters is
+  untouched: a partial run still can never overwrite the full report CI reads.
 - **An equivalence declaration no longer goes stale when an unrelated line moves** ([#3]).
   Keys were `file:line:description`, so editing anything **above** a declared mutant -- a
   comment, an import, another function entirely -- invalidated the declaration although the

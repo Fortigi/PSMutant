@@ -146,6 +146,76 @@ Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
     }
 }
 
+Describe 'the recheck loop narrows' {
+    # THE test for #20, and the reason it is end-to-end rather than a unit: the failure it
+    # guards is a recheck report the gate ACCEPTS and selection then finds nothing in. That
+    # prints "0 of 0 previous survivor(s) now killed" -- a confident "you are done" -- while
+    # every unit in isolation looks correct.
+    BeforeAll {
+        $script:chainTests = Join-Path $script:proj 'tests/calc.Tests.ps1'
+        $script:chainBackup = [System.IO.File]::ReadAllText($script:chainTests)
+
+        # An ADDED assertion, which is the only change a recheck is sound for. It kills the
+        # $true -> $false mutant in Test-Flag, which the deliberately under-asserted fixture
+        # leaves alive. Without a round that actually kills something, "the next round runs
+        # fewer" is untestable.
+        Add-Content -Path $script:chainTests -Value @'
+Describe 'Test-Flag (added mid-loop)' {
+    It 'is true for a truthy input' { Test-Flag $true | Should -Be $true }
+}
+'@
+        $script:chainFirst = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj `
+            -RecheckFrom (Join-Path $script:proj 'reports/e2e.json') -Quiet
+        $script:chainPath = Join-Path $script:proj 'reports/e2e.recheck.json'
+        $script:chainSecond = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj `
+            -RecheckFrom $script:chainPath -Quiet
+    }
+
+    AfterAll { [System.IO.File]::WriteAllText($script:chainTests, $script:chainBackup) }
+
+    It 'kills something in the first round, or the rest of this block proves nothing' {
+        $script:chainFirst.NowKilled | Should-BeGreaterThan 0
+    }
+
+    It 'lets a recheck report seed another recheck' {
+        $script:chainSecond.Mode | Should-Be 'Recheck'
+    }
+
+    It 'evaluates only what the previous round left alive' {
+        # The narrowing property: five survivors, kill two, next round runs three. Without
+        # it the second round re-runs what the first already killed, and the waste compounds
+        # exactly as you approach done.
+        $script:chainSecond.Rechecked | Should-Be $script:chainFirst.StillSurviving
+        $script:chainSecond.Rechecked | Should-BeLessThan $script:chainFirst.Rechecked
+    }
+
+    It 'carries the provenance a further round needs to validate against' {
+        # The gate checks sourceHashes and operators. A recheck report that dropped them
+        # could never seed anything, which is what made the loop one step long.
+        $first = Get-Content $script:chainPath -Raw | ConvertFrom-Json
+        $first.sourceHashes | Should-NotBeNull
+        @($first.operators).Count | Should-BeGreaterThan 0
+    }
+
+    It 'overwrites its own report rather than growing a suffix each round' {
+        # Chaining used to imply report.recheck.recheck.json, then another. The full report
+        # is the one that must never be clobbered, and that is asserted above.
+        Test-Path (Join-Path $script:proj 'reports/e2e.recheck.recheck.json') | Should-BeFalse
+    }
+
+    It 'still refuses a chained report when the source has changed' {
+        # The guarantee has to survive chaining: a second-round report is validated exactly
+        # as a first-round one, against the hashes it carried forward.
+        $backup = [System.IO.File]::ReadAllText($script:srcFile)
+        try {
+            Add-Content -Path $script:srcFile -Value 'function Get-Later { param($n) if ($n -gt 3) { 4 } else { 5 } }'
+            { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj -RecheckFrom $script:chainPath -Quiet } |
+                Should-Throw -ExceptionMessage '*changed since the report*'
+        }
+        finally { [System.IO.File]::WriteAllText($script:srcFile, $backup) }
+    }
+}
+
 Describe 'Invoke-PSMutation - config defaults and failure modes' {
     It 'falls back to the default operators and timeouts when the config omits them' {
         $cfg = [ordered]@{
