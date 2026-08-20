@@ -5,6 +5,48 @@
     Split from the execution engine so each unit stays small and independently testable.
 #>
 
+# The report format's version. Bump it when a field changes MEANING or disappears -- not
+# when one is added, which readers survive. It exists so a consumer can branch on a number
+# instead of sniffing for keys: #20 had to reconcile two report shapes by hand, and #4 will
+# have to tell a merged report from a plain one.
+$script:PSMutationSchemaVersion = 1
+
+function New-PSMutationProvenance {
+    # How a report was produced: which schema, which build, when, and how long it took.
+    #
+    # Pure, and takes every varying value as a parameter, because the two things it needs --
+    # the clock and the loaded module -- are exactly what makes a function untestable. The
+    # orchestrator reads them once and passes them in; this decides only the shape.
+    #
+    # `durations` is not decoration. #1 is a large, risky change to the runner whose entire
+    # justification is speed, and today the only way to evaluate it is to time two runs by
+    # hand on one machine. #7 (timeouts counted as kills) is likewise invisible as a trend:
+    # nothing records that a suite is drifting toward its timeout bound until it crosses.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure factory: returns a hashtable, changes no system state.')]
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param(
+        [string]$ModuleVersion,
+        [datetime]$GeneratedAt = [datetime]::UtcNow,
+        [double]$BaselineSeconds,
+        [double]$TotalSeconds,
+        [int]$PerMutantTimeoutSeconds
+    )
+    return @{
+        schemaVersion = $script:PSMutationSchemaVersion
+        producedBy    = @{ module = 'PSMutant'; version = "$ModuleVersion" }
+        # Round-trippable and sortable as text, and UTC so reports from two machines can be
+        # compared without knowing where either ran.
+        generatedAt   = $GeneratedAt.ToUniversalTime().ToString('yyyy-MM-ddTHH:mm:ssZ')
+        durations     = @{
+            baselineSeconds        = [math]::Round($BaselineSeconds, 1)
+            totalSeconds           = [math]::Round($TotalSeconds, 1)
+            perMutantTimeoutSeconds = $PerMutantTimeoutSeconds
+        }
+    }
+}
+
 function Get-PSMutationEquivalentKey {
     # Every string a config may use to declare THIS mutant equivalent, stablest first.
     #
@@ -177,12 +219,21 @@ function Write-PSMutationReport {
         $Thresholds,
         [hashtable]$SourceHashes,
         [string[]]$Operators,
-        $Equivalents
+        $Equivalents,
+        # One block rather than four more parameters: this signature is already long, and
+        # #63 is open about exactly that growth.
+        [hashtable]$Provenance = @{}
     )
     $summary = Get-PSMutationScore -Results $Results -Equivalents $Equivalents
     New-Item -ItemType Directory -Path (Split-Path $ReportPath -Parent) -Force | Out-Null
     [pscustomobject]@{
         generatedFrom = 'PSMutant'
+        # Provenance first, so a reader opening the JSON sees what produced it before what
+        # it says. Additive: nothing that read this report before reads any less of it.
+        schemaVersion = $Provenance.schemaVersion
+        producedBy    = $Provenance.producedBy
+        generatedAt   = $Provenance.generatedAt
+        durations     = $Provenance.durations
         mutationScore = $summary.Score
         total = $summary.Total; killed = $summary.Killed; survived = $summary.Survived
         # Reported so the headline score can always be reconciled against the raw

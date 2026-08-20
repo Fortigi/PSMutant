@@ -142,7 +142,7 @@ Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
         $legacyPath = Join-Path $script:proj 'reports/legacy.json'
         $legacy | ConvertTo-Json -Depth 6 | Set-Content $legacyPath -Encoding utf8
         { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj -RecheckFrom $legacyPath -Quiet } |
-            Should-Throw -ExceptionMessage '*predates source-hash recording*'
+            Should-Throw -ExceptionMessage '*no source hashes*'
     }
 }
 
@@ -195,6 +195,18 @@ Describe 'Test-Flag (added mid-loop)' {
         $first = Get-Content $script:chainPath -Raw | ConvertFrom-Json
         $first.sourceHashes | Should-NotBeNull
         @($first.operators).Count | Should-BeGreaterThan 0
+    }
+
+    It 'stamps a recheck report with the same provenance block as a full report' {
+        # Both shapes carry it, so a consumer reads provenance one way rather than learning
+        # two conventions (#34). Asserted on a REAL recheck report, because the block is
+        # threaded through a different call path than the full report's and wiring it in one
+        # place and not the other is invisible until someone reads the artifact.
+        $first = Get-Content $script:chainPath -Raw | ConvertFrom-Json
+        $first.schemaVersion          | Should-Be 1
+        $first.producedBy.module      | Should-Be 'PSMutant'
+        $first.producedBy.version     | Should-NotBeEmptyString
+        $first.durations.totalSeconds | Should-BeGreaterThan 0
     }
 
     It 'overwrites its own report rather than growing a suffix each round' {

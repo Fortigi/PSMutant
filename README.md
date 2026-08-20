@@ -188,9 +188,23 @@ had been applied. The run now stops and names the key, with the nearest valid on
 there is one. Keys starting with `_` are ignored, so you can use them for comments — JSON
 has none of its own.
 
+Every report also carries how it was produced:
+
+```json
+"schemaVersion": 1,
+"producedBy": { "module": "PSMutant", "version": "0.3.0" },
+"generatedAt": "2026-08-20T14:05:09Z",
+"durations": { "baselineSeconds": 12.4, "totalSeconds": 354.1, "perMutantTimeoutSeconds": 50 }
+```
+
+`schemaVersion` is there so a consumer can branch on a number instead of guessing from which
+keys are present. It changes when a field changes meaning or disappears, not when one is
+added. `durations` makes a run comparable with the next one — the timeout sits beside the
+baseline it was derived from, so a suite drifting toward its bound is visible before it
+crosses.
+
 Reports also record `operators` and a `sourceHashes` map (SHA256 per mutated file). Those
-exist so `-RecheckFrom` can prove the mutant ids in a report still refer to the same code;
-nothing else reads them.
+exist so `-RecheckFrom` can prove the mutant ids in a report still refer to the same code.
 
 ## What to point it at
 

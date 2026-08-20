@@ -151,6 +151,32 @@ All notable changes to PSMutant are documented here. Format follows
   `sandboxSubtrees`, documented as `["tools","test","setup"]` -- a value the code has never
   had -- and corrected when [#45] moved that constant.
 
+### Added
+- **Every report records how it was produced** ([#34]): `schemaVersion`, `producedBy`
+  (module and version), `generatedAt` in UTC, and `durations` covering the baseline, the whole
+  run, and the per-mutant timeout. Both report shapes carry the same block, so a consumer reads
+  provenance one way rather than learning two conventions.
+
+  `schemaVersion` exists so a reader can branch on a number instead of guessing from which keys
+  are present. That guessing was already happening: reconciling the full and recheck shapes by
+  hand was part of [#20], and merging them is what [#4] will have to do. It changes when a field
+  changes meaning or disappears, not when one is added.
+
+  `durations` is not decoration. [#1] is a large, risky change to the runner justified entirely
+  by speed, and until now the only way to evaluate it was timing two runs by hand on one
+  machine. [#7] is likewise invisible as a trend -- nothing recorded that a suite was drifting
+  toward its timeout bound until it crossed. The timeout is written beside the baseline it was
+  derived from, which is what makes the comparison meaningful.
+
+  The compatibility guard now names the schema when a report has one. Its old message said
+  "predates source-hash recording" to anyone chaining a recheck, when the real reason was that
+  recheck reports carried no hashes at all -- a version number is what lets it tell "too old"
+  from "not that kind of report".
+
+  Worth knowing when reading a report from PowerShell: `ConvertFrom-Json` recognises the
+  ISO-8601 `generatedAt` string and hands back a `[datetime]`, so the text is only visible in
+  the file itself. The file is the contract, and that is what the tests assert against.
+
 ### Fixed
 - **The recheck loop now narrows** ([#14], [#20]). Its whole purpose is not paying for mutants
   you are not working on -- several hundred mutants with a handful of survivors should not mean
