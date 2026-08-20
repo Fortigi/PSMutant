@@ -36,6 +36,45 @@ function Get-PSMutationEquivalentKey {
     return [string[]]@("$($Result.File):$($Result.Function):$($Result.Description)", $byLine)
 }
 
+function Get-PSMutationAmbiguousKey {
+    # The keys that more than one mutant in THIS run answers to.
+    #
+    # Needed because "is this key usable" is not a property of one mutant. The function
+    # form is stable but coarse -- a function is a much bigger scope than a line -- so it
+    # collides far more often than the line form does: measured over this repo's own source,
+    # 41 function-form keys match several mutants against 9 line-form ones. Neither form
+    # dominates, which is why both exist and why suggesting one requires looking at the set.
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results)
+    $seen = @{}
+    foreach ($r in $Results) {
+        foreach ($k in Get-PSMutationEquivalentKey -Result $r) { $seen[$k] = 1 + [int]$seen[$k] }
+    }
+    return [string[]]@($seen.Keys | Where-Object { $seen[$_] -gt 1 })
+}
+
+function Get-PSMutationDeclarableKey {
+    # The key to paste into a config to declare THIS mutant equivalent.
+    #
+    # The stablest form that still identifies it alone: the function form unless another
+    # mutant in the run answers to the same one, in which case the line form, which is more
+    # specific. When every form is ambiguous -- two identical mutations on one line -- the
+    # most specific one is offered anyway rather than nothing, and the run's own ambiguity
+    # check will say so if it is ever used.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Result,
+        [AllowEmptyCollection()] [string[]]$Ambiguous = @()
+    )
+    $keys = @(Get-PSMutationEquivalentKey -Result $Result)
+    foreach ($k in $keys) {
+        if ($Ambiguous -notcontains $k) { return $k }
+    }
+    return $keys[-1]
+}
+
 function Get-PSMutationDeclaredKey {
     # The declaration covering this mutant, or $null when none does.
     #
@@ -254,8 +293,16 @@ function Show-PSMutationSummary {
     $open = @($Results | Where-Object { $_.Status -eq 'Survived' -and -not (Get-PSMutationDeclaredKey -Result $_ -Declared $declared) })
     if ($open.Count -gt 0) {
         Write-Host "  Survivors (add assertions to kill these):" -ForegroundColor Yellow
+        # Two lines each, deliberately. The first is `file:line`, which editors linkify and
+        # which is what you want to go and fix the mutant. The second is the exact string to
+        # paste into `equivalents` if you conclude it cannot be killed -- previously the
+        # reader had to reconstruct that from the printed text and the docs, and the obvious
+        # reconstruction is the line form, which drifts (#3). Offering the stable form where
+        # it is usable is what stops the drifting one being chosen by default.
+        $ambiguous = Get-PSMutationAmbiguousKey -Results $Results
         $open | ForEach-Object {
             Write-Host ("    {0}:{1}  {2}" -f $_.File, $_.Line, $_.Description) -ForegroundColor Yellow
+            Write-Host ("      declare as: {0}" -f (Get-PSMutationDeclarableKey -Result $_ -Ambiguous $ambiguous)) -ForegroundColor DarkGray
         }
     }
     Write-Host "  Report: $ReportPath" -ForegroundColor Gray

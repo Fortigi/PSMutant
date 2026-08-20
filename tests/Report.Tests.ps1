@@ -461,3 +461,77 @@ Describe 'Get-PSMutationEquivalentKey and Get-PSMutationDeclaredKey' {
         Should-BeNull -Actual (Get-PSMutationDeclaredKey -Result $script:inFn -Declared @{ 'other:1:x -> y' = 'why' })
     }
 }
+
+Describe 'the key the summary tells you to declare' {
+    BeforeEach {
+        # Same capture the Show-PSMutationSummary block uses, and $script:/BeforeEach for
+        # the same reason: a variable assigned in a Describe body exists only during
+        # discovery. Without this the assertions read an empty list and the real output
+        # leaks to the console -- which is how the first version of this test failed.
+        $script:lines = [System.Collections.Generic.List[string]]::new()
+        Mock Write-Host { $script:lines.Add([string]$Object) }
+    }
+
+    BeforeAll {
+        # Two mutants sharing a function-form key, one not. The pairing is the point: a
+        # suggester that always returned the function form, or always the line form, passes
+        # half of these.
+        $script:mixed3 = @(
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'Get-Thing'; Line = 95; Description = '1 -> 2'; Status = 'Survived' }
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'Get-Other'; Line = 12; Description = 'x -> y'; Status = 'Survived' }
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'Get-Other'; Line = 20; Description = 'x -> y'; Status = 'Survived' }
+        )
+        $script:amb = Get-PSMutationAmbiguousKey -Results $script:mixed3
+    }
+
+    It 'finds the keys more than one mutant answers to' {
+        # Get-Other:x -> y is shared; the two line forms are not.
+        $script:amb | Should-ContainCollection 'src/a.ps1:Get-Other:x -> y'
+        $script:amb | Should-NotContainCollection 'src/a.ps1:12:x -> y'
+    }
+
+    It 'suggests the stable function form when it identifies the mutant alone' {
+        Get-PSMutationDeclarableKey -Result $script:mixed3[0] -Ambiguous $script:amb |
+            Should-Be 'src/a.ps1:Get-Thing:1 -> 2'
+    }
+
+    It 'falls back to the line form when the function form is shared' {
+        # The stable form is coarser, not better: a function is a much bigger scope than a
+        # line. Suggesting it here would hand the reader a key the run then refuses.
+        Get-PSMutationDeclarableKey -Result $script:mixed3[1] -Ambiguous $script:amb |
+            Should-Be 'src/a.ps1:12:x -> y'
+    }
+
+    It 'suggests the line form for a mutant outside any function' {
+        # File-scope code has no name to be addressed by, so the line form is all there is.
+        Get-PSMutationDeclarableKey -Result ([pscustomobject]@{ File = 'src/a.ps1'; Function = ''; Line = 3; Description = '1 -> 2' }) |
+            Should-Be 'src/a.ps1:3:1 -> 2'
+    }
+
+    It 'still offers the most specific key when every form is shared' {
+        # Two identical mutations on ONE line: nothing distinguishes them today. Offering
+        # the line form anyway beats offering nothing -- the run's ambiguity check will say
+        # so if it is used, which is a better failure than a reader inventing a key.
+        $tied = @(
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'F'; Line = 7; Description = '1 -> 2'; Status = 'Survived' }
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'F'; Line = 7; Description = '1 -> 2'; Status = 'Survived' }
+        )
+        Get-PSMutationDeclarableKey -Result $tied[0] -Ambiguous (Get-PSMutationAmbiguousKey -Results $tied) |
+            Should-Be 'src/a.ps1:7:1 -> 2'
+    }
+
+    It 'prints the declarable key beside each survivor' {
+        Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 0; Killed = 0; Total = 3; Survived = 3 }) `
+            -Results $script:mixed3 -High 85 -Low 70 -ReportPath 'r.json'
+        $out = $script:lines -join "`n"
+        $out | Should-BeLikeString '*declare as: src/a.ps1:Get-Thing:1 -> 2*'
+        $out | Should-BeLikeString '*declare as: src/a.ps1:12:x -> y*'
+    }
+
+    It 'says nothing about declaring when there are no survivors' {
+        # Pairs with the test above: a suggester that printed unconditionally would pass it.
+        Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0 }) `
+            -Results @() -High 85 -Low 70 -ReportPath 'r.json'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*declare as*'
+    }
+}

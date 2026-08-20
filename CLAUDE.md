@@ -442,11 +442,23 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   is edited, and the declaration then goes stale although the mutant has not changed. That
   happened on the first run after the feature shipped and twice more while fixing #28 (#3).
 
-  The function form is not universally better, which is worth knowing before reaching for it:
-  a function containing three `if ($isDeclared)` guards makes
-  `Get-PSMutationScore:$isDeclared -> $true` match all three, so it is refused as ambiguous
-  and that declaration has to stay keyed by line. This repo has exactly one such case, and
-  its reason string says so.
+  **Neither form dominates, and the line form is the more specific of the two.** A function
+  is a much bigger scope than a line, so the function form collides far more often. Measured
+  over this repo's own source with the seven operators it runs:
+
+  | form | keys matching several mutants | mutants with no key |
+  |---|---|---|
+  | `file:line:description` | 9 | 0 |
+  | `file:function:description` | **41** | 1 (file scope) |
+
+  So the line form is not a legacy escape hatch to be deprecated -- it is what you need
+  whenever the function form is ambiguous, which is often. Do not remove it without first
+  making the function form total, which needs the occurrence index #28 deferred plus a
+  sentinel for file scope.
+
+  You should rarely have to choose: the survivor output prints the exact key to declare,
+  picking the stable form where it identifies the mutant alone and the line form where it
+  does not.
 
   The ambiguity arm was the hole (#28). A declaration
   argues about ONE mutant, so matching several is not a broader claim -- it is an ambiguous

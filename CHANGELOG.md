@@ -169,11 +169,17 @@ All notable changes to PSMutant are documented here. Format follows
   key churn that invalidated every key would be a poor trade. It is also the only form
   available for code outside any function, which has no name to be addressed by.
 
-  Worth knowing before reaching for the new form: **it is not universally more specific.** A
-  function containing three `if ($isDeclared)` guards makes
-  `Get-PSMutationScore:$isDeclared -> $true` match all three, so [#28]'s check refuses it as
-  ambiguous and such a declaration has to stay keyed by line. Keeping both forms is what makes
-  that case expressible at all.
+  **Neither form dominates**, and the line form is the more *specific* of the two -- a
+  function is a much bigger scope than a line. Measured over this repo's own source with the
+  seven operators it runs: 9 line-form keys match several mutants, against **41** function-form
+  ones, and exactly one mutant (at file scope) has no function form at all. So the line form is
+  not a legacy escape hatch; it is what you need whenever the function form is ambiguous.
+
+  To keep that from being a choice anyone has to make, **the survivor output now prints the
+  exact key to declare** beside each survivor, picking the stable function form where it
+  identifies that mutant alone and the line form where it does not. Previously a reader had to
+  reconstruct the key from the printed text and the docs, and the obvious reconstruction is the
+  drifting one.
 
   One of this repo's four equivalence declarations **retired** rather than moving. It argued
   that counting undeclared keys into `$matched` could not be observed, because `$matched` is
