@@ -151,9 +151,12 @@ enforced rather than trusted -- no score, thresholds skipped, a separate report 
 caveat printed on every run -- because a partial number quoted as a real one is the failure
 this whole project exists to prevent.
 
-Recorded because it was a live question: the feature is roughly a sixth of `src/` serving a
-single user, and it was worth asking whether it earned that before spending four issues on it.
-It does.
+Recorded because it was a live question, though the question was worse framed than the answer.
+It was asked as "a sixth of `src/` serving a single user" -- and that conflated **adoption**
+with **value**. Nothing outside this repo was exercising `-RecheckFrom` yet, which says the
+module is young, not that the feature is bespoke: it ships to every consumer, and the
+edit-run-edit loop it shortens is what using a mutation tester *is*. A feature nobody has
+reached for yet is not the same as a feature nobody needs.
 
 The loop NARROWS as of #14 and #20: five survivors, kill two, and the next round evaluates
 three. Declared equivalents are skipped, and a recheck report seeds the next one.
