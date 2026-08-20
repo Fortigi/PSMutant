@@ -73,11 +73,27 @@ Describe 'Test-PSMutationRecheckCompatible' {
         $why[0] | Should-BeLikeString '*src/b.ps1 is not in the report*'
     }
 
-    It 'refuses a report written before source hashes were recorded' {
+    It 'refuses a report written before source hashes were recorded, and says it is old' {
+        # No schemaVersion either, so "predates provenance recording" is the accurate
+        # diagnosis rather than a guess -- see the paired case below.
         $why = Test-PSMutationRecheckCompatible -Report (Get-FakeReport -OmitHashes) `
             -SourceHashes @{ 'src/a.ps1' = 'hash-a' } -Operators @('BinaryOperator')
         @($why).Count | Should-Be 1
-        $why[0] | Should-BeLikeString '*predates source-hash recording*'
+        $why[0] | Should-BeLikeString '*no source hashes*'
+        $why[0] | Should-BeLikeString '*predates provenance recording*'
+    }
+
+    It 'names the schema when a report has one but still lacks hashes' {
+        # The pairing that makes the message worth having (#34). Without a version number
+        # the guard could only ever say "too old", and it said exactly that to anyone
+        # chaining a recheck -- when the real reason was that recheck reports carried no
+        # hashes at all (#20). A schema number tells "too old" from "not that kind".
+        $r = Get-FakeReport -OmitHashes
+        $r | Add-Member -NotePropertyName schemaVersion -NotePropertyValue 1
+        $why = Test-PSMutationRecheckCompatible -Report $r `
+            -SourceHashes @{ 'src/a.ps1' = 'hash-a' } -Operators @('BinaryOperator')
+        $why[0] | Should-BeLikeString '*schema version 1*'
+        $why[0] | Should-NotBeLikeString '*predates provenance recording*'
     }
 
     It 'refuses a report whose sourceHashes property is present but null' {
@@ -90,7 +106,7 @@ Describe 'Test-PSMutationRecheckCompatible' {
         $why = Test-PSMutationRecheckCompatible -Report $r `
             -SourceHashes @{ 'src/a.ps1' = 'hash-a' } -Operators @('BinaryOperator')
         @($why).Count | Should-Be 1
-        $why[0] | Should-BeLikeString '*predates source-hash recording*'
+        $why[0] | Should-BeLikeString '*no source hashes*'
     }
 
     It 'reports every reason, not just the first' {
