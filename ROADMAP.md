@@ -138,23 +138,30 @@ Pick these up between waves; none blocks anything.
 
 ---
 
-## A decision that comes before four issues: does `-RecheckFrom` stay?
+## Wave G -- the recheck loop
 
-Not an ordering question so much as the one input the ordering is missing. `-RecheckFrom` is
-about 220 lines of source, 370 of tests, eight functions, its own report format and a
-compatibility gate -- and **only this project uses it**. Four open issues exist to serve it:
+**`-RecheckFrom` stays.** Decided 2026-08-20. In the maintainer's words: *it does not give you
+the full measure, but while developing it speeds things up tremendously.*
 
-| | |
-|---|---|
-| **#14** | a recheck re-runs declared equivalents, which can never change |
-| **#20** | a recheck report cannot seed another recheck |
-| **#59** | option (1) is done; option (2), identity independent of walk position, is unblocked now that #48 has landed |
-| **#4** | fold recheck results back into the baseline report -- also wants #34 |
+Both halves of that matter, and the code already takes them seriously. The speed is the point:
+a run of several hundred mutants with a handful of survivors must not re-run the whole set to
+tell you about those few, so anything that makes a recheck do work it does not need to do is a
+defect against the feature's purpose rather than a nicety. And "not the full measure" is
+enforced rather than trusted -- no score, thresholds skipped, a separate report file, and the
+caveat printed on every run -- because a partial number quoted as a real one is the failure
+this whole project exists to prevent.
 
-If the feature stays, they are worth doing properly and #59's option (2) is the first of them.
-If it was an experiment, three of the four evaporate and a sixth of `src/` goes with them.
-Deciding costs a minute; guessing wrong costs several PRs, which is the reason this sits here
-rather than in the waves.
+Recorded because it was a live question: the feature is roughly a sixth of `src/` serving a
+single user, and it was worth asking whether it earned that before spending four issues on it.
+It does.
 
-Nothing else in the backlog depends on the answer, so it does not block anything -- but it
-should be settled before any of the four is picked up.
+The target is a loop that NARROWS. Five survivors, kill two, and the next round should evaluate
+three -- not five again, which is what happens today.
+
+| Order | Issue | Why here |
+|---|---|---|
+| 1 | **#14** re-runs declared equivalents | Smallest, no prerequisites, and the clearest instance of the bar above: the config states in writing that no test can kill these, and the recheck re-runs them anyway. In the observed case that was **16 of 20 mutants** -- and it grows as a repo gets more disciplined about declaring. |
+| 2 | **#20** a recheck cannot seed another recheck | The bigger win, and what makes the loop a loop. Every round after the first goes back to the full report and re-runs what the previous round already killed, so the waste compounds exactly as you approach done. Wants #34 first only for tidiness -- the fix is to carry `sourceHashes` and `operators` forward, which does not depend on it. |
+| 3 | **#59** option (2) | Identity independent of walk position. Option (1) landed in #75; (2) was blocked on #48 and is not any more. Fewer refusals means fewer forced full runs, which is the same bar again. |
+| 4 | **#4** fold recheck results into the baseline | Genuinely wants #34, since it merges two report shapes. |
+
