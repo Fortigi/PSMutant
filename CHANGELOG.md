@@ -152,6 +152,44 @@ All notable changes to PSMutant are documented here. Format follows
   had -- and corrected when [#45] moved that constant.
 
 ### Fixed
+- **One equivalence declaration could silently exclude every mutant sharing its line and
+  description** ([#28]). The key is `File:Line:Description`, and four operators emitted a
+  description that said nothing about what was mutated -- `remove negation`,
+  `return value -> $null`, `condition -> $true`, `string -> ''`. Two `-not` removals on a line,
+  or two forced conditions, produced identical keys, so a declaration written about one of
+  them excluded all of them. Stale-detection could not notice, because the key still matched
+  something.
+
+  That turns `equivalents` into precisely the mute button it was designed not to be. Measured
+  over this repo's own source with every operator enabled: **84 mutants were reachable by an
+  over-broad declaration, and one key covered 8 of them.**
+
+  Two changes, because the first is not sufficient on its own:
+  - **Descriptions are derived, not supplied.** `New-PSMutationCandidate` now builds
+    `<original> -> <mutated>` itself and no longer takes a `-Description`, so a new operator
+    cannot reintroduce a non-discriminating one -- which is what the old arrangement left
+    entirely to whoever wrote the call. `remove negation` becomes `-not $done -> $done`;
+    `condition -> $false` becomes `$ref.Value -> $false`. Whitespace is collapsed so a
+    multi-line construct stays on one line, and the text is truncated at 120 characters --
+    chosen by measurement, since 120 yields exactly as many distinct descriptions as no
+    truncation at all over this repo, while 80 loses a few and 60 noticeably more.
+  - **A declaration matching more than one mutant fails the run**, on the same footing as one
+    that matches nothing or gets killed. This is the part that closes the hole: descriptions
+    alone still leave **nine** colliding keys in this repo, because
+    `[math]::Min($prev[$j] + 1, $curr[$j - 1] + 1)` legitimately puts two `1 -> 2` mutants on
+    one line.
+
+  The issue proposed failing whenever *any two candidates* share a key. That was tried and
+  rejected on evidence: it would fail this repo's own run over those nine harmless ties, none
+  of which is declared. Failing only when a **declaration** is ambiguous refuses exactly the
+  unsound case and leaves undeclared ties alone. Genuine ties still cannot be declared at all;
+  an occurrence index is the follow-up if anyone ever needs one, and the error now says so
+  instead of silently over-excluding.
+
+  Consequences worth knowing: descriptions appear in reports and console output, so existing
+  equivalence declarations for those four operators need re-keying -- this repo's own two
+  `ConditionForcing` declarations did. The console heading is now `INVALID equivalence
+  declarations` rather than `STALE`, since ambiguity is not staleness.
 - **A 0% mutation score no longer prints in green** ([#40]). The console summary compared the
   score against `$Thresholds.high` and `$Thresholds.low` straight off the parsed config, and
   in PowerShell any number `-ge $null` is `$true` -- so with no `thresholds` at all, or with
