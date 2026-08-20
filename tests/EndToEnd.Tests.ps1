@@ -328,3 +328,31 @@ Describe 'the manifest does not choose a Pester' {
         [int]($loaded | Select-Object -Last 1) | Should-Be 0
     }
 }
+
+Describe 'the module public surface' {
+    BeforeAll {
+        $script:root = Split-Path -Parent $PSScriptRoot
+        $script:manifest = Join-Path -Path $script:root -ChildPath 'PSMutant.psd1'
+    }
+
+    It 'exports exactly one function' {
+        # Get-PSMutationCandidate and Set-PSMutationText used to be exported, and between
+        # them trafficked a nine-field object nothing declared, tested or versioned (#48).
+        # Neither appeared in the README. This is the assertion that makes re-exporting
+        # something a decision rather than a reflex.
+        (Import-PowerShellDataFile $script:manifest).FunctionsToExport |
+            Should-BeCollection @('Invoke-PSMutation')
+    }
+
+    It 'exports nothing the manifest does not declare' {
+        # The manifest filters Export-ModuleMember, so a name in one and not the other is
+        # exported by neither -- which reads as a bug in whichever file you happen to open.
+        # Checked against a real import rather than by parsing psm1.
+        Import-Module $script:manifest -Force
+        try {
+            (Get-Command -Module PSMutant).Name |
+                Should-BeCollection (Import-PowerShellDataFile $script:manifest).FunctionsToExport
+        }
+        finally { Remove-Module PSMutant -Force -ErrorAction SilentlyContinue }
+    }
+}
