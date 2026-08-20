@@ -30,6 +30,34 @@ function Get-PSMutationDeclaredEquivalent {
     return $map
 }
 
+function Get-PSMutationDeclarationFault {
+    # Why an equivalence declaration is invalid, or $null when it is exactly right.
+    #
+    # Zero, one and many are three genuinely different answers and only one is acceptable,
+    # because a declaration is an argument about ONE mutant:
+    #
+    #   none     the code moved and nobody revisited the claim
+    #   one      the claim is well formed; whether it is TRUE is decided elsewhere, by
+    #            whether the suite killed the mutant
+    #   several  it would exclude mutants nobody argued about, silently, and stale-detection
+    #            cannot notice because the key still matches something (#28)
+    #
+    # A separate unit rather than two more branches inside Get-PSMutationScore: it is a
+    # decision, so it is worth testing on its own terms -- and inlining it put that function
+    # over the cognitive-complexity ceiling, which is the gate noticing the same thing.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$Key,
+        [Parameter(Mandatory)] [int]$Hits
+    )
+    if ($Hits -eq 0) { return "$Key -- declared equivalent but no such mutant exists" }
+    if ($Hits -gt 1) {
+        return "$Key -- matches $Hits mutants, so the declaration is ambiguous: it argues about one and would exclude all of them"
+    }
+    return $null
+}
+
 function Get-PSMutationScore {
     # Pure: turn result rows into a score summary. No I/O.
     #
@@ -40,6 +68,14 @@ function Get-PSMutationScore {
     # about the code and the whole point of demanding a reason is that it can be
     # checked. Same for a declaration matching no mutant at all -- the code moved
     # and nobody revisited the claim.
+    #
+    # And the same for a declaration matching MORE than one mutant. Two mutants on a
+    # line can legitimately share `File:Line:Description` -- `$prev[$j] + 1` and
+    # `$curr[$j - 1] + 1` both read `1 -> 2` -- and a declaration that hits both
+    # excludes a mutant nobody argued about, silently, while stale-detection stays
+    # quiet because the key still matches something (#28). A declaration is a claim
+    # about ONE mutant, so matching several is not a smaller claim, it is an
+    # ambiguous one, and the run says so rather than banking the exclusion.
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
@@ -48,13 +84,15 @@ function Get-PSMutationScore {
     )
     $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
     $stale    = [System.Collections.Generic.List[string]]::new()
-    $matched  = [System.Collections.Generic.HashSet[string]]::new()
+    # A count, not a set: "matched something" and "matched exactly one" are different
+    # claims, and only the second is the one a declaration makes.
+    $matched  = @{}
 
     $killed = 0; $survived = 0; $excluded = 0
     foreach ($r in $Results) {
         $key = Get-PSMutationEquivalentKey -Result $r
         $isDeclared = $declared.ContainsKey($key)
-        if ($isDeclared) { [void]$matched.Add($key) }
+        if ($isDeclared) { $matched[$key] = 1 + [int]$matched[$key] }
         if ($r.Status -eq 'Killed') {
             $killed++
             if ($isDeclared) { $stale.Add("$key -- declared equivalent but the suite killed it") }
@@ -63,7 +101,8 @@ function Get-PSMutationScore {
         else { $survived++ }
     }
     foreach ($k in $declared.Keys) {
-        if (-not $matched.Contains($k)) { $stale.Add("$k -- declared equivalent but no such mutant exists") }
+        $fault = Get-PSMutationDeclarationFault -Key $k -Hits ([int]$matched[$k])
+        if ($fault) { $stale.Add($fault) }
     }
 
     $total = $Results.Count - $excluded
@@ -167,7 +206,7 @@ function Show-PSMutationSummary {
     }
     $stale = @($Summary.StaleEquivalents | Where-Object { $_ })   # @($null).Count is 1
     if ($stale.Count -gt 0) {
-        Write-Host "  STALE equivalence declarations - the config is claiming something untrue:" -ForegroundColor Red
+        Write-Host "  INVALID equivalence declarations - the config is claiming something untrue:" -ForegroundColor Red
         $stale | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
     }
     # A declared equivalent is not a survivor to go and fix: listing it here sends

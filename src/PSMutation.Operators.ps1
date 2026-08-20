@@ -76,17 +76,37 @@ function Set-PSMutationText {
     return $Content.Substring(0, $Candidate.StartOffset) + $Candidate.Mutated + $Content.Substring($Candidate.EndOffset)
 }
 
+# How much of "<original> -> <mutated>" a description keeps. Chosen by measurement, not
+# taste: over this repo's own source with every operator enabled, truncating at 120 produces
+# exactly as many distinct descriptions as not truncating at all, while 80 loses a few and 60
+# loses noticeably more. Long enough to discriminate, short enough to paste into a config.
+$script:PSMutationDescriptionLength = 120
+
 function New-PSMutationCandidate {
     # Build one candidate object. Central so every operator emits the same shape.
+    #
+    # The description is DERIVED here rather than passed in. Four operators used to supply
+    # their own and three of those said nothing about what was mutated -- 'remove negation',
+    # 'return value -> $null', "string -> ''" -- so every such mutant on a line produced an
+    # identical `File:Line:Description` equivalence key. One honest declaration then excluded
+    # all of them silently, and stale-detection could not notice because the key still matched
+    # something (#28). Deriving makes that impossible for a NEW operator too, which the old
+    # arrangement left entirely to whoever wrote the call.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Pure factory: returns an object, changes no system state.')]
     [OutputType([pscustomobject])]
     [CmdletBinding()]
-    param($Extent, [string]$File, [string]$Original, [string]$Mutated, [string]$Operator, [string]$Description)
+    param($Extent, [string]$File, [string]$Original, [string]$Mutated, [string]$Operator)
+    # Collapsed to single spaces because an extent can span lines -- a raw multi-line
+    # condition would put newlines in a console line and in a config key.
+    $description = "$Original -> $Mutated" -replace '\s+', ' '
+    if ($description.Length -gt $script:PSMutationDescriptionLength) {
+        $description = $description.Substring(0, $script:PSMutationDescriptionLength) + '...'
+    }
     return [pscustomobject]@{
         Id = 0; File = $File; Line = $Extent.StartLineNumber
         StartOffset = $Extent.StartOffset; EndOffset = $Extent.EndOffset
-        Original = $Original; Mutated = $Mutated; Operator = $Operator; Description = $Description
+        Original = $Original; Mutated = $Mutated; Operator = $Operator; Description = $description
     }
 }
 
@@ -138,7 +158,7 @@ function Get-PSMutationSwapCandidate {
         if (-not $Map.ContainsKey($key)) { continue }
         if (Test-PSMutationInLoop -Extent $ext -Ranges $Ranges) { continue }
         $to = $Map[$key]
-        New-PSMutationCandidate -Extent $ext -File $File -Original $ext.Text -Mutated $to -Operator $Operator -Description "$($ext.Text) -> $to"
+        New-PSMutationCandidate -Extent $ext -File $File -Original $ext.Text -Mutated $to -Operator $Operator
     }
 }
 
@@ -164,7 +184,7 @@ function Get-PSMutationBooleanCandidate {
         }
         if (-not $flip) { continue }
         if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
-        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $flip -Operator 'BooleanLiteral' -Description "$($n.Extent.Text) -> $flip"
+        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $flip -Operator 'BooleanLiteral'
     }
 }
 
@@ -178,7 +198,7 @@ function Get-PSMutationNumberCandidate {
         if ($n.Value -isnot [int] -and $n.Value -isnot [long]) { continue }
         if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
         $to = [string]([long]$n.Value + 1)
-        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $to -Operator 'NumberLiteral' -Description "$($n.Value) -> $to"
+        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $to -Operator 'NumberLiteral'
     }
 }
 
@@ -192,7 +212,7 @@ function Get-PSMutationStringCandidate {
         if ($n.StringConstantType -notin 'SingleQuoted', 'DoubleQuoted') { continue }
         if ([string]::IsNullOrEmpty($n.Value)) { continue }
         if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
-        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated "''" -Operator 'StringLiteral' -Description "string -> ''"
+        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated "''" -Operator 'StringLiteral'
     }
 }
 
@@ -205,7 +225,7 @@ function Get-PSMutationNegationCandidate {
     foreach ($n in $nodes) {
         if ($n.TokenKind -notin 'Not', 'Exclaim') { continue }
         if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
-        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $n.Child.Extent.Text -Operator 'NegationRemoval' -Description 'remove negation'
+        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $n.Child.Extent.Text -Operator 'NegationRemoval'
     }
 }
 
@@ -244,7 +264,7 @@ function Get-PSMutationConditionCandidate {
                 # source: an unkillable mutant that can only ever inflate the survivor
                 # list. Skip it rather than declare it equivalent later.
                 if ($cond.Extent.Text -eq $forced) { continue }
-                New-PSMutationCandidate -Extent $cond.Extent -File $File -Original $cond.Extent.Text -Mutated $forced -Operator 'ConditionForcing' -Description "condition -> $forced"
+                New-PSMutationCandidate -Extent $cond.Extent -File $File -Original $cond.Extent.Text -Mutated $forced -Operator 'ConditionForcing'
             }
         }
     }
@@ -262,7 +282,7 @@ function Get-PSMutationReturnCandidate {
         if (-not $n.Pipeline) { continue }
         if ($n.Pipeline.Extent.Text -eq '$null') { continue }
         if (Test-PSMutationInLoop -Extent $n.Pipeline.Extent -Ranges $Ranges) { continue }
-        New-PSMutationCandidate -Extent $n.Pipeline.Extent -File $File -Original $n.Pipeline.Extent.Text -Mutated '$null' -Operator 'ReturnValue' -Description 'return value -> $null'
+        New-PSMutationCandidate -Extent $n.Pipeline.Extent -File $File -Original $n.Pipeline.Extent.Text -Mutated '$null' -Operator 'ReturnValue'
     }
 }
 

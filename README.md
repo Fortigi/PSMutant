@@ -167,7 +167,7 @@ refused rather than guessed at.
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |
 | `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, baseline × factor)` (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
-| `equivalents` | `file:line:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator; the run fails if one is killed or stops existing. |
+| `equivalents` | `file:line:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator. The run fails if a declaration is killed, matches nothing, **or matches more than one mutant** — a declaration argues about one mutant, so matching several is ambiguous rather than a broader claim. `description` is `<original> -> <mutated>`, taken from the source. |
 | `thresholds.high` / `thresholds.low` | Colour bands for the console score: green at or above `high`, yellow at or above `low`, red below (defaults 85 / 70). They affect the printed colour only, never the exit code. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |
 | `reportPath` | Where the JSON report is written (relative to `-SourceRoot`). A `-RecheckFrom` run writes `<name>.recheck.json` beside it and never touches this file. |
