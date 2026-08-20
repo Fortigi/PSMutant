@@ -210,7 +210,7 @@ Describe 'Mutant ids' {
         # genuine first mutant, so a candidate that never got numbered would look
         # like a valid recheck target.
         $c = New-PSMutationCandidate -Extent ([pscustomobject]@{ StartLineNumber = 7; StartOffset = 1; EndOffset = 2 }) `
-            -File 'f.ps1' -Original 'a' -Mutated 'b' -Operator 'BinaryOperator' -Description 'a -> b'
+            -File 'f.ps1' -Original 'a' -Mutated 'b' -Operator 'BinaryOperator'
         $c.Id | Should-Be 0
     }
 }
@@ -567,5 +567,82 @@ function Test-Thing {
         @($forward | Where-Object { $_.Operator -eq 'ConditionForcing' }).Count | Should-BeGreaterThan 1
         @($reverse | ForEach-Object { '{0}|{1}' -f $_.Id, $_.Description }) |
             Should-BeCollection @($forward | ForEach-Object { '{0}|{1}' -f $_.Id, $_.Description })
+    }
+}
+
+Describe 'every description names what was mutated' {
+    BeforeAll {
+        $script:descFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-desc-$PID.ps1"
+        @'
+function Test-Desc {
+    param($done, $ref)
+    if (-not $done) { return $ref }
+    if ($ref.Value) { return 'text' }
+    return $done
+}
+'@ | Set-Content $script:descFixture
+    }
+
+    AfterAll { Remove-Item $script:descFixture -ErrorAction SilentlyContinue }
+
+    It 'derives <Operator> descriptions from the source, not a fixed phrase' -ForEach @(
+        @{ Operator = 'NegationRemoval'; Expect = '-not $done -> $done' }
+        @{ Operator = 'ReturnValue';     Expect = '$ref -> $null' }
+        @{ Operator = 'ConditionForcing'; Expect = '$ref.Value -> $false' }
+        @{ Operator = 'StringLiteral';   Expect = "'text' -> ''" }
+    ) {
+        # These four used to emit a fixed phrase -- 'remove negation', 'return value -> $null',
+        # "condition -> $false", "string -> ''" -- identical for every such mutant on a line.
+        # Since the equivalence key is File:Line:Description, one declaration then excluded all
+        # of them silently (#28). The description now says which construct was changed.
+        @(Get-PSMutationCandidate -Path $script:descFixture -Operators @($Operator)).Description |
+            Should-ContainCollection $Expect
+    }
+
+    It 'collapses whitespace so a multi-line construct stays one line' {
+        # An extent can span lines. A raw multi-line condition would put newlines into a
+        # console line and into a config key, where neither survives being pasted back.
+        $multi = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-desc-multi-$PID.ps1"
+        try {
+            @'
+function Test-Multi {
+    param($a, $b)
+    if ($a -and
+        $b) { return 1 }
+}
+'@ | Set-Content $multi
+            $d = @(Get-PSMutationCandidate -Path $multi -Operators @('ConditionForcing')).Description
+            $d | Should-ContainCollection '$a -and $b -> $true'
+            ($d -join '') | Should-NotBeLikeString "*`n*"
+        }
+        finally { Remove-Item $multi -ErrorAction SilentlyContinue }
+    }
+
+    It 'keeps a description of exactly the limit intact' -ForEach @(
+        # `<original> -> $null` is original + 4 + 5 characters, so a 111-character variable
+        # name lands the description on exactly 120 -- the boundary itself.
+        @{ NameLength = 111; Truncated = $false }
+        @{ NameLength = 112; Truncated = $true }
+    ) {
+        # The boundary, not a comfortable value. A limit of 121, or `-ge` instead of `-gt`,
+        # both survive any test that only checks "long things get shortened" -- which is
+        # what the first version of this test did, and the self-mutation gate said so.
+        $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-desc-len-$NameLength-$PID.ps1"
+        try {
+            $name = '$' + ('a' * ($NameLength - 1))
+            "function Test-Len { return $name }" | Set-Content $f
+            $d = @(Get-PSMutationCandidate -Path $f -Operators @('ReturnValue')).Description
+            $full = "$name -> `$null"
+            if ($Truncated) {
+                # Asserting the exact text pins where the cut starts as well as where it
+                # ends: Substring(1, ...) would drop the leading $ and still be 120 long.
+                @($d)[0] | Should-Be ($full.Substring(0, 120) + '...')
+            }
+            else {
+                @($d)[0] | Should-Be $full
+                @($d)[0].Length | Should-Be 120
+            }
+        }
+        finally { Remove-Item $f -ErrorAction SilentlyContinue }
     }
 }

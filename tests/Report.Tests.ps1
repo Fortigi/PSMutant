@@ -234,7 +234,7 @@ Describe 'Show-PSMutationSummary' {
         Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0
                                           StaleEquivalents = @('a.ps1:3:z -- declared equivalent but the suite killed it') }) `
             -Results @() -High 85 -Low 70 -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should-BeLikeString '*STALE equivalence declarations*'
+        ($script:lines -join "`n") | Should-BeLikeString '*INVALID equivalence declarations*'
         ($script:lines -join "`n") | Should-BeLikeString '*a.ps1:3:z*'
         $script:colours | Should-ContainCollection 'Red'
     }
@@ -244,7 +244,7 @@ Describe 'Show-PSMutationSummary' {
         # line under it on every ordinary run.
         Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; StaleEquivalents = $null }) `
             -Results @() -High 85 -Low 70 -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should-NotBeLikeString '*STALE*'
+        ($script:lines -join "`n") | Should-NotBeLikeString '*INVALID*'
     }
 
     It 'colours the score green at the high threshold, yellow between, red below low' -ForEach @(
@@ -341,4 +341,81 @@ Describe 'the contract a consumer actually depends on' {
         finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+}
+
+Describe 'an equivalence declaration must identify exactly one mutant' {
+    BeforeAll {
+        # Two mutants that legitimately share File:Line:Description. This is not contrived:
+        # `[math]::Min($prev[$j] + 1, $curr[$j - 1] + 1)` puts two `1 -> 2` mutants on one
+        # line, and this repo's own source has nine such ties.
+        $script:tied = @(
+            [pscustomobject]@{ File = 'a.ps1'; Line = 7; Operator = 'NumberLiteral'; Description = '1 -> 2'; Status = 'Survived' }
+            [pscustomobject]@{ File = 'a.ps1'; Line = 7; Operator = 'NumberLiteral'; Description = '1 -> 2'; Status = 'Survived' }
+        )
+    }
+
+    It 'rejects a declaration that matches more than one mutant' {
+        # THE #28 defect. One honest declaration used to exclude every mutant sharing its
+        # key, silently -- and stale-detection could not see it, because the key still
+        # matched something. A declaration argues about one mutant; matching several is not
+        # a smaller claim, it is an ambiguous one.
+        $eq = [pscustomobject]@{ 'a.ps1:7:1 -> 2' = 'provably cannot change behaviour' }
+        (Get-PSMutationScore -Results $script:tied -Equivalents $eq).StaleEquivalents |
+            Should-BeLikeString '*matches 2 mutants*ambiguous*'
+    }
+
+    It 'fails the run for an ambiguous declaration, regardless of thresholds' {
+        # Same footing as a stale declaration: a false statement in the config inflating
+        # the score is not a quality shortfall to be graded on a curve.
+        $eq = [pscustomobject]@{ 'a.ps1:7:1 -> 2' = 'provably cannot change behaviour' }
+        $s = Get-PSMutationScore -Results $script:tied -Equivalents $eq
+        Get-PSMutationExitCode -Summary $s -Thresholds $null | Should-Be 1
+    }
+
+    It 'accepts a declaration that matches exactly one mutant' {
+        # The kept case, paired with the rejected one above. Without this a check that
+        # rejected EVERY declaration would pass both tests before it.
+        $one = @([pscustomobject]@{ File = 'a.ps1'; Line = 7; Operator = 'NumberLiteral'; Description = '1 -> 2'; Status = 'Survived' })
+        $eq = [pscustomobject]@{ 'a.ps1:7:1 -> 2' = 'provably cannot change behaviour' }
+        $s = Get-PSMutationScore -Results $one -Equivalents $eq
+        @($s.StaleEquivalents | Where-Object { $_ }) | Should-BeCollection -Count 0
+        $s.DeclaredEquivalent | Should-Be 1
+    }
+
+    It 'still reports a declaration that matches nothing' {
+        # The third arm. Zero, one and many are genuinely different answers, and only one
+        # of them is acceptable.
+        $eq = [pscustomobject]@{ 'a.ps1:99:nope -> nope' = 'stale claim' }
+        (Get-PSMutationScore -Results $script:tied -Equivalents $eq).StaleEquivalents |
+            Should-BeLikeString '*no such mutant exists*'
+    }
+}
+
+Describe 'Get-PSMutationDeclarationFault' {
+    It 'accepts a declaration matching exactly one mutant' {
+        # The only acceptable answer. Whether the claim is TRUE is decided elsewhere, by
+        # whether the suite killed that mutant; this decides only whether it is well formed.
+        Should-BeNull -Actual (Get-PSMutationDeclarationFault -Key 'a.ps1:7:1 -> 2' -Hits 1)
+    }
+
+    It 'rejects a declaration matching nothing' {
+        Get-PSMutationDeclarationFault -Key 'a.ps1:7:1 -> 2' -Hits 0 |
+            Should-BeLikeString '*no such mutant exists*'
+    }
+
+    It 'rejects a declaration matching two, naming the count' {
+        # Two is the boundary that matters: at 1 it is valid, at 2 it silently covers a
+        # mutant nobody argued about. The count is in the message because the reader has to
+        # go and find the others.
+        Get-PSMutationDeclarationFault -Key 'a.ps1:7:1 -> 2' -Hits 2 |
+            Should-BeLikeString '*matches 2 mutants*ambiguous*'
+    }
+
+    It 'names the key in every complaint' {
+        # Without the key the message sends the reader to grep a config by hand.
+        foreach ($hits in 0, 2) {
+            Get-PSMutationDeclarationFault -Key 'zz.ps1:1:x -> y' -Hits $hits |
+                Should-BeLikeString '*zz.ps1:1:x -> y*'
+        }
+    }
 }
