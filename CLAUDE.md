@@ -37,7 +37,7 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 | Unit tests | whole `tests/` directory, must be 0 failures |
 | Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
 | Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
-| Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100. Around 300 mutants and a handful of minutes; treat both as orders of magnitude, not figures to keep in step |
+| Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100. Several hundred mutants and a handful of minutes -- deliberately not a figure to keep in step, because a hand-maintained count is how the numbers here became folklore before |
 | Pester compatibility | `tools/Test-PSMutantPesterCompatibility.ps1` — a real mutation run under the Pester version the suite does *not* use |
 
 `ci.yml` is not the whole story, and reading only this table is how #26 happened — publishing

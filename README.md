@@ -61,13 +61,22 @@ missing assertion, an equivalent mutant (a change that can't alter behaviour), o
 
 Killing survivors is an edit-run-edit loop, and re-running the mutants you already killed
 is most of the wait. `-RecheckFrom` runs **only** the mutants a previous report recorded as
-survivors:
+survivors, minus any you have declared equivalent — the config already states in writing that
+no test can kill those, so re-evaluating them is guaranteed-wasted work.
+
+**A recheck report can seed the next recheck**, so the loop gets shorter every round rather
+than starting over from the full set:
 
 ```powershell
-Invoke-PSMutation -ConfigFile ./psmutant.config.json                                  # full: 127 mutants
+Invoke-PSMutation -ConfigFile ./c.json                                        # full: 127 mutants
 # ...add assertions...
-Invoke-PSMutation -ConfigFile ./psmutant.config.json -RecheckFrom ./reports/ps-mutation.json   # 56
+Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json          # 56
+# ...add more, killing 20...
+Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.recheck.json  # 36
 ```
+
+Each round overwrites that one `*.recheck.json` scratch report. The full report is never
+touched, whichever report you chain from.
 
 Two things it deliberately will not do:
 
