@@ -432,9 +432,30 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   success: an empty `PSSA_PATHS` would have both gates report clean over zero files. The pin
   parsing behind that lives in `GateDecisions.ps1` with tests, for the same reason.
 - **An equivalence declaration is a checkable claim, not a mute button.** It carries a
-  written argument someone can disagree with, and the run fails if it is ever killed or
-  stops matching a mutant. Before declaring one, verify the claim -- run the code without
-  the guard and confirm the output is identical.
+  written argument someone can disagree with, and the run fails if it is ever killed, stops
+  matching a mutant, **or matches more than one**. Before declaring one, verify the claim --
+  run the code without the guard and confirm the output is identical.
+
+  The third arm was the hole (#28). The key is `File:Line:Description`, and a declaration
+  argues about ONE mutant, so matching several is not a broader claim -- it is an ambiguous
+  one that excludes mutants nobody argued about, silently, while stale-detection stays quiet
+  because the key still matches something. Two mutants can share a key honestly:
+  `[math]::Min($prev[$j] + 1, $curr[$j - 1] + 1)` puts two `1 -> 2` on one line, and this
+  repo has nine such ties. Undeclared ties are fine and are left alone; only a declaration
+  over one is refused.
+- **A description is derived from the source, never written by the operator.**
+  `New-PSMutationCandidate` builds `<original> -> <mutated>` and takes no `-Description`.
+  Four operators used to supply their own and three said nothing about what was mutated
+  (`remove negation`, `return value -> $null`, `condition -> $false`), which is what made
+  identical keys possible in the first place. Deriving it centrally means a NEW operator
+  cannot reintroduce the problem, where the old arrangement left that entirely to whoever
+  wrote the call.
+
+  It is whitespace-collapsed, because an extent can span lines and a newline in a console
+  line or a config key does not survive being pasted back, and truncated at 120 characters.
+  That number is measured, not chosen: over this repo's source with every operator on, 120
+  produces exactly as many distinct descriptions as no truncation at all, 80 loses a few and
+  60 noticeably more.
 - **A "this is filtered" assertion pairs the filtered case with a kept one.** A fixture that
   lacks the construct being filtered makes the assertion pass without proving anything.
   This is not hypothetical: two such tests were written and shipped green in the #5 work,
