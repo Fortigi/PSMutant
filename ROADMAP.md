@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-19. 36 issues open.
+Snapshot 2026-08-20. 32 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -30,9 +30,6 @@ claims; the issues remain the record of what is open.
 
 #34 report provenance  ---> #4 merge, #6 ratchet, #20 recheck chaining
                             all three read reports and would each invent field-sniffing
-
-#48 candidate contract ---> #28 identity, #29 ids
-                            both change fields a consumer may already be reading
 
 #1 parallelism         <==> #39 resumability
                             both restructure the same loop: one PR, or strictly sequenced
@@ -68,8 +65,7 @@ as three refactors interleaved with features.
 | Order | Issue | Why here |
 |---|---|---|
 | 1 | **#34** report provenance | `schemaVersion`, producing module version, timestamp, durations. Unblocks three issues and gives #1 a before/after number it currently has no way to produce. |
-| 2 | **#47** output seam | Separate deciding what to say from saying it. Unblocks three more. |
-| 3 | **#48** candidate contract | Decide what is public before #28/#29 change it. May resolve by simply un-exporting `Set-PSMutationText`. |
+| 2 | **#47** output seam | Separate deciding what to say from saying it. Unblocks three more, and the surface keeps growing -- #3 added two more `Write-Host` sites to the summary. |
 
 #47 can slip to just before Wave E if you want output features sooner -- but then #11, #10 and #6
 each pay for it separately.
@@ -86,12 +82,18 @@ quietly while nothing touches the graph. Within this wave that trigger is #47.
 
 Now has a home to land in. This is the wave with the most user-visible value.
 
+Its identity half is finished. #29 made mutant ids independent of operator order, #28 stopped
+one equivalence declaration silently covering every mutant on its line, and #3 keyed
+declarations by enclosing function so they stop drifting when unrelated lines move. What that
+established, and what the remaining work should not undo: **neither key form dominates** -- the
+function form is stable but coarse (41 ambiguous keys over this repo's source, against 9 for
+the line form), so both are kept and the summary now prints whichever one actually identifies
+the mutant.
+
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#29** operator-order renumbering | Reordering a JSON array silently invalidates recheck reports. |
-| 2 | **#28** identity collision, with **#3** and **#59** | Same identity scheme, three different defects: a colliding key, a stale key, and an id whose stability rests on an unstated ordering. Fix once -- three separate touches would invalidate existing reports for `-RecheckFrom` three times. |
-| 3 | **#54**, **#56** | The run-result shape and the score function's fused scope. #56 blocks per-file scores in Wave E. |
-| 4 | **#60**, **#61** | Two files documented Pure that do I/O, and `-Quiet` implemented two ways. Both are small, both are prerequisites for #47/#11 being done cleanly. |
+| 1 | **#54**, **#56** | The run-result shape and the score function's fused scope. #56 blocks per-file scores in Wave E, and both sit in `Report.ps1`, which #28 and #3 have just been through. |
+| 2 | **#60**, **#61** | Two files documented Pure that do I/O, and `-Quiet` implemented two ways. Both are small, both are prerequisites for #47/#11 being done cleanly. |
 
 ## Wave E -- output features
 
@@ -132,5 +134,27 @@ Pick these up between waves; none blocks anything.
 - **#36** end-to-end exact counts, **#43** cross-Context `$script:` coupling, **#35** consumer-shaped layout.
 - **#32** Windows CI matrix. Adds runner time, but the caching and concurrency work it was
   waiting on has landed, so it is affordable now.
-- **#22** sandbox self-mutation, **#14** recheck skips declared equivalents, **#9** killed-by map.
-- **#20** recheck chaining and **#4** merge into baseline -- both after #34.
+- **#22** sandbox self-mutation, **#9** killed-by map.
+
+---
+
+## A decision that comes before four issues: does `-RecheckFrom` stay?
+
+Not an ordering question so much as the one input the ordering is missing. `-RecheckFrom` is
+about 220 lines of source, 370 of tests, eight functions, its own report format and a
+compatibility gate -- and **only this project uses it**. Four open issues exist to serve it:
+
+| | |
+|---|---|
+| **#14** | a recheck re-runs declared equivalents, which can never change |
+| **#20** | a recheck report cannot seed another recheck |
+| **#59** | option (1) is done; option (2), identity independent of walk position, is unblocked now that #48 has landed |
+| **#4** | fold recheck results back into the baseline report -- also wants #34 |
+
+If the feature stays, they are worth doing properly and #59's option (2) is the first of them.
+If it was an experiment, three of the four evaporate and a sixth of `src/` goes with them.
+Deciding costs a minute; guessing wrong costs several PRs, which is the reason this sits here
+rather than in the waves.
+
+Nothing else in the backlog depends on the answer, so it does not block anything -- but it
+should be settled before any of the four is picked up.
