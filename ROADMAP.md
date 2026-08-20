@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-20. 32 issues open.
+Snapshot 2026-08-20. 30 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -155,13 +155,15 @@ Recorded because it was a live question: the feature is roughly a sixth of `src/
 single user, and it was worth asking whether it earned that before spending four issues on it.
 It does.
 
-The target is a loop that NARROWS. Five survivors, kill two, and the next round should evaluate
-three -- not five again, which is what happens today.
+The loop NARROWS as of #14 and #20: five survivors, kill two, and the next round evaluates
+three. Declared equivalents are skipped, and a recheck report seeds the next one.
+
+What is left is a different question -- not "how few mutants can a round run" but "can the
+score be refreshed without a full run at all". That is #4, and it is bounded by what the tool
+can actually verify rather than by effort.
 
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#14** re-runs declared equivalents | Smallest, no prerequisites, and the clearest instance of the bar above: the config states in writing that no test can kill these, and the recheck re-runs them anyway. In the observed case that was **16 of 20 mutants** -- and it grows as a repo gets more disciplined about declaring. |
-| 2 | **#20** a recheck cannot seed another recheck | The bigger win, and what makes the loop a loop. Every round after the first goes back to the full report and re-runs what the previous round already killed, so the waste compounds exactly as you approach done. Wants #34 first only for tidiness -- the fix is to carry `sourceHashes` and `operators` forward, which does not depend on it. |
-| 3 | **#59** option (2) | Identity independent of walk position. Option (1) landed in #75; (2) was blocked on #48 and is not any more. Fewer refusals means fewer forced full runs, which is the same bar again. |
-| 4 | **#4** fold recheck results into the baseline | Genuinely wants #34, since it merges two report shapes. |
+| 1 | **#4** fold recheck results into the baseline | Now the interesting one, and it answers a question worth asking: since the baseline already knows what every mutant did and the recheck knows what changed, why re-run anything to refresh the number? Because the arithmetic is only sound if the test changes were purely additive, and the compatibility guard watches the *source*, not the tests. The sound version is to hash the mapped test files too: a mutant whose covering tests are byte-identical is provably still killed and can be carried, one whose tests changed must be re-run. That trades a full run for re-running the file you were working in. Wants #34, since it merges two report shapes. |
+| 2 | **#59** option (2) | Identity independent of walk position. Option (1) landed in #75; (2) was blocked on #48 and is not any more. Fewer refusals means fewer forced full runs, which is the same bar again -- but it is the smallest remaining item here, not the most valuable. |
 
