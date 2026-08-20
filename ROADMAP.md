@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-20. 30 issues open.
+Snapshot 2026-08-20. 31 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -27,9 +27,6 @@ claims; the issues remain the record of what is open.
 ```
 #47 output seam        ---> #11 annotations, #10 -ListOnly, #6 per-file scores
                             all three add a new rendering of the same data
-
-#34 report provenance  ---> #4 merge, #6 ratchet, #20 recheck chaining
-                            all three read reports and would each invent field-sniffing
 
 #1 parallelism         <==> #39 resumability
                             both restructure the same loop: one PR, or strictly sequenced
@@ -59,13 +56,12 @@ Two things follow that are worth stating out loud:
 
 ## Wave C -- structural groundwork
 
-All three are prerequisites, and none changes behaviour. Cheaper as one "make room" pass than
-as three refactors interleaved with features.
+One prerequisite left, and it changes no behaviour. Worth doing before the features that
+each want it, rather than paying for it three times.
 
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#34** report provenance | `schemaVersion`, producing module version, timestamp, durations. Unblocks three issues and gives #1 a before/after number it currently has no way to produce. |
-| 2 | **#47** output seam | Separate deciding what to say from saying it. Unblocks three more, and the surface keeps growing -- #3 added two more `Write-Host` sites to the summary. |
+| 1 | **#47** output seam | Separate deciding what to say from saying it. Unblocks three issues, and the surface keeps growing -- the equivalence-key work added two more `Write-Host` sites to the summary. |
 
 #47 can slip to just before Wave E if you want output features sooner -- but then #11, #10 and #6
 each pay for it separately.
@@ -98,7 +94,7 @@ the mutant.
 ## Wave E -- output features
 
 **#11** CI annotations, then **#10** `-ListOnly`, then **#6** per-file scores and ratchet.
-All three want #47; #6 also wants #34.
+All three want #47. #6 also wanted report provenance, which has landed.
 
 ## Wave F -- the loop
 
@@ -130,11 +126,25 @@ Pick these up between waves; none blocks anything.
   are four call sites.
 - **#39** interrupted runs -- see the note above; likely cheaper than its pairing with #1 implies.
 - **#49** child runspace script is an unparsed string.
-- **#41** help surface / missing `about_PSMutant`.
+- **#41** missing `about_PSMutant`. **Smaller than its title implies, twice over.** The title
+  also says two of three exports are undocumented -- there is one export now, so that half is
+  gone. And the real defect underneath it was found and fixed separately: a `<# #>` file header
+  shadowed the public help, so `Get-Help` served the file's architecture notes instead of the
+  documentation. Parameters, examples and the synopsis are complete now and pinned by tests.
+  What remains is the topic the help still points at and which does not exist.
 - **#36** end-to-end exact counts, **#43** cross-Context `$script:` coupling, **#35** consumer-shaped layout.
 - **#32** Windows CI matrix. Adds runner time, but the caching and concurrency work it was
   waiting on has landed, so it is affordable now.
 - **#22** sandbox self-mutation, **#9** killed-by map.
+- **#83** config values are never type-checked. Same class as `thresholds.brake`, reached by a
+  wrong type instead of a typo: `"timeoutFactor": "four"` validates, resolves to an empty
+  per-mutant timeout, and a timeout expiry scores as a kill -- so the run reports a number it
+  did not measure. Small, and it belongs with whoever next touches `Assert-PSMutationConfig`.
+- **#84** the report format has a version but no published schema. Natural completion of the
+  provenance work: a version number is worth much less without a description of what the
+  version denotes, and it would collapse three hand-maintained field lists into one statement.
+  Decide it together with #83 -- both want `Test-Json -Schema`, and the repo should grow one
+  convention rather than two.
 
 ---
 
@@ -167,6 +177,6 @@ can actually verify rather than by effort.
 
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#4** fold recheck results into the baseline | Now the interesting one, and it answers a question worth asking: since the baseline already knows what every mutant did and the recheck knows what changed, why re-run anything to refresh the number? Because the arithmetic is only sound if the test changes were purely additive, and the compatibility guard watches the *source*, not the tests. The sound version is to hash the mapped test files too: a mutant whose covering tests are byte-identical is provably still killed and can be carried, one whose tests changed must be re-run. That trades a full run for re-running the file you were working in. Wants #34, since it merges two report shapes. |
+| 1 | **#4** fold recheck results into the baseline | Now the interesting one, and it answers a question worth asking: since the baseline already knows what every mutant did and the recheck knows what changed, why re-run anything to refresh the number? Because the arithmetic is only sound if the test changes were purely additive, and the compatibility guard watches the *source*, not the tests. The sound version is to hash the mapped test files too: a mutant whose covering tests are byte-identical is provably still killed and can be carried, one whose tests changed must be re-run. That trades a full run for re-running the file you were working in. Its prerequisite is met -- both report shapes now carry the same provenance block, so merging them is a question about the mutant rows rather than about telling the two shapes apart. |
 | 2 | **#59** option (2) | Identity independent of walk position. Option (1) landed in #75; (2) was blocked on #48 and is not any more. Fewer refusals means fewer forced full runs, which is the same bar again -- but it is the smallest remaining item here, not the most valuable. |
 
