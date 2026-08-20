@@ -419,3 +419,45 @@ Describe 'Get-PSMutationDeclarationFault' {
         }
     }
 }
+
+Describe 'Get-PSMutationEquivalentKey and Get-PSMutationDeclaredKey' {
+    BeforeAll {
+        $script:inFn = [pscustomobject]@{ File = 'a.ps1'; Function = 'Get-Thing'; Line = 7; Description = '1 -> 2' }
+        $script:atTop = [pscustomobject]@{ File = 'a.ps1'; Function = ''; Line = 3; Description = '1 -> 2' }
+    }
+
+    It 'offers the function form first and the line form second' {
+        # Order matters: Get-PSMutationDeclaredKey returns the first match, so a config
+        # declaring both forms of one mutant counts once rather than reading as ambiguous.
+        Get-PSMutationEquivalentKey -Result $script:inFn |
+            Should-BeCollection @('a.ps1:Get-Thing:1 -> 2', 'a.ps1:7:1 -> 2')
+    }
+
+    It 'offers only the line form for a mutant at file scope' {
+        Get-PSMutationEquivalentKey -Result $script:atTop | Should-BeCollection @('a.ps1:3:1 -> 2')
+    }
+
+    It 'accepts a declaration written the old way' {
+        # The compatibility promise: fixing key churn by invalidating every key would be a
+        # poor trade, so existing configs keep working.
+        Get-PSMutationDeclaredKey -Result $script:inFn -Declared @{ 'a.ps1:7:1 -> 2' = 'why' } |
+            Should-Be 'a.ps1:7:1 -> 2'
+    }
+
+    It 'accepts a declaration written the stable way' {
+        Get-PSMutationDeclaredKey -Result $script:inFn -Declared @{ 'a.ps1:Get-Thing:1 -> 2' = 'why' } |
+            Should-Be 'a.ps1:Get-Thing:1 -> 2'
+    }
+
+    It 'prefers the stable form when a config declares both' {
+        # Otherwise one mutant answering to two of its own keys would inflate the match
+        # count and read as an ambiguous declaration (#28).
+        Get-PSMutationDeclaredKey -Result $script:inFn -Declared @{
+            'a.ps1:7:1 -> 2' = 'why'; 'a.ps1:Get-Thing:1 -> 2' = 'why' } |
+            Should-Be 'a.ps1:Get-Thing:1 -> 2'
+    }
+
+    It 'returns nothing when no declaration covers the mutant' {
+        Should-BeNull -Actual (Get-PSMutationDeclaredKey -Result $script:inFn -Declared @{ 'other:1:x -> y' = 'why' })
+    }
+}

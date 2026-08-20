@@ -436,7 +436,19 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   matching a mutant, **or matches more than one**. Before declaring one, verify the claim --
   run the code without the guard and confirm the output is identical.
 
-  The third arm was the hole (#28). The key is `File:Line:Description`, and a declaration
+  The key is `File:Function:Description`, with `File:Line:Description` still accepted so
+  existing configs keep working -- and it is the only form available for code outside any
+  function. Prefer the function form: a line number moves whenever anything above the mutant
+  is edited, and the declaration then goes stale although the mutant has not changed. That
+  happened on the first run after the feature shipped and twice more while fixing #28 (#3).
+
+  The function form is not universally better, which is worth knowing before reaching for it:
+  a function containing three `if ($isDeclared)` guards makes
+  `Get-PSMutationScore:$isDeclared -> $true` match all three, so it is refused as ambiguous
+  and that declaration has to stay keyed by line. This repo has exactly one such case, and
+  its reason string says so.
+
+  The ambiguity arm was the hole (#28). A declaration
   argues about ONE mutant, so matching several is not a broader claim -- it is an ambiguous
   one that excludes mutants nobody argued about, silently, while stale-detection stays quiet
   because the key still matches something. Two mutants can share a key honestly:
