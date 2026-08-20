@@ -24,8 +24,9 @@ foreach ($file in @(
     . (Join-Path $src $file)
 }
 
+# Must agree with FunctionsToExport in the manifest, which filters this list anyway -- a
+# name here and not there is exported by neither, which reads as a bug in whichever file you
+# happen to be looking at. A test asserts the two agree.
 Export-ModuleMember -Function @(
     'Invoke-PSMutation'
-    'Get-PSMutationCandidate'
-    'Set-PSMutationText'
 )

@@ -312,3 +312,33 @@ Describe 'Get-PSMutationScoreColour' {
         Get-PSMutationScoreColour -Score 50 -High 40 -Low 60 | Should-Be 'Green'
     }
 }
+
+Describe 'the contract a consumer actually depends on' {
+    # Un-exporting Get-PSMutationCandidate and Set-PSMutationText removed the undeclared
+    # nine-field candidate object from the public surface (#48). It did not remove the
+    # contract -- it moved it. What a consumer can still see is exactly two things: the
+    # object Invoke-PSMutation returns, and the report JSON. These pin both, so a change to
+    # either is a decision someone makes rather than a side effect of an internal rename.
+
+    It 'returns exactly the documented run-result fields' {
+        # CI reads .Score and .ExitCode off this. An extra field is a promise nobody meant to
+        # make; a missing one breaks a pipeline that has no way to see it coming.
+        $s = [pscustomobject]@{ Score = 64.3; Killed = 164; Survived = 91; Total = 255 }
+        (ConvertTo-PSMutationRunResult -Summary $s -ExitCode 1).PSObject.Properties.Name |
+            Should-BeCollection @('Score', 'Killed', 'Survived', 'Total', 'ExitCode')
+    }
+
+    It 'writes exactly the documented top-level report fields' {
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-contract-$PID/report.json"
+        try {
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+            (Get-Content $out -Raw | ConvertFrom-Json).PSObject.Properties.Name |
+                Should-BeCollection @(
+                    'generatedFrom', 'mutationScore', 'total', 'killed', 'survived',
+                    'declaredEquivalent', 'staleEquivalents', 'thresholds', 'operators',
+                    'sourceHashes', 'survivors', 'mutants')
+        }
+        finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+}

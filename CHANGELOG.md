@@ -5,6 +5,30 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 ### Changed
+- **The module exports one function.** `Get-PSMutationCandidate` and `Set-PSMutationText` are no
+  longer public ([#48]). Between them they trafficked a nine-field `[pscustomobject]` that
+  nothing declared, tested as a contract or versioned -- discoverable only by running the
+  function and inspecting the output, and unchangeable once anybody had. Neither was mentioned
+  anywhere in the README, and `Set-PSMutationText` had exactly one caller, inside this module.
+  They were a leak, not an API.
+
+  Un-exporting them did not dissolve that contract, it **relocated** it: the mutant rows in the
+  report are a projection of the same internal object, so the report was always the real public
+  surface. What a consumer can depend on is now exactly two things, both of which this module
+  fully controls, and both now pinned by tests asserting the exact field list:
+  - the object `Invoke-PSMutation` returns -- `Score`, `Killed`, `Survived`, `Total`, `ExitCode`
+  - the report JSON, top level and mutant row
+
+  The row assertion lives in `Runner.Tests.ps1`, where `Invoke-PSMutationLoop` actually builds
+  it. Asserting it through `Write-PSMutationReport` would have tested the fixture instead, since
+  that function serialises whatever it is handed.
+
+  **`Id` is not contractual.** It is a walk position, it changed once already in [#29], and its
+  only consumer is this project's own `-RecheckFrom`. Saying so is what frees the remaining
+  identity work to pick a scheme on its merits.
+
+  "What would you mutate?" remains a fair question, and the answer should be a rendering this
+  module controls -- see [#10]'s `-ListOnly` -- rather than a re-export of the AST walker.
 - **Both PSScriptAnalyzer gates now run one committed script**, `tools/Invoke-PSMutantAnalyzer.ps1`
   ([#76]). They each spelled the invocation out inline, sharing `PSSA_PATHS` and the settings file
   but **not the severity**: `ci.yml` filtered to `-Severity Error, Warning` and
