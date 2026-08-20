@@ -405,3 +405,26 @@ Describe 'ids are assigned before the coverage filter, not after' {
         $filtered[-1].Id | Should-Be $last.Id
     }
 }
+
+Describe 'the mutant row the report publishes' {
+    It 'carries exactly the fields the report contract names' {
+        # Built here, not by Write-PSMutationReport, which serialises whatever it is handed
+        # -- so this is the only place the shape is really decided.
+        #
+        # It is a PROJECTION of the internal candidate: StartOffset, EndOffset, Original and
+        # Mutated are deliberately absent. Widening it to project the whole candidate would
+        # re-publish the undeclared nine-field object #48 just withdrew, through the report
+        # instead of through an export.
+        Mock Invoke-PSMutant { 'Killed' }
+        $cand = [pscustomobject]@{
+            Id = 7; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
+            Description = '-eq -> -ne'; StartOffset = 0; EndOffset = 1; Mutated = ' '
+            Original = '-eq'
+        }
+        $r = Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
+            -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
+
+        @($r)[0].PSObject.Properties.Name |
+            Should-BeCollection @('Id', 'File', 'Line', 'Operator', 'Description', 'Status')
+    }
+}
