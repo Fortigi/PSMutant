@@ -4,16 +4,14 @@
     the contract a child runspace imports it under.
 
 .DESCRIPTION
-    This is the module's boundary with the one dependency it cannot abstract. It exists
-    as its own file because the same three-step resolution used to be written out twice
-    -- once to validate a version, once to hand a path to every child runspace -- in two
-    files that had no reason to be read together (#38).
+    This is the module's boundary with the one dependency it cannot abstract, and it is
+    one file so that the answer to "which Pester" is given ONCE.
 
-    They must agree on WHICH Pester. If they ever diverge the process validates one
-    version and mutates under another, which is issue #16 reproduced from the inside:
-    a child runspace that dies on an assembly collision returns no verdict, and a mutant
-    with no verdict was scored Killed, so the run reported a silent and entirely fake
-    100%. One definition, in one place, is the fix.
+    Two callers need that answer and need the same one: the version guard, and the path
+    handed to every child runspace. If they ever disagree the process validates one Pester
+    and mutates under another -- and that failure is silent, not loud. A child runspace
+    that dies on an assembly collision returns no verdict, and anything-but-Passed reads
+    as a kill, so every mutant "dies" and the run reports a perfect, entirely fake 100%.
 #>
 
 $script:PSMutationPesterRequired = 'Pester 5+ is required. Install-Module Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser'
@@ -76,9 +74,10 @@ function Get-PSMutationPesterPath {
         NEWEST version installed -- which is not necessarily the version this process
         already loaded. Assemblies are per-process, so when the two differ the child
         dies on "An incompatible version of the Pester.dll assembly is already loaded".
-        A child that dies produces no verdict, and a mutant with no verdict used to be
-        classified Killed: on any machine with two Pesters installed, every mutant died
-        and the run reported a silent, entirely fake 100%.
+        A child that dies produces no verdict, and anything-but-Passed reads as a kill --
+        so on any machine with two Pesters installed every mutant dies and the run reports
+        a silent, entirely fake 100%. Invoke-PSBoundedPester throws rather than returning
+        nothing for that reason.
 
         Importing by PATH is what makes the module version-agnostic in the way the
         manifest promises: whatever Pester >= 5 the consuming repo runs, the mutant

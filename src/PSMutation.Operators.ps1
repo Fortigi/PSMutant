@@ -34,9 +34,9 @@ $script:PSMutationBoundaryMap = @{ '-gt' = '-ge'; '-ge' = '-gt'; '-lt' = '-le'; 
 $script:PSMutationDefaultOperators = @('BinaryOperator', 'BooleanLiteral', 'NumberLiteral', 'NegationRemoval')
 
 function Get-PSMutationKnownOperator {
-    # Every operator name this module understands, sorted. Exposed as a function so the
-    # config validator can name the alternatives without reaching into this file's state
-    # -- the vocabulary lives here, and only here.
+    # Every operator name this module understands, sorted. A function rather than a bare
+    # constant so the config validator can offer the alternatives without reading another
+    # file's $script: state.
     [OutputType([string[]])]
     [CmdletBinding()]
     param()
@@ -46,16 +46,9 @@ function Get-PSMutationKnownOperator {
 function Get-PSMutationOperatorList {
     # Which mutation operators to apply; unset means the default set above.
     #
-    # Note the truthiness test is deliberate and matches the behaviour this replaced:
-    # an EMPTY operators list falls back to the defaults rather than selecting none.
-    # Arguably an explicit [] should mean "none", but that is a behaviour change, not
-    # a refactor, so it is left alone here.
-    #
-    # Config resolution normally lives in PSMutation.Config.ps1, and this is the one
-    # exception: Get-PSMutationCandidate is EXPORTED with $script:PSMutationDefaultOperators
-    # as its -Operators default, so that constant cannot move without breaking the public
-    # promise -- and a constant read from another file leaves neither file readable on its
-    # own (#38). The resolver comes to the default rather than the other way round.
+    # The truthiness test is deliberate: an EMPTY operators list falls back to the
+    # defaults rather than selecting none. Arguably an explicit [] should mean "none",
+    # but that is a behaviour change rather than a resolver detail.
     [OutputType([string[]])]
     [CmdletBinding()]
     param($Cfg)
@@ -85,13 +78,13 @@ $script:PSMutationDescriptionLength = 120
 function New-PSMutationCandidate {
     # Build one candidate object. Central so every operator emits the same shape.
     #
-    # The description is DERIVED here rather than passed in. Four operators used to supply
-    # their own and three of those said nothing about what was mutated -- 'remove negation',
-    # 'return value -> $null', "string -> ''" -- so every such mutant on a line produced an
-    # identical `File:Line:Description` equivalence key. One honest declaration then excluded
-    # all of them silently, and stale-detection could not notice because the key still matched
-    # something (#28). Deriving makes that impossible for a NEW operator too, which the old
-    # arrangement left entirely to whoever wrote the call.
+    # The description is DERIVED here rather than passed in, so no operator can supply one
+    # that fails to say what was mutated -- 'remove negation', 'return value -> $null',
+    # "string -> ''". A description like those makes every such mutant on a line produce an
+    # identical `File:Line:Description` equivalence key, so one honest declaration excludes
+    # all of them silently while stale-detection stays quiet, the key still matching
+    # something. Deriving centrally makes that impossible for a NEW operator too; taking it
+    # as a parameter would leave it to whoever writes the call.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Pure factory: returns an object, changes no system state.')]
     [OutputType([pscustomobject])]
@@ -132,7 +125,7 @@ function Get-PSMutationFunctionRange {
     # Exists so an equivalence declaration can be addressed by the function it is in
     # rather than by a line number. A line moves whenever anything above it is edited --
     # a comment, an import, another function entirely -- and the declaration then goes
-    # stale although the mutant it argues about has not changed at all (#3).
+    # stale although the mutant it argues about has not changed at all.
     [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Ast)
@@ -158,8 +151,8 @@ function Get-PSMutationEnclosingFunction {
     foreach ($r in $Ranges) {
         # LAST containing range wins, and that is the innermost one: FindAll returns
         # functions in document order, and a nested function always appears after the
-        # function enclosing it. Pinned by a test, because it is an ordering invariant and
-        # this repo has been bitten by leaning on one silently (#59).
+        # function enclosing it. Pinned by a test, because an unpinned ordering invariant
+        # is exactly what a refactor breaks without failing anything.
         #
         # The obvious alternative -- track the smallest containing range -- was written
         # first and removed: containing ranges are strictly nested, so their sizes are never
@@ -186,9 +179,9 @@ function Get-PSMutationSwapCandidate {
     # up in a map, emit the replacement. Shared body, so the two callers below cannot
     # drift.
     #
-    # They were the same twelve lines twice, differing only in map and operator name
-    # (#38) -- which meant the loop-condition guard, the ErrorPosition trick and the
-    # lowercasing all had to be maintained in both, or silently fixed in one.
+    # Written out per caller instead, the loop-condition guard, the ErrorPosition trick
+    # and the lowercasing would each have to be maintained in both copies -- or fixed in
+    # one and left broken in the other.
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param(
@@ -349,9 +342,15 @@ function Get-PSMutationCandidate {
     <#
     .SYNOPSIS
         Parse a script and return every mutation candidate for the enabled operators.
+    .PARAMETER Path
+        The file to parse. One file per call: mutant ids are numbered within a file, so
+        the caller iterates the mutate set rather than passing it here.
+
     .PARAMETER Operators
         Operator classes to emit. Defaults to the high-signal set (StringLiteral off --
-        it's high-volume / low-signal; opt in explicitly).
+        it's high-volume / low-signal; opt in explicitly). An unknown name is an error,
+        not an empty result: a misspelling in a config would otherwise silently restore
+        the vacuous score the opt-in operators exist to prevent.
     #>
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
@@ -374,40 +373,34 @@ function Get-PSMutationCandidate {
     $out = [System.Collections.Generic.List[object]]::new()
     foreach ($op in $Operators) {
         $fn = $script:PSMutationOperatorMap[$op]
-        # Throw rather than skip. An unknown name used to be silently dropped, so a repo
-        # that opted into ConditionForcing and misspelled it got its old vacuous score
-        # back and concluded the operator found nothing in their code (#24). A caller
-        # asking for an operator that does not exist has a broken config, not an empty
-        # result.
+        # Throw rather than skip. Dropped silently, a repo that opts into ConditionForcing
+        # and misspells it gets its old vacuous score back and concludes the operator found
+        # nothing in their code. A caller asking for an operator that does not exist has a
+        # broken config, not an empty result.
         if (-not $fn) {
             throw "Unknown mutation operator '$op'. Valid operators: $((Get-PSMutationKnownOperator) -join ', ')."
         }
         & $fn -Ast $ast -File $Path -Ranges $ranges | ForEach-Object { $out.Add($_) }
     }
 
-    # Canonical order BEFORE numbering, not walk order. Ids used to come from the order
-    # the operator list happened to be written in, so swapping two entries in a config's
-    # `operators` array renumbered every mutant -- while the report records that array
-    # SORTED, so the recheck compatibility gate saw no change and matched survivors by id
-    # against a different set (#29). A formatter or an alphabetising editor plugin does
-    # that unprompted.
+    # Canonical order BEFORE numbering, not walk order. Taking ids from the order the
+    # operator list happens to be written in means swapping two entries in a config's
+    # `operators` array renumbers every mutant -- while the report records that array
+    # SORTED, so the recheck compatibility gate sees no change and matches survivors by id
+    # against a different set. A formatter or an alphabetising editor plugin does that
+    # unprompted.
     #
     # Description is part of the key because (StartOffset, Operator) is not unique:
     # ConditionForcing emits both the $true and the $false forcing at one extent.
-    # Typed, not @()-wrapped: @(...) infers System.Object[], which does not match the
-    # declared [pscustomobject[]] and trips PSUseOutputTypeCorrectly -- an Information rule
-    # the lint gate's -Severity filter hides but code scanning reports. The cast is free,
-    # every element is already a pscustomobject, and it makes the declaration true rather
-    # than widening it to cover a vaguer type.
-    # The cast is on the EXPRESSION, and @() stays inside it. Both halves matter: without
-    # the @() an empty candidate set casts to $null instead of an empty array, and with the
-    # cast on the variable rather than the expression the analyzer still infers
-    # System.Object[] and reports PSUseOutputTypeCorrectly against the declared type.
+    # Cast on the EXPRESSION with @() inside it, and both halves matter: drop the @() and
+    # an empty candidate set casts to $null instead of an empty array; move the cast to the
+    # variable and the analyzer still infers System.Object[], reporting
+    # PSUseOutputTypeCorrectly against the declared [pscustomobject[]].
     $ordered = [pscustomobject[]]@($out | Sort-Object -Property StartOffset, Operator, Description)
 
     # Numbering happens here, over the UNFILTERED set, and Select-PSMutationCandidate
     # applies the covered-lines filter afterwards. That order is load-bearing rather than
-    # incidental (#59): ids assigned over the whole set survive a coverage change, which is
+    # incidental: ids assigned over the whole set survive a coverage change, which is
     # exactly what a recheck needs, because writing the assertions that kill survivors is
     # the very thing that widens coverage. The compatibility gate deliberately does not
     # inspect coverage, and it does not have to while this holds.

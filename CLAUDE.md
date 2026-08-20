@@ -266,6 +266,29 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   tree` tells you why the line cannot be simplified. `# set the output path` would not.
   This applies to `src/`, to tests, and to every reason string in
   `psmutant.self.config.json`.
+
+  **Present tense, and no issue numbers.** A comment in `src/` states the failure that
+  would happen *if the line were written differently* -- not the story of how the code
+  reached its current shape. "Four operators used to supply their own description, and
+  three of those said nothing about what was mutated (#28)" and "the same twelve lines
+  twice (#38)" are archaeology: the reader is here to change this file, not to learn what
+  it looked like before. Say what breaks if they change it. `#NN` is worse than useless
+  in a shipped module -- a consumer reading `Get-Help` or the source has no access to
+  this repo's issue tracker, and the number decays into a token nobody can resolve.
+
+  The same goes for **why a file exists**, or why a function sits in one file rather than
+  another. That is a fact about the repo's architecture, so it belongs here in CLAUDE.md,
+  where someone deciding where to put new code will look. A file docstring says what the
+  file contains and which contracts it must not widen.
+
+  These rules are why the two practices below read as they do: they govern **this file**
+  and the reason strings in `psmutant.self.config.json`, which are arguments addressed to
+  a maintainer, not documentation shipped to a consumer.
+
+  The sweep that established this also found two comments that had gone *stale* -- one
+  claiming `Get-PSMutationCandidate` was exported, one claiming the lint gate filtered by
+  severity, both true when written and both false for months. History narration ages badly
+  in exactly this way, which is the second reason not to write it.
 - **A corrected reason says what it used to claim.** When a stated reason turns out to be
   wrong, the replacement records the old claim and why it was wrong rather than quietly
   overwriting it. The sandbox exclusion in `psmutant.self.config.json` has been through
@@ -514,6 +537,13 @@ Traps that have bitten in this repo specifically:
   `Should -Match ([regex]::Escape(...))`.
 - A property getter that throws yields `$null` in PowerShell rather than raising, so a
   `try/catch` around it never runs. Test the value, not the exception.
+- **A `<# #>` block immediately before `function` becomes that function's help.** So a
+  file header written that way SHADOWS the comment-based help inside the body, and
+  `Get-Help` serves the file's architecture notes instead of the documentation written for
+  users -- synopsis, parameters and examples all. Nothing in the source looks wrong, and
+  the source is not wrong; only the resolution is. File headers in `src/` are `#` line
+  comments for that reason, and `tests/EndToEnd.Tests.ps1` asserts the public help resolves
+  to the real thing.
 - **Pester 6 removed mock fall-through.** A call that matches none of your
   `-ParameterFilter` mocks no longer runs the real command — it throws. Any command
   mocked with a filter needs either a default mock or a filter for every shape of call
