@@ -92,7 +92,7 @@ function Invoke-PSMutation {
         if ($RecheckFrom) {
             return Invoke-PSMutationRecheckRun -RecheckFrom $RecheckFrom -Candidates $cands -Plan $t `
                 -SourceHashes $hashes -Operators $ops -TimeoutSeconds $timeout -SandboxRoot $sandbox `
-                -ReportPath $reportPath -Quiet:$Quiet
+                -ReportPath $reportPath -Equivalents $cfg.equivalents -Quiet:$Quiet
         }
 
         if (-not $Quiet) { Write-Host "  Mutants to evaluate: $($cands.Count)`n" -ForegroundColor Gray }

@@ -102,12 +102,22 @@ function Select-PSMutationRecheckCandidate {
     param(
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
         [Parameter(Mandatory)] $Report,
-        [Parameter(Mandatory)] [string]$SandboxRoot
+        [Parameter(Mandatory)] [string]$SandboxRoot,
+        $Equivalents
     )
     # A set, not a hashtable-with-dummy-values: the value stored against each key was
     # never read (ContainsKey ignores it), so it was noise that looked like data.
     $wanted = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
-    foreach ($s in @($Report.survivors)) { [void]$wanted.Add("$($s.File)|$($s.Id)") }
+    # Declared equivalents are skipped (#14). They appear in `survivors` legitimately --
+    # they survived, they were merely excluded from the denominator -- but the config
+    # states in writing that no test can kill them, so re-running one is guaranteed-wasted
+    # work. In the case that prompted this it was 16 of 20 mutants, and the waste grows
+    # exactly as a repo gets more disciplined about declaring.
+    $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
+    foreach ($s in @($Report.survivors)) {
+        if (Get-PSMutationDeclaredKey -Result $s -Declared $declared) { continue }
+        [void]$wanted.Add("$($s.File)|$($s.Id)")
+    }
     $out = [System.Collections.Generic.List[object]]::new()
     foreach ($c in $Candidates) {
         $key = "$(ConvertFrom-PSMutationSandboxPath -Path $c.File -SandboxRoot $SandboxRoot)|$($c.Id)"
@@ -119,12 +129,19 @@ function Select-PSMutationRecheckCandidate {
 function Get-PSMutationRecheckReportPath {
     # Sibling of the full report, never the same file -- a partial run must not be
     # able to overwrite the baseline it was derived from.
+    #
+    # Idempotent, because a recheck can now seed another recheck (#20): without this the
+    # third round would write `report.recheck.recheck.json` and the fourth would add
+    # another. Each round overwrites the previous recheck instead. The protection that
+    # matters is that the FULL report is never touched, and that is unaffected -- the
+    # rounds are a scratch pad, and the report worth keeping is the one CI reads.
     [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string]$ReportPath)
     $dir  = Split-Path $ReportPath -Parent
     $name = [System.IO.Path]::GetFileNameWithoutExtension($ReportPath)
     $ext  = [System.IO.Path]::GetExtension($ReportPath)
+    if ($name.EndsWith('.recheck')) { return (Join-Path $dir "$name$ext") }
     return (Join-Path $dir "$name.recheck$ext")
 }
 
@@ -137,7 +154,11 @@ function Write-PSMutationRecheckReport {
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
         [Parameter(Mandatory)] [string]$ReportPath,
         [Parameter(Mandatory)] [int]$PriorSurvivorCount,
-        [string]$SourceReportPath
+        [string]$SourceReportPath,
+        # Copied from the report this chained off, so the next round can validate against
+        # them exactly as it would against a full report (#20).
+        [hashtable]$SourceHashes,
+        [AllowEmptyCollection()] [string[]]$Operators = @()
     )
     $killed = @($Results | Where-Object Status -eq 'Killed').Count
     New-Item -ItemType Directory -Path (Split-Path $ReportPath -Parent) -Force | Out-Null
@@ -149,7 +170,17 @@ function Write-PSMutationRecheckReport {
         priorSurvivors     = $PriorSurvivorCount
         rechecked          = $Results.Count
         nowKilled          = $killed
-        stillSurviving     = @($Results | Where-Object Status -eq 'Survived')
+        # `survivors`, not `stillSurviving`. The name is what Select-PSMutationRecheckCandidate
+        # reads, and a recheck report having a differently-named list is why one could not seed
+        # another: carrying the hashes forward alone would have made the gate ACCEPT the report
+        # and then select nothing, reporting "0 of 0 previous survivor(s) now killed" -- a
+        # confident, wrong "you are done" (#20).
+        survivors          = @($Results | Where-Object Status -eq 'Survived')
+        # The two things Test-PSMutationRecheckCompatible needs. Copied from the report this
+        # round chained off, not recomputed: they describe the source these mutant ids were
+        # numbered against, which is exactly the claim the next round has to check.
+        sourceHashes       = $SourceHashes
+        operators          = @($Operators | Sort-Object)
         mutants            = $Results
     } | ConvertTo-Json -Depth 6 | Set-Content $ReportPath
     return [pscustomobject]@{
@@ -197,6 +228,8 @@ function Invoke-PSMutationRecheckRun {
         [Parameter(Mandatory)] [int]$TimeoutSeconds,
         [Parameter(Mandatory)] [string]$SandboxRoot,
         [Parameter(Mandatory)] [string]$ReportPath,
+        # Needed to skip declared equivalents when choosing what to re-run (#14).
+        $Equivalents,
         [switch]$Quiet
     )
     $prior = Get-Content $RecheckFrom -Raw | ConvertFrom-Json
@@ -207,14 +240,19 @@ function Invoke-PSMutationRecheckRun {
     if ($why.Count -gt 0) {
         throw ("Cannot recheck against '$RecheckFrom': " + ($why -join '; ') + '. Run the full set to regenerate the report.')
     }
-    $targets = Select-PSMutationRecheckCandidate -Candidates $Candidates -Report $prior -SandboxRoot $SandboxRoot
+    $targets = Select-PSMutationRecheckCandidate -Candidates $Candidates -Report $prior -SandboxRoot $SandboxRoot -Equivalents $Equivalents
     if (-not $Quiet) { Write-Host "  Rechecking $($targets.Count) previous survivor(s)`n" -ForegroundColor Gray }
 
     $results = Invoke-PSMutationLoop -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
         -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -Quiet:$Quiet
     $recheckPath = Get-PSMutationRecheckReportPath -ReportPath $ReportPath
+    # The prior report's own hashes and operator set travel with the new one, so the next
+    # round can validate against them. Recomputing here would describe the CURRENT source
+    # rather than the source these ids were numbered against, which is the opposite of what
+    # the gate needs to check.
     $summary = Write-PSMutationRecheckReport -Results $results -ReportPath $recheckPath `
-        -PriorSurvivorCount @($prior.survivors).Count -SourceReportPath $RecheckFrom
+        -PriorSurvivorCount @($prior.survivors).Count -SourceReportPath $RecheckFrom `
+        -SourceHashes $SourceHashes -Operators $Operators
     if (-not $Quiet) { Show-PSMutationRecheckSummary -Summary $summary -Results $results -ReportPath $recheckPath }
     return $summary
 }
