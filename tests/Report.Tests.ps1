@@ -334,7 +334,8 @@ Describe 'the contract a consumer actually depends on' {
             Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
             (Get-Content $out -Raw | ConvertFrom-Json).PSObject.Properties.Name |
                 Should-BeCollection @(
-                    'generatedFrom', 'mutationScore', 'total', 'killed', 'survived',
+                    'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
+                    'mutationScore', 'total', 'killed', 'survived',
                     'declaredEquivalent', 'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
         }
@@ -459,5 +460,86 @@ Describe 'Get-PSMutationEquivalentKey and Get-PSMutationDeclaredKey' {
 
     It 'returns nothing when no declaration covers the mutant' {
         Should-BeNull -Actual (Get-PSMutationDeclaredKey -Result $script:inFn -Declared @{ 'other:1:x -> y' = 'why' })
+    }
+}
+
+Describe 'New-PSMutationProvenance' {
+    BeforeAll {
+        $script:prov = New-PSMutationProvenance -ModuleVersion '1.2.3' `
+            -GeneratedAt ([datetime]::new(2026, 8, 20, 14, 5, 9, [DateTimeKind]::Utc)) `
+            -BaselineSeconds 12.44 -TotalSeconds 354.06 -PerMutantTimeoutSeconds 50
+    }
+
+    It 'stamps the schema version so a reader can branch on a number' {
+        # The point of the field: #20 had to reconcile two report shapes by hand, and #4
+        # will have to tell a merged report from a plain one. Sniffing for keys is what a
+        # version number exists to replace.
+        $script:prov.schemaVersion | Should-Be 1
+    }
+
+    It 'attributes the report to a module build' {
+        $script:prov.producedBy.module  | Should-Be 'PSMutant'
+        $script:prov.producedBy.version | Should-Be '1.2.3'
+    }
+
+    It 'writes the timestamp as sortable UTC' {
+        # Round-trippable as text and comparable between machines without knowing where
+        # either ran -- a local-time stamp is neither.
+        $script:prov.generatedAt | Should-Be '2026-08-20T14:05:09Z'
+    }
+
+    It 'converts a local timestamp to UTC rather than recording the wall clock' {
+        # The discriminating case: a naive implementation formats whatever it was handed.
+        $local = [datetime]::new(2026, 8, 20, 14, 5, 9, [DateTimeKind]::Utc).ToLocalTime()
+        (New-PSMutationProvenance -GeneratedAt $local).generatedAt | Should-Be '2026-08-20T14:05:09Z'
+    }
+
+    It 'records the durations #1 and #7 need to be judged by' {
+        # #1 is a large change to the runner justified entirely by speed, and today the only
+        # way to evaluate it is timing two runs by hand. #7 is invisible as a trend without
+        # the timeout recorded next to the baseline it was derived from.
+        $script:prov.durations.baselineSeconds         | Should-Be 12.4
+        $script:prov.durations.totalSeconds            | Should-Be 354.1
+        $script:prov.durations.perMutantTimeoutSeconds | Should-Be 50
+    }
+
+    It 'rounds seconds to one decimal but leaves the timeout whole' {
+        # Sub-decisecond precision is noise in a wall-clock measurement, and a whole-second
+        # timeout printed as 50.0 reads as though it were a measurement too.
+        $p = New-PSMutationProvenance -BaselineSeconds 1.2345 -TotalSeconds 9.8765 -PerMutantTimeoutSeconds 15
+        $p.durations.baselineSeconds         | Should-Be 1.2
+        $p.durations.totalSeconds            | Should-Be 9.9
+        $p.durations.perMutantTimeoutSeconds | Should-Be 15
+    }
+}
+
+Describe 'the provenance a report carries' {
+    It 'writes the block into a full report' {
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-prov-$PID/report.json"
+        try {
+            $prov = New-PSMutationProvenance -ModuleVersion '9.9.9' -BaselineSeconds 1 -TotalSeconds 2 -PerMutantTimeoutSeconds 15
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Provenance $prov | Out-Null
+            $json = Get-Content $out -Raw | ConvertFrom-Json
+            $json.schemaVersion            | Should-Be 1
+            $json.producedBy.version       | Should-Be '9.9.9'
+            $json.durations.totalSeconds   | Should-Be 2
+            # Asserted against the FILE, not the parsed object: ConvertFrom-Json recognises
+            # an ISO-8601 string and hands back a [datetime], so a PowerShell reader never
+            # sees the text. The file is the contract -- other languages read a string --
+            # so that is what has to be pinned.
+            [System.IO.File]::ReadAllText($out) | Should-MatchString '"generatedAt": "\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}Z"'
+        }
+        finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'still writes a report when no provenance is supplied' {
+        # The parameter is optional so a caller that has not been updated -- or a test --
+        # gets a report rather than an error. The fields are simply absent.
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-noprov-$PID/report.json"
+        try {
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+            (Get-Content $out -Raw | ConvertFrom-Json).mutationScore | Should-Be 66.7
+        }
+        finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

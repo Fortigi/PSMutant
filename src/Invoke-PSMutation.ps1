@@ -72,6 +72,9 @@ function Invoke-PSMutation {
         [switch]$Quiet
     )
 
+    # Started before anything else so `totalSeconds` covers what a user actually waits for,
+    # sandbox setup and baseline included, rather than only the mutation loop.
+    $runClock = [System.Diagnostics.Stopwatch]::StartNew()
     $root = (Resolve-Path $SourceRoot).Path
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
     Assert-PSMutationConfig -Cfg $cfg
@@ -94,17 +97,28 @@ function Invoke-PSMutation {
         $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $sandbox
         $reportPath = Join-Path $root $cfg.reportPath
 
+        # Gathered here, in the wiring, because the two impure inputs -- the clock and the
+        # loaded module -- are what would make New-PSMutationProvenance untestable. It stays
+        # pure and is handed values.
+        $provenance = {
+            New-PSMutationProvenance -ModuleVersion (Get-Module PSMutant).Version `
+                -BaselineSeconds $baseline.DurationSeconds -PerMutantTimeoutSeconds $timeout `
+                -TotalSeconds $runClock.Elapsed.TotalSeconds
+        }
+
         if ($RecheckFrom) {
             return Invoke-PSMutationRecheckRun -RecheckFrom $RecheckFrom -Candidates $cands -Plan $t `
                 -SourceHashes $hashes -Operators $ops -TimeoutSeconds $timeout -SandboxRoot $sandbox `
-                -ReportPath $reportPath -Equivalents $cfg.equivalents -Quiet:$Quiet
+                -ReportPath $reportPath -Equivalents $cfg.equivalents -Provenance $provenance -Quiet:$Quiet
         }
 
         if (-not $Quiet) { Write-Host "  Mutants to evaluate: $($cands.Count)`n" -ForegroundColor Gray }
 
         $results = Invoke-PSMutationLoop -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests -TimeoutSeconds $timeout -SandboxRoot $sandbox -Quiet:$Quiet
+        # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
+        # totalSeconds records how long the run took to start rather than to finish.
         $summary = Write-PSMutationReport -Results $results -ReportPath $reportPath -Thresholds $cfg.thresholds `
-            -SourceHashes $hashes -Operators $ops -Equivalents $cfg.equivalents
+            -SourceHashes $hashes -Operators $ops -Equivalents $cfg.equivalents -Provenance (& $provenance)
         $band = Get-PSMutationScoreBand -Cfg $cfg
         if (-not $Quiet) { Show-PSMutationSummary -Summary $summary -Results $results -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents }
 
