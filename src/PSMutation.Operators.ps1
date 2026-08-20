@@ -104,7 +104,10 @@ function New-PSMutationCandidate {
         $description = $description.Substring(0, $script:PSMutationDescriptionLength) + '...'
     }
     return [pscustomobject]@{
-        Id = 0; File = $File; Line = $Extent.StartLineNumber
+        # Id and Function are both filled in by Get-PSMutationCandidate, which is the only
+        # place that has the whole file's context. The sentinels are deliberate: 0 is
+        # outside the real id range, and '' means "file scope", which is a real answer.
+        Id = 0; Function = ''; File = $File; Line = $Extent.StartLineNumber
         StartOffset = $Extent.StartOffset; EndOffset = $Extent.EndOffset
         Original = $Original; Mutated = $Mutated; Operator = $Operator; Description = $description
     }
@@ -121,6 +124,50 @@ function Get-PSMutationLoopRange {
     return , @($loops | Where-Object { $_.Condition } | ForEach-Object {
         [pscustomobject]@{ Start = $_.Condition.Extent.StartOffset; End = $_.Condition.Extent.EndOffset }
     })
+}
+
+function Get-PSMutationFunctionRange {
+    # Name and offset range of every function in the file, innermost last.
+    #
+    # Exists so an equivalence declaration can be addressed by the function it is in
+    # rather than by a line number. A line moves whenever anything above it is edited --
+    # a comment, an import, another function entirely -- and the declaration then goes
+    # stale although the mutant it argues about has not changed at all (#3).
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Ast)
+    $fns = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+    # Comma operator so an empty result stays an [array] through the return, exactly as
+    # Get-PSMutationLoopRange does and for the same reason.
+    return , @($fns | ForEach-Object {
+        [pscustomobject]@{ Name = $_.Name; Start = $_.Extent.StartOffset; End = $_.Extent.EndOffset }
+    })
+}
+
+function Get-PSMutationEnclosingFunction {
+    # The innermost function containing an offset, or '' when there is none.
+    #
+    # Innermost, because a nested function is the more specific answer and the one a
+    # reader would name. Empty for code at file scope -- a module's top-level statements
+    # are mutable too, and they have no function to be addressed by, so those keep
+    # falling back to the line number.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$Offset, [object[]]$Ranges = @())
+    $best = ''
+    foreach ($r in $Ranges) {
+        # LAST containing range wins, and that is the innermost one: FindAll returns
+        # functions in document order, and a nested function always appears after the
+        # function enclosing it. Pinned by a test, because it is an ordering invariant and
+        # this repo has been bitten by leaning on one silently (#59).
+        #
+        # The obvious alternative -- track the smallest containing range -- was written
+        # first and removed: containing ranges are strictly nested, so their sizes are never
+        # equal, which makes `-lt` versus `-le` on that comparison a mutant nothing can ever
+        # kill. Fewer comparisons, all of them reachable.
+        if ($Offset -ge $r.Start -and $Offset -lt $r.End) { $best = $r.Name }
+    }
+    return $best
 }
 
 function Test-PSMutationInLoop {
@@ -368,8 +415,12 @@ function Get-PSMutationCandidate {
     # So do NOT "optimise" this by filtering first, or by moving the numbering into
     # Select-PSMutationCandidate. That reads like an obvious improvement and silently makes
     # a recheck answer confidently about the wrong mutants.
+    $functions = Get-PSMutationFunctionRange -Ast $ast
     $i = 0
-    foreach ($c in $ordered) { $c.Id = ++$i }
+    foreach ($c in $ordered) {
+        $c.Id = ++$i
+        $c.Function = Get-PSMutationEnclosingFunction -Offset $c.StartOffset -Ranges $functions
+    }
     # NO comma-wrap here: this result is piped directly (Select-PSMutationCandidate),
     # and `, $array` would enter the pipeline as ONE item, so Where-Object would run
     # once against the whole array. Emit enumerated; callers that need an array wrap @().
