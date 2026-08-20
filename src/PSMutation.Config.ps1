@@ -4,41 +4,24 @@
     do we do when they didn't say" decisions.
 
 .DESCRIPTION
-    These used to be inline in Invoke-PSMutation, between the baseline call and the
-    mutation loop. Out here they are ordinary pure functions: a config object in, a
-    value out, no side effects and nothing to sandbox, so each is worth unit-testing
-    and self-mutating on its own terms.
+    A config object in, a value out: pure, no side effects, nothing to sandbox.
 
-    NOTE: this docstring used to say they had to be pulled out because a nested Pester
-    run destroys the outer run's coverage breakpoints, and that Invoke-PSMutation's own
-    body therefore could not be measured. The tracer teardown was real, but the fix was
-    CodeCoverage.UseBreakpoints, not this file: the orchestrator measures at 100% and is
-    self-mutated. Isolating decisions is still the right reason to keep them here.
-
-    Defaults live here rather than at the call site so there is exactly one place to
-    read for "what happens if the config omits this". The one default that cannot is
-    the operator set: Get-PSMutationCandidate is EXPORTED and its -Operators default is
-    part of the public promise, so that default and the resolver that falls back to it
-    both live in PSMutation.Operators.ps1 instead.
-
-    This file holds resolvers only. A run guard and the public result shape used to sit
-    here too, neither of which the synopsis above described (#45); they now live beside
-    the baseline they judge and the report contract they belong to.
+    Every documented default is resolved here, so this is the one place to read for
+    "what happens if the config omits this" -- the operator set excepted, which resolves
+    in PSMutation.Operators.ps1 beside the vocabulary it names.
 #>
 
 # Default subtrees copied into the sandbox when the config does not name any. A neutral
 # module convention; a consuming repo overrides it with `sandboxSubtrees`.
 #
-# It lives here, next to its only reader, rather than in PSMutation.Sandbox.ps1 where it
-# used to. The sandbox is mechanism and should be told what to copy rather than hold an
-# opinion about the repo's layout -- and a constant one file writes while another reads
-# leaves neither file readable on its own (#38).
+# The sandbox takes -Subtrees as a mandatory parameter rather than defaulting: it is
+# mechanism, and holds no opinion about a repo's layout.
 $script:PSMutationDefaultSubtrees = @('src', 'tests')
 
 # Every key the config understands, and every sub-key of `thresholds`. A key absent from
-# these lists resolves to $null and weakens the run in silence -- `thresholds.brake` makes
+# these lists resolves to $null and weakens the run in silence: `thresholds.brake` leaves
 # the break gate unable to fail, and `mutat` for `mutate` surfaces as a denied path inside
-# the sandbox, mentioning neither the config nor the key (#24).
+# the sandbox, a message mentioning neither the config nor the key.
 #
 # Keys starting with `_` are exempt: JSON has no comments, and both the example config and
 # this repo's own use `_comment` / `_operators` / `_timeout` to explain themselves.
@@ -159,12 +142,13 @@ function Assert-PSMutationConfig {
 function Get-PSMutationCoveredLinesOnly {
     # Whether to mutate only the lines the baseline actually executed.
     #
-    # Defaults to TRUE, which is what the README has always promised and what every example
-    # sets. The code used to have no resolver at all -- the orchestrator cast the raw value
-    # inline, and [bool]$null is $false -- so omitting the key silently opted into mutating
-    # uncovered lines, whose mutants are guaranteed survivors. That reports a materially
-    # worse score than the tool is designed to give, and measures coverage rather than test
-    # quality, which is a separate gate (#25).
+    # Defaults to TRUE, which is what the README promises and what every example sets.
+    #
+    # Resolved rather than cast at the call site, because `[bool]$null` is $false: an
+    # omitted key would silently mean "mutate uncovered lines too", and every mutant on an
+    # uncovered line is a guaranteed survivor. That reports a materially worse score than
+    # the tool is designed to give, and measures coverage rather than test quality, which
+    # is a separate gate.
     [OutputType([bool])]
     [CmdletBinding()]
     param($Cfg)
@@ -211,13 +195,13 @@ function Get-PSMutationScoreBand {
     # The bands the console summary colours the score by: at or above High is green, at or
     # above Low is yellow, below Low is red.
     #
-    # Resolved here, with defaults, because the raw config values used to be read straight
-    # into the comparison -- and in PowerShell any number `-ge $null` is $true. So a config
-    # with no thresholds, or the entirely reasonable `{"thresholds":{"break":80}}`, made the
-    # first branch always win and printed EVERY score green, including
-    # `Mutation score: 0%  (0 killed / 42)` in a run that exits 0. That is the smallest
-    # possible instance of the failure this tool exists to prevent, in front of exactly the
-    # person least able to spot it: a new adopter whose thresholds are not tuned yet (#40).
+    # Resolved here, with defaults, because in PowerShell any number `-ge $null` is $true.
+    # Compare a raw config value and a config with no thresholds -- or the entirely
+    # reasonable `{"thresholds":{"break":80}}` -- makes the first branch always win and
+    # prints EVERY score green, `Mutation score: 0%  (0 killed / 42)` included, in a run
+    # that exits 0. The smallest possible instance of the failure this tool exists to
+    # prevent, in front of the person least able to spot it: a new adopter whose thresholds
+    # are not tuned yet.
     #
     # Tested with `$null -ne`, not for truthiness like the resolvers above. A band of 0 is a
     # meaningful setting -- "never colour this red" -- and 0 is falsy, so a truthiness test

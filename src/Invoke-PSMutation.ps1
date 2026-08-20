@@ -1,16 +1,4 @@
-<#
-.SYNOPSIS
-    Public entry point for PSMutant - mutation testing for PowerShell.
-
-.DESCRIPTION
-    One function, and deliberately nothing else: this file is WIRING. Every decision it
-    reaches for lives in a pure unit elsewhere -- guards, resolvers, scoring, the report
-    shape -- so each can be unit-tested and self-mutated on its own terms.
-
-    It used to also hold a Pester guard, a message constant and a second complete
-    orchestrator for the recheck mode, none of which the synopsis above described (#45).
-    A new decision belongs in the file that owns its subject, not here.
-#>
+# Public entry point for PSMutant: wiring, and nothing else.
 
 function Invoke-PSMutation {
     <#
@@ -52,6 +40,16 @@ function Invoke-PSMutation {
         recheck never evaluates those -- so finish with a full run before trusting a
         number or moving a threshold.
 
+    .PARAMETER Quiet
+        Suppress the console output: the banner, the per-mutant progress lines and the
+        closing summary. The JSON report is still written and the result object is still
+        returned, so nothing is lost -- only the narration.
+
+        Worth using in CI, where a build log gains nothing from a line per mutant. Worth
+        leaving OFF interactively, where those lines are the only sign of progress during
+        a run that can take minutes, and survivors appear in yellow as they are found
+        rather than all at the end.
+
     .OUTPUTS
         [pscustomobject] @{ Score; Killed; Survived; Total; ExitCode }, or for
         -RecheckFrom, @{ Mode; PriorSurvivors; Rechecked; NowKilled; StillSurviving }.
@@ -59,9 +57,40 @@ function Invoke-PSMutation {
     .EXAMPLE
         Invoke-PSMutation -ConfigFile ./psmutant.config.json
 
+        A full run. Prints a coloured score, lists the survivors to go and kill, and
+        writes the JSON report named by the config's reportPath.
+
     .EXAMPLE
-        # Write assertions, then re-run just the survivors instead of the whole set.
-        Invoke-PSMutation -ConfigFile ./psmutant.config.json -RecheckFrom ./reports/ps-mutation.json
+        $r = Invoke-PSMutation -ConfigFile ./psmutant.config.json -Quiet
+        if ($r.ExitCode -ne 0) { throw "Mutation score $($r.Score)% is below the threshold" }
+
+        A CI gate. -Quiet drops the per-mutant progress lines, which are worth watching
+        interactively and are noise in a build log. ExitCode is 0 unless thresholds.break
+        is set and unmet, so a config without it is report-only.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json
+
+        Re-run ONLY the mutants the previous report recorded as survivors -- the fast
+        inner loop while you are writing assertions to kill them. Declared equivalents
+        are skipped, since the config already argues no test can kill those.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json
+        Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.recheck.json
+
+        A recheck report seeds the next recheck, so the loop NARROWS: five survivors,
+        kill two, and the second round evaluates three rather than five again. Each round
+        overwrites the same *.recheck.json; the full report is never touched.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -SourceRoot ../other-repo
+
+        Mutate a different repository. Every path in the config is relative to
+        -SourceRoot, which defaults to the current directory.
+
+    .LINK
+        https://github.com/Fortigi/PSMutant
     #>
     [OutputType([pscustomobject])]
     [CmdletBinding()]
