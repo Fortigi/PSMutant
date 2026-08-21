@@ -119,6 +119,69 @@ function Get-PSMutantReleaseSection {
     return $body
 }
 
+function Get-PSMutantBoundedReleaseNotes {
+    <#
+    .SYNOPSIS
+        Pure: release notes cut to fit the gallery's ReleaseNotes limit, with a pointer to
+        the rest.
+
+    .DESCRIPTION
+        The PowerShell Gallery rejects a package whose ReleaseNotes exceed 35000 characters,
+        and it rejects it at the LAST step -- the irreversible one. A 0.3.0 release reached
+        Publish-Module, having passed staging, the package smoke test and every gate, and
+        died on `400 (A package's ReleaseNotes property may not be more than 35000
+        characters long.)`.
+
+        Truncating rather than failing is deliberate. Nothing about the run is weakened by
+        shorter notes: they are gallery-page prose, not a gate. Failing the release instead
+        would pressure whoever writes the changelog to write less, which is the opposite of
+        what this project wants -- and the changelog stays the complete record either way.
+
+        The cut lands on a HEADING boundary, never mid-sentence, so what ships reads as a
+        finished document rather than a truncated one. If no heading fits, it falls back to
+        a blank-line boundary, then to a hard cut -- each fallback is one step worse for the
+        reader and none of them can produce something over the limit.
+
+    .PARAMETER Notes
+        The full section body.
+
+    .PARAMETER Version
+        The version being released, used to point at the tagged changelog.
+
+    .PARAMETER Limit
+        Maximum characters. The gallery's own limit, kept as a parameter so a test can drive
+        the boundary without a 35000-character fixture.
+
+    .OUTPUTS
+        [string] the notes to publish. Never longer than -Limit.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'ReleaseNotes is the name of the manifest field this produces. A singular "ReleaseNote" would name something that does not exist.')]
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Notes,
+        [Parameter(Mandatory)] [string]$Version,
+        [int]$Limit = 35000
+    )
+    if ($Notes.Length -le $Limit) { return $Notes }
+
+    $pointer = "`n`n---`n`nThese notes are abridged. The complete entry for $Version is in " +
+    "CHANGELOG.md: https://github.com/Fortigi/PSMutant/blob/v$Version/CHANGELOG.md`n"
+    $room = $Limit - $pointer.Length
+    $head = $Notes.Substring(0, $room)
+
+    # Prefer a heading boundary, then a paragraph break, then give up and cut. Each candidate
+    # is searched for in the text that already FITS, so every branch returns something short
+    # enough -- there is no arrangement of input that lets an over-long string through.
+    $cut = $head.LastIndexOf("`n## ")
+    if ($cut -lt 1) { $cut = $head.LastIndexOf("`n### ") }
+    if ($cut -lt 1) { $cut = $head.LastIndexOf("`n`n") }
+    if ($cut -lt 1) { $cut = $head.Length }
+
+    return $head.Substring(0, $cut).TrimEnd() + $pointer
+}
+
 function Test-PSMutantUnreleasedEmpty {
     # True when Unreleased holds nothing, or does not exist. Not a failure -- a maintainer
     # may be staging a later change -- but at release time it usually means entries that
@@ -148,7 +211,15 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-Host "::warning::CHANGELOG.md still has entries under Unreleased while releasing $version. If those changes ship in this version, they belong under the $version heading."
     }
 
+    # Bounded HERE, at the point the notes are produced, so the publish workflow cannot be
+    # handed something the gallery will reject. Doing it in the workflow instead would put
+    # the decision back in a YAML snippet, where it is untested and cannot be run by hand.
+    $bounded = Get-PSMutantBoundedReleaseNotes -Notes $notes -Version $version
+    if ($bounded.Length -lt $notes.Length) {
+        Write-Host "::warning::Release notes for $version are $($notes.Length) characters and the gallery accepts 35000. Publishing an abridged $($bounded.Length) with a link to the full CHANGELOG entry."
+    }
+
     # Emitted so the publish workflow can put them on the staged manifest, instead of anyone
     # maintaining a second copy of the same prose by hand.
-    $notes
+    $bounded
 }
