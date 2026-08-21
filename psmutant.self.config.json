@@ -1,5 +1,5 @@
 {
-  "$schema": "./schemas/config.schema.json",
+  "$schema": "./schemas/v1/config.schema.json",
   "_comment": "PSMutant tested against ITSELF (dogfooding). Every source file is mutated except src/PSMutation.Sandbox.ps1, and that one exclusion is structural rather than a gap: its covering suite tests/Sandbox.Tests.ps1 calls Clear-PSMutationStaleSandbox for real, a self-mutation baseline runs IN-PROCESS so it shares $PID with the sandbox the run is executing from, and the sweep treats its own process id as reclaimable -- so naming that suite anywhere here deletes the live run's sandbox mid-baseline and turns the run red before a single mutant is tried. Its behaviour is pinned by the normal suite at 100% line coverage instead. NOTE: this exclusion previously cited a 'shared sandbox' (issue #2, since fixed) and then 'real temp side-effects', neither of which was the actual blocker. Run: Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .",
   "_sandboxSubtreesComment": "schemas/ is copied because the module READS it at run time now: the config schema is the config format, and a sandboxed copy of src/ that cannot find it refuses every config, turning the baseline red before a mutant is tried.",
   "sandboxSubtrees": [

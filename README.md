@@ -168,13 +168,13 @@ refused rather than guessed at.
 
 ## Config reference
 
-The format is defined by **[`schemas/config.schema.json`](schemas/config.schema.json)**, which
+The format is defined by **[`schemas/v1/config.schema.json`](schemas/v1/config.schema.json)**, which
 ships with the module. Naming it in the config makes the file self-describing -- a mistake
 surfaces while you are writing the config, rather than several minutes into a run:
 
 ```json
 {
-  "$schema": "https://raw.githubusercontent.com/Fortigi/PSMutant/main/schemas/config.schema.json",
+  "$schema": "https://raw.githubusercontent.com/Fortigi/PSMutant/main/schemas/v1/config.schema.json",
   "mutate": ["src/MyModule.ps1"],
   "tests": { "src/MyModule.ps1": ["tests/MyModule.Tests.ps1"] }
 }
@@ -231,13 +231,13 @@ crosses.
 Reports also record `operators` and a `sourceHashes` map (SHA256 per mutated file). Those
 exist so `-RecheckFrom` can prove the mutant ids in a report still refer to the same code.
 
-The report format is defined by **[`schemas/report.schema.json`](schemas/report.schema.json)**,
+The report format is defined by **[`schemas/v1/report.schema.json`](schemas/v1/report.schema.json)**,
 which ships with the module, so a dashboard or a ratchet can validate a report without
 reading this repo's tests:
 
 ```powershell
 Test-Json -Json (Get-Content ./reports/ps-mutation.json -Raw) `
-          -Schema (Get-Content ./schemas/report.schema.json -Raw)
+          -Schema (Get-Content ./schemas/v1/report.schema.json -Raw)
 ```
 
 It covers both shapes — a full run, and the partial run `-RecheckFrom` writes, identified by

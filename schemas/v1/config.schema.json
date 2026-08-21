@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/Fortigi/PSMutant/main/schemas/config.schema.json",
+  "$id": "https://raw.githubusercontent.com/Fortigi/PSMutant/main/schemas/v1/config.schema.json",
   "title": "PSMutant configuration",
   "description": "The configuration format for PSMutant: every key Invoke-PSMutation -ConfigFile understands, what it means, and what it must hold. This is the definition a config is written against. Add a \"$schema\" key pointing here and the config becomes self-describing -- it can be checked before a run rather than several minutes into one, and the descriptions below are the reference without leaving the file. The module checks the same format again when it runs, so nothing depends on the config having been checked first, and because two things here cannot be expressed in a schema: the operator names come from the operator map itself rather than a copied list, and a misspelled key is answered with the nearest valid name instead of 'property not allowed'. The two are kept in step by a test, not by discipline.",
   "type": "object",

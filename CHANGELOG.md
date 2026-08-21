@@ -155,12 +155,12 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### Added
 - **The config format and the report format are published as JSON Schemas** ([#84]).
-  `schemas/config.schema.json` defines every key `-ConfigFile` understands, what it means and
+  `schemas/v1/config.schema.json` defines every key `-ConfigFile` understands, what it means and
   what it must hold -- the definition a PSMutant config is written against. Name it with a
   `"$schema"` key and the config becomes self-describing, so a mistake surfaces while it is
   being written rather than several minutes into a run.
 
-  `schemas/report.schema.json` defines the report format, covering both shapes: a full run,
+  `schemas/v1/report.schema.json` defines the report format, covering both shapes: a full run,
   and the partial run `-RecheckFrom` writes. Anything reading a report -- a dashboard, a
   ratchet, a merge tool -- can now validate one without reading this repo's tests, which
   were the only description of the format that existed, and were three hand-maintained lists
@@ -226,7 +226,7 @@ All notable changes to PSMutant are documented here. Format follows
   checking -- any non-empty string is `$true`.
 
   **The schema does the checking**, rather than a second table of types written in
-  PowerShell. The module reads `schemas/config.schema.json` at run time -- key names,
+  PowerShell. The module reads `schemas/v1/config.schema.json` at run time -- key names,
   threshold sub-keys and every type come out of it -- so adding a config key means editing
   one file, not four. An explicit `null` is never a fault, because absence is meaningful:
   `thresholds.break` unset means report-only.

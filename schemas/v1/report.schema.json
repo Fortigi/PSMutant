@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/Fortigi/PSMutant/main/schemas/report.schema.json",
+  "$id": "https://raw.githubusercontent.com/Fortigi/PSMutant/main/schemas/v1/report.schema.json",
   "title": "PSMutant report",
   "description": "The report JSON written by Invoke-PSMutation. Together with the object the command returns, this file is the module's entire public contract. Two shapes share it: a full run, and the partial run produced by -RecheckFrom, which is identified by a 'mode' of 'Recheck' and deliberately carries NO score. Additional properties are permitted on purpose: schemaVersion changes when a field changes meaning or disappears, never when one is added, so a reader validating against this schema keeps working when a later version records more.",
   "type": "object",
