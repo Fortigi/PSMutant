@@ -5,7 +5,75 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.1] - 2026-08-21
+
+### For consumers
+
+**Breaking: the module now exports one function.** `Invoke-PSMutation` is the whole surface.
+If you called `Get-PSMutationCandidate` or `Set-PSMutationText`, they are gone -- they were
+never documented, and the object they returned was never a declared contract. What you should
+depend on instead is the report JSON, which now has a published schema.
+
+**Your config is checked more strictly, and mistakes are errors rather than silence.** A
+misspelled key used to be ignored, which quietly weakened the run: `thresholds.brake` left the
+break gate unable to fail at all, and a misspelled operator was dropped and then reported as
+though it had run. A value of the wrong type did the same -- `"timeoutFactor": "four"` left the
+per-mutant timeout empty, and an expired timeout counts as a kill, so the score was higher than
+the tests earned. Both are refused now, and the message names the key and suggests the nearest
+valid one.
+
+If you have been running with a typo, this release will fail your config where it previously
+ran. That is the point: the run it was giving you was not measuring what you thought.
+
+**Both formats are published as JSON Schemas**, in `schemas/v1/`. Point your config at
+`config.schema.json` with a `$schema` key and it can be checked before a run instead of minutes
+into one. Validate a report against `report.schema.json` if you build anything on top of it --
+a dashboard, a ratchet, a merge tool. Extra fields are allowed on purpose, so a validating
+reader keeps working when a later release records more.
+
+**Reports say how they were produced**: a schema version, the module version, a timestamp, and
+how long the baseline, the whole run and the per-mutant timeout took.
+
+**`-RecheckFrom` does less work.** It skips mutants your config already declared unkillable,
+and a recheck report can now seed another recheck, so the loop narrows as you write assertions.
+
+**`Get-Help Invoke-PSMutation` returns the real documentation** -- every parameter described,
+with worked examples. It was previously serving an internal note by accident.
+
+**Score colours are correct.** A config without colour bands used to print every score green,
+including 0%.
+
+**0.3.0 is unlisted.** It carried the same code as this release; only its gallery page was
+wrong. If you pinned it, move to 0.3.1 -- nothing else changes.
+
+### Fixed
+- **The gallery page for a release was the maintainer changelog entry.** It opened mid-document
+  at `### Changed`, ran to 9646 characters, and carried ten `[#nn]` references that are
+  undefined in the notes and so rendered as literal text pointing at nothing. Its reader has no
+  access to this repo's issue tracker, and the prose was an argument addressed to whoever wrote
+  the code rather than to someone deciding whether to upgrade.
+
+  Each version section now carries a `### For consumers` block, and that block is what the
+  gallery gets. The rest of the entry stays as it is -- issue numbers, the argument behind a
+  decision, and what a stated reason used to claim are all worth keeping for a maintainer, and
+  none of them survive the trip to a package page.
+
+  **A missing block fails the release.** Falling back to the full section is what published
+  0.3.0, and a gallery page cannot be edited or withdrawn -- only unlisted, which is what
+  happened to it. Refusing costs one paragraph before a release; the fallback cost a permanent
+  page.
+
+- **The release-notes limit is 10600, not the 35000 the first error reports.** The gallery
+  enforces two: 35000 for a generic NuGet package, and 10600 when the notes are extracted from
+  a PowerShell manifest. Only the first is mentioned when you exceed it, so bounding at 35000
+  looks correct, publishes, and then fails on the second. Both numbers cost a release before
+  the smaller one was believed.
+
 ## [0.3.0] - 2026-08-21
+
+**Unlisted.** The code is identical to 0.3.1; the gallery page was the maintainer changelog
+entry rather than notes written for a consumer. Use 0.3.1.
+
 ### Changed
 - **The module exports one function.** `Get-PSMutationCandidate` and `Set-PSMutationText` are no
   longer public ([#48]). Between them they trafficked a nine-field `[pscustomobject]` that

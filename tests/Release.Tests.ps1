@@ -227,3 +227,99 @@ Describe 'Get-PSMutantBoundedReleaseNotes' {
         Get-PSMutantBoundedReleaseNotes -Notes '' -Version '1.2.3' -Limit 100 | Should-Be ''
     }
 }
+
+
+Describe 'Get-PSMutantConsumerNotes' {
+    # CHANGELOG.md is written for a maintainer: issue numbers, the argument behind a
+    # decision, what a stated reason used to claim. A gallery page is permanent and gets
+    # whatever this returns, and its reader has no access to the issue tracker. 0.3.0
+    # shipped 9646 characters of maintainer prose with ten unresolvable issue links, so
+    # these pin the separation rather than the formatting.
+
+    It 'returns the block without its heading' {
+        $section = @"
+### For consumers
+
+Upgrade freely. Nothing breaks.
+
+### Changed
+- maintainer detail with ([#48]) in it
+"@
+        $out = Get-PSMutantConsumerNotes -Section $section
+        $out | Should-Be 'Upgrade freely. Nothing breaks.'
+    }
+
+    It 'stops at the next heading rather than swallowing the maintainer sections' {
+        # The whole point of the separation. A block that ran to the end of the section
+        # would publish exactly what it exists to keep back, and would look like it worked.
+        $section = @"
+### For consumers
+
+The consumer part.
+
+### Fixed
+- something with ([#83]) that a consumer cannot resolve
+"@
+        $out = Get-PSMutantConsumerNotes -Section $section
+        $out | Should-NotBeLikeString '*#83*'
+        $out | Should-Be 'The consumer part.'
+    }
+
+    It 'stops at a heading of any level up to three' -ForEach @(
+        @{ Heading = '# Top' }
+        @{ Heading = '## Version' }
+        @{ Heading = '### Fixed' }
+    ) {
+        $section = "### For consumers`n`nkeep this`n`n$Heading`n- drop this"
+        (Get-PSMutantConsumerNotes -Section $section) | Should-Be 'keep this'
+    }
+
+    It 'returns null when the section has no block' {
+        # Null, not empty string: the caller REFUSES on this, and refusing is what stops the
+        # maintainer entry reaching a page that cannot be corrected.
+        Should-BeNull -Actual (Get-PSMutantConsumerNotes -Section "### Fixed`n- a thing")
+    }
+
+    It 'returns null for an empty section' {
+        Should-BeNull -Actual (Get-PSMutantConsumerNotes -Section '')
+    }
+
+    It 'does not match a heading that merely starts with the same words' {
+        # "### For consumers upgrading from 0.2" is a different heading, and treating it as
+        # the block would publish a section nobody wrote for that purpose.
+        Should-BeNull -Actual (Get-PSMutantConsumerNotes -Section "### For consumers upgrading`n`ntext")
+    }
+
+    It 'keeps blank lines and list structure inside the block' {
+        $section = "### For consumers`n`n- one`n`n- two`n`n### Changed`n- x"
+        (Get-PSMutantConsumerNotes -Section $section) | Should-Be "- one`n`n- two"
+    }
+}
+
+Describe 'the real CHANGELOG, as the gallery will see it' {
+    # Guards the artifact rather than the function. These are the two properties that made
+    # 0.3.0's published page bad, and neither is visible from the code alone.
+    BeforeAll {
+        $script:changelog = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'CHANGELOG.md') -Raw
+        $script:version = (Import-PowerShellDataFile (Join-Path (Split-Path -Parent $PSScriptRoot) 'PSMutant.psd1')).ModuleVersion
+        $script:section = Get-PSMutantChangelogBody -Changelog $script:changelog -Name $script:version
+        $script:consumer = Get-PSMutantConsumerNotes -Section $script:section
+    }
+
+    It 'has a consumer block for the version in the manifest' {
+        Should-NotBeNull -Actual $script:consumer
+    }
+
+    It 'carries no issue references a consumer cannot resolve' {
+        # The specific defect on the 0.3.0 page: ten [#nn] links, undefined in the notes, so
+        # they render as literal text pointing nowhere.
+        ([regex]::Matches($script:consumer, '\[#\d+\]')).Count | Should-Be 0
+        ([regex]::Matches($script:consumer, '\(#\d+\)')).Count | Should-Be 0
+    }
+
+    It 'fits the gallery limit without being truncated' {
+        # A hand-written consumer block should be far inside the limit. If this fails the
+        # block is being used as a second changelog, which is not what it is for.
+        $script:consumer.Length | Should-BeLessThanOrEqual 10600
+    }
+}

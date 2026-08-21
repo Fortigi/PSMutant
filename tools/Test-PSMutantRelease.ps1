@@ -119,6 +119,58 @@ function Get-PSMutantReleaseSection {
     return $body
 }
 
+function Get-PSMutantConsumerNotes {
+    <#
+    .SYNOPSIS
+        Pure: the "### For consumers" block out of a changelog section, or $null when the
+        section does not have one.
+
+    .DESCRIPTION
+        CHANGELOG.md is written for a MAINTAINER. That is deliberate and worth keeping: its
+        entries carry issue numbers, the argument for a decision, and what a stated reason
+        used to claim. None of that survives the trip to a gallery page. A consumer has no
+        access to this repo's issue tracker, so `([#48])` renders as literal text pointing
+        nowhere, and "un-exporting them did not dissolve that contract, it relocated it" is
+        an argument addressed to someone who is not reading.
+
+        0.3.0 shipped exactly that: 9646 characters of maintainer prose, opening mid-document
+        at "### Changed", carrying ten unresolvable issue links. A gallery version cannot be
+        edited or withdrawn, so it is permanent.
+
+        So each version section carries a "### For consumers" block, written for the person
+        deciding whether to upgrade: what changed for them, what breaks, what to do about it.
+        The rest of the section stays as it is.
+
+    .PARAMETER Section
+        The body of one version's changelog section.
+
+    .OUTPUTS
+        [string] the block, without its heading, or $null when there is none.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'Notes is a mass noun and names the manifest field these become. A singular "ConsumerNote" would name something that does not exist.')]
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$Section)
+
+    $lines = $Section -split "`r?`n"
+    $start = -1
+    for ($i = 0; $i -lt $lines.Count; $i++) {
+        if ($lines[$i] -match '^###\s+For consumers\s*$') { $start = $i; break }
+    }
+    if ($start -lt 0) { return $null }
+
+    $body = [System.Collections.Generic.List[string]]::new()
+    for ($i = $start + 1; $i -lt $lines.Count; $i++) {
+        # Any following heading of the same level or higher ends the block. Without this the
+        # block would swallow the maintainer sections beneath it, which is the failure this
+        # whole separation exists to prevent.
+        if ($lines[$i] -match '^#{1,3}\s') { break }
+        $body.Add($lines[$i])
+    }
+    return ($body -join "`n").Trim()
+}
+
 function Get-PSMutantBoundedReleaseNotes {
     <#
     .SYNOPSIS
@@ -224,11 +276,28 @@ if ($MyInvocation.InvocationName -ne '.') {
         Write-Host "::warning::CHANGELOG.md still has entries under Unreleased while releasing $version. If those changes ship in this version, they belong under the $version heading."
     }
 
+    # The gallery gets the CONSUMER block, never the whole section. Falling back to the full
+    # section when the block is missing is not a lenient default -- it is precisely what
+    # published 0.3.0's maintainer prose, complete with issue links a consumer cannot open,
+    # onto a page that can never be corrected. Refusing costs one paragraph before a release;
+    # the fallback costs a permanent page.
+    $consumer = Get-PSMutantConsumerNotes -Section $notes
+    if ($null -eq $consumer -or $consumer.Length -eq 0) {
+        throw ("CHANGELOG.md has no '### For consumers' block under $version. The gallery page " +
+            "is permanent and gets this text, so it cannot be the maintainer entry: that carries " +
+            "issue numbers a consumer cannot resolve and arguments addressed to whoever wrote the " +
+            "code. Add the block under the $version heading, describing what changed for someone " +
+            "deciding whether to upgrade.")
+    }
+
     # Bounded HERE, at the point the notes are produced, so the publish workflow cannot be
-    # handed something the gallery will reject. Doing it in the workflow instead would put
-    # the decision back in a YAML snippet, where it is untested and cannot be run by hand.
-    $bounded = Get-PSMutantBoundedReleaseNotes -Notes $notes -Version $version
-    if ($bounded.Length -lt $notes.Length) {
+    # handed something the gallery will reject. A hand-written consumer block should be far
+    # inside the limit, so this is now a backstop rather than the mechanism.
+    $bounded = Get-PSMutantBoundedReleaseNotes -Notes $consumer -Version $version
+    # Against the CONSUMER block, not the whole section. Comparing with the section would
+    # warn on every release -- the section is always longer -- and quote a number that has
+    # nothing to do with what shipped.
+    if ($bounded.Length -lt $consumer.Length) {
         Write-Host "::warning::Release notes for $version are $($notes.Length) characters; the gallery accepts 10600 when they come from a PowerShell manifest. Publishing an abridged $($bounded.Length) with a link to the full CHANGELOG entry."
     }
 
