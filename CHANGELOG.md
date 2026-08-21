@@ -4,6 +4,8 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
+
+## [0.3.0] - 2026-08-21
 ### Changed
 - **The module exports one function.** `Get-PSMutationCandidate` and `Set-PSMutationText` are no
   longer public ([#48]). Between them they trafficked a nine-field `[pscustomobject]` that
@@ -152,6 +154,43 @@ All notable changes to PSMutant are documented here. Format follows
   had -- and corrected when [#45] moved that constant.
 
 ### Added
+- **The config format and the report format are published as JSON Schemas** ([#84]).
+  `schemas/v1/config.schema.json` defines every key `-ConfigFile` understands, what it means and
+  what it must hold -- the definition a PSMutant config is written against. Name it with a
+  `"$schema"` key and the config becomes self-describing, so a mistake surfaces while it is
+  being written rather than several minutes into a run.
+
+  `schemas/v1/report.schema.json` defines the report format, covering both shapes: a full run,
+  and the partial run `-RecheckFrom` writes. Anything reading a report -- a dashboard, a
+  ratchet, a merge tool -- can now validate one without reading this repo's tests, which
+  were the only description of the format that existed, and were three hand-maintained lists
+  inside Pester assertions.
+
+  Both ship with the module, and the package smoke test fails if they do not arrive.
+
+  A recheck report **may not carry `mutationScore` at all**. Worth encoding in the format
+  rather than leaving to the printed caveat: a partial number quoted as a real one is the
+  failure this project is organised around, and a reader who ignores prose cannot ignore a
+  validation error.
+
+  Two findings from building it. `ConvertFrom-Json` re-types the ISO-8601 `generatedAt` into
+  a `[datetime]`, so the schema has to be applied to the **file** -- the string it describes
+  is already gone once PowerShell hands back an object. And `Test-Json` silently **ignores
+  the `not` keyword**, so the obvious way to spell "a recheck carries no score" is a rule
+  that can never fail; it is written as a boolean-`false` property schema instead, which is
+  honoured. Every keyword relied on was checked that way, because a schema rule that cannot
+  fire is indistinguishable from one that passes.
+
+  Extra properties are permitted deliberately: `schemaVersion` changes when a field changes
+  meaning or disappears, never when one is added, so a validating reader survives a release
+  that records more. The exact field lists stay pinned in the tests, because that is a
+  different claim -- the schema states the guaranteed minimum for consumers, the lists keep
+  *widening* deliberate on our side.
+
+  Two enforcements of one format invite drift, so the agreement is asserted rather than
+  maintained by hand: the schema's keys, threshold keys, operator vocabulary and required
+  keys are all compared against the code. That test earned its keep immediately -- the first
+  config schema refused `"break": null`, which the module has always accepted.
 - **Every report records how it was produced** ([#34]): `schemaVersion`, `producedBy`
   (module and version), `generatedAt` in UTC, and `durations` covering the baseline, the whole
   run, and the per-mutant timeout. Both report shapes carry the same block, so a consumer reads
@@ -178,6 +217,28 @@ All notable changes to PSMutant are documented here. Format follows
   the file itself. The file is the contract, and that is what the tests assert against.
 
 ### Fixed
+- **A config value of the wrong type is now refused, instead of quietly breaking the run**
+  ([#83]). `Assert-PSMutationConfig` checked key *names* and never types, so
+  `"timeoutFactor": "four"` validated -- and then the timeout arithmetic yielded **nothing**,
+  leaving an empty per-mutant deadline. A timeout expiry is scored as a **kill**, so the run
+  reported a number it had not measured: the exact failure this tool exists to find in other
+  people's code. `"coveredLinesOnly": "yes please"` was milder and the same absence of
+  checking -- any non-empty string is `$true`.
+
+  **The schema does the checking**, rather than a second table of types written in
+  PowerShell. The module reads `schemas/v1/config.schema.json` at run time -- key names,
+  threshold sub-keys and every type come out of it -- so adding a config key means editing
+  one file, not four. An explicit `null` is never a fault, because absence is meaningful:
+  `thresholds.break` unset means report-only.
+
+  What stays in code is what a schema cannot say, and each gives a better answer than the
+  schema would: the nearest valid name for a misspelled key, what `mutate` and `tests` are
+  *for* when one is missing, and the operator names, which come from the operator map
+  itself. The order those run in is the message quality.
+
+  One new failure mode, handled: the schema can be absent from a partially copied
+  installation, and a validator that skipped in that case would accept every config. It
+  throws, naming the path, and the package smoke test asserts both schemas ship.
 - **`Get-Help Invoke-PSMutation` served the wrong documentation.** PowerShell treats a `<# #>`
   block sitting immediately before the `function` keyword as that function's comment-based
   help, so this file's header shadowed the help written inside the body. Anyone running

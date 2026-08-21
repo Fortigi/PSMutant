@@ -18,18 +18,68 @@
 # mechanism, and holds no opinion about a repo's layout.
 $script:PSMutationDefaultSubtrees = @('src', 'tests')
 
-# Every key the config understands, and every sub-key of `thresholds`. A key absent from
-# these lists resolves to $null and weakens the run in silence: `thresholds.brake` leaves
-# the break gate unable to fail, and `mutat` for `mutate` surfaces as a denied path inside
-# the sandbox, a message mentioning neither the config nor the key.
+# The config format has ONE definition: schemas/v1/config.schema.json, which also ships to
+# consumers. The key names, the threshold sub-keys and the type of every value are read
+# from it rather than restated here -- a second copy in PowerShell would be a second place
+# to edit when a key is added, and the copy that was forgotten is the one that decides.
 #
-# Keys starting with `_` are exempt: JSON has no comments, and both the example config and
-# this repo's own use `_comment` / `_operators` / `_timeout` to explain themselves.
-$script:PSMutationConfigKeys = @(
-    'mutate', 'tests', 'operators', 'coveredLinesOnly', 'sandboxSubtrees',
-    'timeoutFactor', 'timeoutFloorSeconds', 'equivalents', 'thresholds', 'reportPath'
-)
-$script:PSMutationThresholdKeys = @('high', 'low', 'break')
+# Cached because it is read once per run and parsing it per call would be pointless work.
+$script:PSMutationConfigSchema = $null
+
+function Get-PSMutationConfigSchemaPath {
+    # Where the shipped schema lives, relative to this file: src/ and schemas/ are siblings
+    # in the repo and in the published package alike.
+    #
+    # The version is in the PATH, not in the URL's git ref. A `$schema` URL pointing at a
+    # branch means the document a consumer validates against changes under them the day a
+    # v2 lands; a versioned directory means v2 is a NEW file and every existing pointer
+    # keeps resolving to the format it was written for. A v2 goes in schemas/v2/ beside
+    # this one rather than replacing it.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param()
+    return (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'schemas' -AdditionalChildPath 'v1', 'config.schema.json')
+}
+
+function Get-PSMutationConfigSchema {
+    <#
+    .SYNOPSIS
+        The config schema, as raw text.
+
+    .DESCRIPTION
+        Throws a message naming the missing path rather than skipping validation. A
+        validator that quietly does nothing when its schema is absent is the failure this
+        project is organised around: every config would pass, including the ones that empty
+        the per-mutant timeout and score every mutant as killed.
+
+        The package smoke test asserts the schema ships, so this should only ever fire for
+        a partially copied module.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param()
+    if ($null -eq $script:PSMutationConfigSchema) {
+        $path = Get-PSMutationConfigSchemaPath
+        if (-not (Test-Path $path)) {
+            throw "The PSMutant config schema is missing from this installation: $path. The module cannot validate a config without it."
+        }
+        $script:PSMutationConfigSchema = Get-Content $path -Raw
+    }
+    return $script:PSMutationConfigSchema
+}
+
+function Get-PSMutationConfigKey {
+    # Every key the config understands, from the schema. A key the schema does not describe
+    # resolves to $null and weakens the run in silence: `thresholds.brake` leaves the break
+    # gate unable to fail, and `mutat` for `mutate` surfaces as a denied path inside the
+    # sandbox, in a message mentioning neither the config nor the key.
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param([string]$Section = 'config')
+    $schema = Get-PSMutationConfigSchema | ConvertFrom-Json
+    $node = if ($Section -eq 'thresholds') { $schema.properties.thresholds } else { $schema }
+    return [string[]]@($node.properties.PSObject.Properties.Name)
+}
 
 function Get-PSMutationEditDistance {
     # Levenshtein distance between two strings.
@@ -99,11 +149,74 @@ function Get-PSMutationUnknownKeyMessage {
           [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Known,
           [Parameter(Mandatory)] [string]$Where)
     # JSON has no comments; `_`-prefixed keys are how every config here explains itself.
-    if ($Name.StartsWith('_')) { return $null }
+    # `$schema` is exempt for a different reason: it points at the published config
+    # schema, which is the format's definition. Rejecting the key would mean a config
+    # cannot name the very schema it is written against.
+    if ($Name.StartsWith('_') -or $Name -eq '$schema') { return $null }
     if ($Known -contains $Name) { return $null }
     $near = Get-PSMutationNearestName -Name $Name -Candidates $Known
     $hint = if ($near) { " Did you mean '$near'?" } else { '' }
     return "Unknown $Where key '$Name'.$hint Valid keys: $(($Known | Sort-Object) -join ', ')."
+}
+
+function Get-PSMutationNameFault {
+    # The first complaint about an unrecognised NAME anywhere in a config, or $null.
+    #
+    # Keys, threshold sub-keys and operator names are one question asked three times, so
+    # they answer in one place: a caller that checked two of the three would leave a whole
+    # class of typo silently accepted, which is the failure this checking exists to stop.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Cfg)
+    foreach ($prop in $Cfg.PSObject.Properties) {
+        $why = Get-PSMutationUnknownKeyMessage -Name $prop.Name -Known (Get-PSMutationConfigKey) -Where 'config'
+        if ($why) { return $why }
+    }
+    foreach ($prop in $Cfg.thresholds.PSObject.Properties) {
+        $why = Get-PSMutationUnknownKeyMessage -Name $prop.Name -Known (Get-PSMutationConfigKey -Section 'thresholds') -Where 'thresholds'
+        if ($why) { return $why }
+    }
+    foreach ($op in @($Cfg.operators)) {
+        if ($null -eq $op) { continue }
+        $why = Get-PSMutationUnknownKeyMessage -Name $op -Known (Get-PSMutationKnownOperator) -Where 'operators'
+        if ($why) { return $why }
+    }
+    return $null
+}
+
+function Get-PSMutationConfigTypeFault {
+    <#
+    .SYNOPSIS
+        Why a config does not match the schema, or $null when it does.
+
+    .DESCRIPTION
+        The schema decides. Both of PowerShell's coercions fail OPEN -- a string where a
+        number belongs makes the timeout arithmetic yield nothing, and any non-empty string
+        is $true -- so an unchecked type does not error, it produces a confident wrong
+        answer. The timeout is the worst of them: an expiry is scored as a KILL, so the run
+        reports a number it never measured.
+
+        The config is re-serialised because Test-Json validates TEXT while the caller holds
+        an object. -Depth 10 against a format that nests three deep, so nothing is quietly
+        truncated into validity.
+
+    .PARAMETER Cfg
+        The parsed config.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Cfg)
+    $json = $Cfg | ConvertTo-Json -Depth 10
+    $ok = Test-Json -Json $json -Schema (Get-PSMutationConfigSchema) -ErrorAction SilentlyContinue -ErrorVariable schemaErrors
+    if ($ok) { return $null }
+    # EVERY violation, not just the first. Test-Json writes one error per violation and the
+    # first is not reliably the one the reader caused, so reporting only that sends them to
+    # a line that is fine.
+    $detail = @($schemaErrors | ForEach-Object {
+            $_.Exception.Message -replace '^The JSON is not valid with the schema: ', ''
+        }) -join '; '
+    return "The config does not match the PSMutant config schema: $detail"
+
 }
 
 function Assert-PSMutationConfig {
@@ -115,19 +228,22 @@ function Assert-PSMutationConfig {
     # find in other people's code.
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Cfg)
-    foreach ($prop in $Cfg.PSObject.Properties) {
-        $why = Get-PSMutationUnknownKeyMessage -Name $prop.Name -Known $script:PSMutationConfigKeys -Where 'config'
-        if ($why) { throw $why }
-    }
-    foreach ($prop in $Cfg.thresholds.PSObject.Properties) {
-        $why = Get-PSMutationUnknownKeyMessage -Name $prop.Name -Known $script:PSMutationThresholdKeys -Where 'thresholds'
-        if ($why) { throw $why }
-    }
-    foreach ($op in @($Cfg.operators)) {
-        if ($null -eq $op) { continue }
-        $why = Get-PSMutationUnknownKeyMessage -Name $op -Known (Get-PSMutationKnownOperator) -Where 'operators'
-        if ($why) { throw $why }
-    }
+    # The ORDER is the message quality. Each check below can also be reached by the schema,
+    # which is deliberate -- the schema is what consumers validate against -- but the schema
+    # answers in JSON-pointer terms, and these three answer in terms of what to go and do.
+    #
+    # 1. A misspelled key, reported as a misspelling with the nearest valid name. The schema
+    #    would call it "property not allowed", which does not say `break` when you wrote
+    #    `brake`.
+    $why = Get-PSMutationNameFault -Cfg $Cfg
+    if ($why) { throw $why }
+
+    # 2. Missing or empty `mutate` / `tests`, reported as what the key is FOR. The schema's
+    #    "required properties are not present" is true and teaches nothing.
+    #
+    #    Before the type check, because these are about the value being absent or empty
+    #    rather than the wrong kind. An object in `mutate` still reaches the schema and is
+    #    named as a type error, which is the better answer for that case.
     if (@($Cfg.mutate).Where({ $_ }).Count -eq 0) {
         throw "Config must set 'mutate' to a non-empty list of files to mutate."
     }
@@ -137,6 +253,10 @@ function Assert-PSMutationConfig {
     if (@($Cfg.tests.PSObject.Properties).Where({ $_ }).Count -eq 0) {
         throw "Config must set 'tests' to a map of mutate file -> the test file(s) covering it."
     }
+
+    # 3. Everything about shape and type, decided by the schema alone.
+    $why = Get-PSMutationConfigTypeFault -Cfg $Cfg
+    if ($why) { throw $why }
 }
 
 function Get-PSMutationCoveredLinesOnly {
