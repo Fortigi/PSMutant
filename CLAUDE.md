@@ -108,6 +108,39 @@ test **must** leave survivors, and fails if everything comes back killed.
 
 ---
 
+## Running the self-mutation gate while developing
+
+The gate is several hundred mutants and a handful of minutes, nearly all of it re-proving
+files nobody edited. `tools/New-PSMutantScopedConfig.ps1` narrows the real config to the
+files in the current change and writes an untracked `psmutant.scoped.config.json`:
+
+```powershell
+./tools/New-PSMutantScopedConfig.ps1 -Run          # vs main, committed and uncommitted
+./tools/New-PSMutantScopedConfig.ps1 -Since HEAD   # uncommitted only, the tightest loop
+```
+
+One file scopes to about 80 mutants and half a minute, against 400-odd and several minutes
+for the whole set.
+
+**A scoped run is never the gate, and every part of this is built to keep that true.** Its
+score describes the files it mutated, not this project, so it can be a confident 100% over
+a change that broke something two files away. The output is untracked, it writes to its own
+`reportPath` so it cannot overwrite the artifact CI reads, it prints the files it left out
+by name, and the generated config says so in a `_comment`. Before a PR, run the real config.
+
+Two narrowing decisions are worth knowing. A changed **test** file pulls in the source it
+covers, because writing the assertion that kills a survivor is exactly the edit whose effect
+you want to see. And declarations are subset with the files -- carrying the full set into a
+narrowed run means every declaration for an out-of-scope file matches no mutant, which fails
+the run for a reason that has nothing to do with the change.
+
+The narrowing itself is a pure function in `tools/ScopedConfig.ps1` with tests, for the same
+reason the gate decisions are: `tools/` is outside `sandboxSubtrees` and is never mutated, so
+tests are the only thing standing between a scoping bug and a fast green run that measured
+less than it claimed.
+
+---
+
 ## Measuring coverage
 
 One invocation, the whole directory, no exclusions and no exempt files:
