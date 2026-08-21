@@ -1,0 +1,157 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/Fortigi/PSMutant/main/schemas/report.schema.json",
+  "title": "PSMutant report",
+  "description": "The report JSON written by Invoke-PSMutation. Together with the object the command returns, this file is the module's entire public contract. Two shapes share it: a full run, and the partial run produced by -RecheckFrom, which is identified by a 'mode' of 'Recheck' and deliberately carries NO score. Additional properties are permitted on purpose: schemaVersion changes when a field changes meaning or disappears, never when one is added, so a reader validating against this schema keeps working when a later version records more.",
+  "type": "object",
+  "required": [
+    "generatedFrom",
+    "schemaVersion",
+    "producedBy",
+    "generatedAt",
+    "durations",
+    "operators",
+    "sourceHashes",
+    "survivors",
+    "mutants"
+  ],
+  "properties": {
+    "generatedFrom": {
+      "const": "PSMutant",
+      "description": "Marks the file as this tool's output."
+    },
+    "schemaVersion": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "The format version. Branch on this rather than sniffing for keys. It changes when a field changes MEANING or disappears; adding a field does not change it."
+    },
+    "producedBy": {
+      "type": "object",
+      "required": ["module", "version"],
+      "properties": {
+        "module": { "type": "string" },
+        "version": { "type": "string", "description": "The ModuleVersion that produced the report." }
+      }
+    },
+    "generatedAt": {
+      "type": "string",
+      "pattern": "^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}Z$",
+      "description": "UTC, ISO-8601, second precision. A STRING in the file: PowerShell's ConvertFrom-Json recognises the format and hands a caller a [datetime] instead, so a PowerShell reader never sees this text. The file is the contract; other languages read a string."
+    },
+    "durations": {
+      "type": "object",
+      "required": ["baselineSeconds", "totalSeconds", "perMutantTimeoutSeconds"],
+      "properties": {
+        "baselineSeconds": { "type": "number", "description": "How long the unmutated suite took." },
+        "totalSeconds": { "type": "number", "description": "The whole run, measured after the last mutant." },
+        "perMutantTimeoutSeconds": {
+          "type": ["number", "null"],
+          "description": "The deadline each mutant was given, recorded beside the baseline it was derived from -- which is what makes comparing them mean anything. A timeout expiry is scored as a kill, so a suite drifting toward this bound inflates the score before anything visibly breaks."
+        }
+      }
+    },
+    "operators": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "The operator set, SORTED. Recorded because mutant ids are AST-walk positions: they only refer to the same code for an identical source and an identical operator set."
+    },
+    "sourceHashes": {
+      "type": ["object", "null"],
+      "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+      "description": "SHA256 per mutated file, lowercase hex. With 'operators', this is what lets a later -RecheckFrom prove the ids in this report still mean what they meant."
+    },
+    "survivors": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/mutant" },
+      "description": "The mutants no test killed. A subset of 'mutants', repeated here because it is the working list."
+    },
+    "mutants": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/mutant" },
+      "description": "Every mutant evaluated in this run."
+    },
+
+    "mutationScore": {
+      "type": "number",
+      "description": "Full runs only. Percentage of killed over total, where total EXCLUDES declared equivalents."
+    },
+    "total": { "type": "integer", "description": "Full runs only. Mutants counted in the score, excluding declared equivalents." },
+    "killed": { "type": "integer", "description": "Full runs only." },
+    "survived": { "type": "integer", "description": "Full runs only." },
+    "declaredEquivalent": {
+      "type": "integer",
+      "description": "Full runs only. How many mutants the config argued cannot change behaviour, and which are therefore absent from 'total'. A reader who cannot see this number cannot tell a real 100% from a declared one."
+    },
+    "staleEquivalents": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Full runs only. Equivalence declarations that are no longer true or no longer identify exactly one mutant. Non-empty means the run failed on them."
+    },
+    "thresholds": {
+      "type": ["object", "null"],
+      "description": "Full runs only. The gate as configured; null when none was set, which means report-only.",
+      "properties": {
+        "high": { "type": ["number", "null"] },
+        "low": { "type": ["number", "null"] },
+        "break": { "type": ["number", "null"], "description": "Unset means report-only: the run does not fail on the score." }
+      }
+    },
+
+    "mode": {
+      "const": "Recheck",
+      "description": "Present only on a partial run. Its absence is what identifies a full report."
+    },
+    "note": { "type": "string", "description": "Recheck only. The caveat, restated in the artifact so a partial run cannot be read as a measurement." },
+    "recheckedFrom": { "type": ["string", "null"], "description": "Recheck only. The report this run took its survivors from." },
+    "priorSurvivors": { "type": "integer", "description": "Recheck only. How many survivors the source report held." },
+    "rechecked": { "type": "integer", "description": "Recheck only. How many were actually re-run: fewer than priorSurvivors, because declared equivalents are skipped." },
+    "nowKilled": { "type": "integer", "description": "Recheck only. How many of them a test now kills." }
+  },
+  "allOf": [
+    {
+      "description": "A recheck carries counts and never a score. Forbidding 'mutationScore' is the point rather than a formality: a partial number quoted as a real one is the failure this tool exists to prevent, so the format makes it impossible to report one by accident. Written as a boolean-false property schema rather than as \"not\": PowerShell's Test-Json silently IGNORES the \"not\" keyword, so the obvious spelling of this rule is a clause that can never fail.",
+      "if": { "required": ["mode"] },
+      "then": {
+        "required": ["mode", "note", "priorSurvivors", "rechecked", "nowKilled"],
+        "properties": { "mutationScore": false }
+      },
+      "else": {
+        "required": [
+          "mutationScore",
+          "total",
+          "killed",
+          "survived",
+          "declaredEquivalent",
+          "staleEquivalents",
+          "thresholds"
+        ]
+      }
+    }
+  ],
+  "definitions": {
+    "mutant": {
+      "type": "object",
+      "description": "One evaluated mutant. Note that 'Id' is NOT contractual: it is a walk position, it has changed before, and its only consumer is this module's own -RecheckFrom.",
+      "required": ["Id", "Function", "File", "Line", "Operator", "Description", "Status"],
+      "properties": {
+        "Id": { "type": "integer" },
+        "Function": {
+          "type": ["string", "null"],
+          "description": "The enclosing function, or empty for code at file scope. Carried so an equivalence declaration can be keyed by function rather than by a line number, which moves whenever anything above it is edited."
+        },
+        "File": { "type": "string", "description": "Repo-relative path to the mutated source." },
+        "Line": { "type": "integer" },
+        "Operator": { "type": "string" },
+        "Description": {
+          "type": "string",
+          "description": "<original> -> <mutated>, whitespace-collapsed and truncated. Derived from the source, never written by the operator."
+        },
+        "Status": {
+          "type": "string",
+          "enum": ["Killed", "Survived"],
+          "description": "Killed means at least one covering test failed against the mutant. A mutant whose run timed out is counted Killed."
+        }
+      }
+    }
+  }
+}

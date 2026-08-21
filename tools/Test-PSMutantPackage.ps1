@@ -58,6 +58,22 @@ if ($unloaded.Count -gt 0) {
 }
 Write-Host "  all $($shipped.Count) shipped src file(s) are dot-sourced"
 
+# --- 2b. the schemas ship, and are valid ------------------------------------------------
+# Both are public artifacts: the config schema defines the format consumers write, and the
+# report schema defines what they read back. Neither is any use left behind in the repo,
+# and the staging Copy-Item is the one place that decides whether they travel.
+foreach ($name in 'report.schema.json', 'config.schema.json') {
+    $schemaPath = Join-Path $stage 'schemas' -AdditionalChildPath $name
+    if (-not (Test-Path $schemaPath)) {
+        throw "The package does not ship schemas/$name. Add it to the staging Copy-Item in publish.yml."
+    }
+    # Parsed rather than merely present: a schema that ships but does not parse is worse
+    # than one that is missing, because a consumer wires it in before discovering that.
+    try { Get-Content $schemaPath -Raw | ConvertFrom-Json | Out-Null }
+    catch { throw "The shipped schemas/$name is not valid JSON: $($_.Exception.Message)" }
+}
+Write-Host '  both schemas ship and parse'
+
 # --- 3 and 4. import in a FRESH process and run a real mutation --------------------------
 # A fresh process, because importing here would be indistinguishable from the repo copy
 # already loaded in this session -- which is the mistake that let #16 survive so long.

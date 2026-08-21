@@ -1,8 +1,11 @@
 {
+  "$schema": "./schemas/config.schema.json",
   "_comment": "PSMutant tested against ITSELF (dogfooding). Every source file is mutated except src/PSMutation.Sandbox.ps1, and that one exclusion is structural rather than a gap: its covering suite tests/Sandbox.Tests.ps1 calls Clear-PSMutationStaleSandbox for real, a self-mutation baseline runs IN-PROCESS so it shares $PID with the sandbox the run is executing from, and the sweep treats its own process id as reclaimable -- so naming that suite anywhere here deletes the live run's sandbox mid-baseline and turns the run red before a single mutant is tried. Its behaviour is pinned by the normal suite at 100% line coverage instead. NOTE: this exclusion previously cited a 'shared sandbox' (issue #2, since fixed) and then 'real temp side-effects', neither of which was the actual blocker. Run: Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .",
+  "_sandboxSubtreesComment": "schemas/ is copied because the module READS it at run time now: the config schema is the config format, and a sandboxed copy of src/ that cannot find it refuses every config, turning the baseline red before a mutant is tried.",
   "sandboxSubtrees": [
     "src",
-    "tests"
+    "tests",
+    "schemas"
   ],
   "mutate": [
     "src/PSMutation.Operators.ps1",
@@ -54,7 +57,8 @@
   "equivalents": {
     "src/PSMutation.Report.ps1:Write-PSMutationReport:6 -> 7": "ConvertTo-Json -Depth N and -Depth N+1 emit byte-identical output for any object graph shallower than N. The report nests 4 deep at its worst (root -> mutants[] -> row -> scalar), so 6 and 7 cannot differ. Killing this would need a fixture built for no purpose but to out-nest the serializer, which would assert nothing about the report.",
     "src/PSMutation.Recheck.ps1:Write-PSMutationRecheckReport:6 -> 7": "Same as the Report.ps1 entry: the recheck report nests 4 deep at most (root -> mutants[] -> row -> scalar), so -Depth 6 and 7 serialise identically.",
-    "src/PSMutation.Report.ps1:Get-PSMutationDeclaredEquivalent:$null -eq $Equivalents -> $false": "An early return, not a decision. With $Equivalents null, $null.PSObject is null and so is .Properties, so the foreach below runs zero times and returns the same empty map the guard returns directly - verified by running the loop with the guard removed. Forcing the condition false therefore cannot change the output for any input. (Forcing it TRUE is killed: it would return an empty map even when declarations exist.)"
+    "src/PSMutation.Report.ps1:Get-PSMutationDeclaredEquivalent:$null -eq $Equivalents -> $false": "An early return, not a decision. With $Equivalents null, $null.PSObject is null and so is .Properties, so the foreach below runs zero times and returns the same empty map the guard returns directly - verified by running the loop with the guard removed. Forcing the condition false therefore cannot change the output for any input. (Forcing it TRUE is killed: it would return an empty map even when declarations exist.)",
+    "src/PSMutation.Config.ps1:Get-PSMutationConfigTypeFault:10 -> 11": "ConvertTo-Json -Depth N and -Depth N+1 emit byte-identical output for any object graph shallower than N. A config nests 3 deep at its worst (root -> tests -> file -> array of strings), so 10 and 11 cannot differ. The depth is 10 rather than the default 2 because the default TRUNCATES silently, and a truncated config would validate against the schema as though the missing part were absent; killing this mutant would need a config built to out-nest the serialiser, which no real config can be."
   },
   "thresholds": {
     "high": 85,
