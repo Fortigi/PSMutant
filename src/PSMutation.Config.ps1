@@ -18,7 +18,7 @@
 # mechanism, and holds no opinion about a repo's layout.
 $script:PSMutationDefaultSubtrees = @('src', 'tests')
 
-# The config format has ONE definition: schemas/config.schema.json, which also ships to
+# The config format has ONE definition: schemas/v1/config.schema.json, which also ships to
 # consumers. The key names, the threshold sub-keys and the type of every value are read
 # from it rather than restated here -- a second copy in PowerShell would be a second place
 # to edit when a key is added, and the copy that was forgotten is the one that decides.
@@ -29,10 +29,16 @@ $script:PSMutationConfigSchema = $null
 function Get-PSMutationConfigSchemaPath {
     # Where the shipped schema lives, relative to this file: src/ and schemas/ are siblings
     # in the repo and in the published package alike.
+    #
+    # The version is in the PATH, not in the URL's git ref. A `$schema` URL pointing at a
+    # branch means the document a consumer validates against changes under them the day a
+    # v2 lands; a versioned directory means v2 is a NEW file and every existing pointer
+    # keeps resolving to the format it was written for. A v2 goes in schemas/v2/ beside
+    # this one rather than replacing it.
     [OutputType([string])]
     [CmdletBinding()]
     param()
-    return (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'schemas' -AdditionalChildPath 'config.schema.json')
+    return (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'schemas' -AdditionalChildPath 'v1', 'config.schema.json')
 }
 
 function Get-PSMutationConfigSchema {

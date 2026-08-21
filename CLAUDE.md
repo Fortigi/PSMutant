@@ -560,7 +560,7 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   **kill**. `coveredLinesOnly` is milder and the same shape of bug -- any non-empty string
   is `$true`.
 
-  **Adding a key means editing `schemas/config.schema.json`, and that is the whole list.**
+  **Adding a key means editing `schemas/v1/config.schema.json`, and that is the whole list.**
   The key names, the threshold sub-keys and every type are read back out of the schema at
   run time, so there is no PowerShell copy to keep in step. Update the README table in the
   same commit; that one is still on you. (#24, #83, #84)

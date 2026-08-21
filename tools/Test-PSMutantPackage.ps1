@@ -63,7 +63,7 @@ Write-Host "  all $($shipped.Count) shipped src file(s) are dot-sourced"
 # report schema defines what they read back. Neither is any use left behind in the repo,
 # and the staging Copy-Item is the one place that decides whether they travel.
 foreach ($name in 'report.schema.json', 'config.schema.json') {
-    $schemaPath = Join-Path $stage 'schemas' -AdditionalChildPath $name
+    $schemaPath = Join-Path $stage 'schemas' -AdditionalChildPath 'v1', $name
     if (-not (Test-Path $schemaPath)) {
         throw "The package does not ship schemas/$name. Add it to the staging Copy-Item in publish.yml."
     }

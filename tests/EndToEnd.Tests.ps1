@@ -495,7 +495,7 @@ Describe 'the help a user actually gets' {
 
 
 Describe 'the published report schema' {
-    # schemas/report.schema.json is shipped with the module so a consumer can validate a
+    # schemas/v1/report.schema.json is shipped with the module so a consumer can validate a
     # report without reading this repo's tests. That only means anything if the reports we
     # actually emit satisfy it, which is what this Describe is for -- a schema that has
     # drifted from the writer is worse than none, because it invites a consumer to code
@@ -505,7 +505,7 @@ Describe 'the published report schema' {
     # generatedAt and hands back a [datetime], so a round-tripped object no longer has the
     # string the schema describes. The file is the contract.
     BeforeAll {
-        $script:schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/report.schema.json') -Raw
+        $script:schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v1/report.schema.json') -Raw
         $script:fullText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.json'))
         $script:recheckText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.recheck.json'))
 
@@ -550,7 +550,7 @@ Describe 'the published report schema' {
 
 
 Describe 'the published config schema' {
-    # schemas/config.schema.json is the definition of the config format -- the document
+    # schemas/v1/config.schema.json is the definition of the config format -- the document
     # every consumer configures PSMutant against. Assert-PSMutationConfig enforces the same
     # format at run time.
     #
@@ -563,7 +563,7 @@ Describe 'the published config schema' {
         $root = Split-Path -Parent $PSScriptRoot
         . (Join-Path $root 'src/PSMutation.Operators.ps1')
         . (Join-Path $root 'src/PSMutation.Config.ps1')
-        $script:cfgSchemaText = Get-Content (Join-Path $root 'schemas/config.schema.json') -Raw
+        $script:cfgSchemaText = Get-Content (Join-Path $root 'schemas/v1/config.schema.json') -Raw
         $script:cfgSchema = $script:cfgSchemaText | ConvertFrom-Json
         $script:repoRoot = $root
     }
@@ -636,7 +636,7 @@ Describe 'the published config schema' {
         # A config that cannot name its own schema cannot be checked before the run, so the
         # key has to pass both here and in Assert-PSMutationConfig. Failing either one makes
         # the shipped schema unusable in the one place it matters most.
-        $json = '{ "$schema": "./schemas/config.schema.json", "mutate": ["a"], "tests": { "a": ["t"] } }'
+        $json = '{ "$schema": "./schemas/v1/config.schema.json", "mutate": ["a"], "tests": { "a": ["t"] } }'
         Should-BeTrue -Actual (Test-Json -Json $json -Schema $script:cfgSchemaText -ErrorAction Stop)
         Should-BeNull -Actual (Assert-PSMutationConfig -Cfg ($json | ConvertFrom-Json))
     }
