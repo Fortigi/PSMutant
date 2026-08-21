@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.3.0'
+    ModuleVersion     = '0.3.1'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
