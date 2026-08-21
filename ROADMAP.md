@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-21, after 0.3.1. 43 issues open.
+Snapshot 2026-08-21, after 0.3.1. 42 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -32,28 +32,25 @@ are better early in a cycle than late.
 
 Seventeen issues arrived at once (#94-#110) from applying lenses this project had never been
 pointed at: security, supply chain, edge-case robustness and performance. They are listed
-first because two of them outrank everything already on this roadmap, and because they are not
-seventeen independent problems.
+first because they are not seventeen independent problems.
 
-**Two things are broken that this project exists to prevent.**
-
-| Issue | What happens |
-|---|---|
-| **#99** | A resolved per-mutant timeout at or below 0.5s becomes **0**, and then *every mutant is scored Killed*. A silent, perfect, fake score -- in the tool built to expose exactly that. |
-| **#97** | A `..` in a config path escapes the sandbox and mutates a **real file in place**. A hard kill there leaves the mutant in tracked source, which CLAUDE.md states cannot happen. |
-
-Do these two first, ahead of anything else in this file. Neither is large.
+The two that outranked everything else on this roadmap are fixed and shipped in 0.3.2, and are
+removed here per the rule above. Both were the failure this project exists to expose, turned
+inward: a per-mutant timeout that resolved to zero scored **every** mutant Killed on the clock,
+and a `..` in a config path escaped the sandbox and mutated a real file in the working tree.
+Neither was large, and neither was visible from inside code at 100% coverage and 100%
+self-mutation.
 
 **Five more are the same failure class** -- the run reports a number it did not measure:
 **#96** (the coverage filter drops whole mutate files out of the score, silently), **#98** (the
 report write fails non-terminatingly and the run still returns `Score=100, ExitCode=0`),
-**#103** (a path that does not survive into the sandbox is diagnosed as a red baseline),
-**#107** (a file listed twice doubles the denominator), and **#108** (a missing `tests` entry
+**#106** (a file listed twice doubles the denominator), and **#108** (a missing `tests` entry
 silently runs the whole suite for every mutant).
 
-**And five trace to one missing concept: config paths have no resolver.** #97, #100 (`..` in
+**And five trace to one missing concept: config paths have no resolver.** #100 (`..` in
 `sandboxSubtrees` copies outside the sandbox, carries no `$PID`, and is never cleaned up),
-#104 (`reportPath` is documented optional and is mandatory in practice, and the run finds out
+#103 (a path that does not survive into the sandbox is diagnosed as a red baseline), #104
+(`reportPath` is documented optional and is mandatory in practice, and the run finds out
 last), #109 (a `[` in a path fails with a message naming neither the file nor the cause) and
 #110 (concurrent runs race on `reportPath`, and a `-RecheckFrom` seeded from the survivor
 answers confidently about the wrong survivor set).
@@ -66,8 +63,15 @@ together.
 The rest are performance and housekeeping, and none blocks anything: **#101** (each mutant
 reads and writes the whole mutate file twice), **#102** (a flat 130 ms Pester re-import per
 mutant), **#105** (`psmut-coverage-$PID.xml` accumulates in temp forever -- the sweep's regex
-structurally cannot match it), **#106** (every recheck round pays for coverage instrumentation
+structurally cannot match it), **#107** (every recheck round pays for coverage instrumentation
 that cannot change what it rechecks).
+
+**One more found while shipping the fixes.** **#115**: nothing fails when `main` claims a
+version that is already on the gallery. Both fixes above merged without a version bump, every
+gate passed, and `main` sat at a published 0.3.1 carrying code 0.3.1 does not contain. The
+release gate asks whether the manifest, the CHANGELOG and the notes agree with each other --
+never whether the version they agree on has already shipped. Belongs with the release-path
+work rather than here.
 
 **Security, in proportion.** **#95** is real but narrow: a symlink pre-planted at the
 predictable `/tmp/psmut-sandbox-<pid>` path leaks the mutated source to another local user. CI
@@ -94,9 +98,10 @@ empirically rather than inherited.
 #1 parallelism         <==> #39 resumability
                             both restructure the same loop: one PR, or strictly sequenced
 
-a config path resolver ---> #97, #100, #104, #109, #110
+a config path resolver ---> #100, #103, #104, #109, #110
                             one missing concept, five issues; every other config value got a
-                            resolver in 0.3.0 and paths did not
+                            resolver in 0.3.0 and paths did not. #97 was the sixth and is
+                            fixed -- at the mapper, so the concept is still owed
 
 #53 isolation off $PID ---> #95 symlink disclosure, #22 sandbox self-mutation
                             all three want the sandbox named by something other than the pid
