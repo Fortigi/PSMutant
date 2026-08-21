@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-21, just after 0.3.0. 25 issues open.
+Snapshot 2026-08-21, just after 0.3.0. 26 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -132,6 +132,11 @@ Pick these up between waves; none blocks anything.
 - **#32** Windows CI matrix. Adds runner time, but the caching and concurrency work it was
   waiting on has landed, so it is affordable now.
 - **#22** sandbox self-mutation, **#9** killed-by map.
+- **#89** nothing watches the pinned dependencies. Split unevenly: the `github-actions` half
+  is a ten-line `dependabot.yml` and could go in beside anything, while `.github/pins.env`
+  has no tool that reads it and needs a decision rather than a config file. Worth doing the
+  cheap half early -- a frozen PSScriptAnalyzer does not weaken the lint gate visibly, it
+  just stops finding things, which is this project's own failure mode pointed inward.
 
 ---
 
