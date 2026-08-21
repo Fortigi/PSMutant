@@ -153,22 +153,31 @@ Describe 'Test-PSMutantUnreleasedEmpty' {
 }
 
 Describe 'Get-PSMutantBoundedReleaseNotes' {
-    # The gallery rejects ReleaseNotes over 35000 characters, and it rejects them at the LAST
-    # step. A 0.3.0 release passed every gate, staged, smoke-tested, and then died inside
-    # Publish-Module on a 400. Everything below drives the boundary with a small -Limit
-    # rather than a 35000-character fixture, because the number is a parameter for exactly
-    # that reason.
+    # The gallery enforces TWO limits: 35000 for a generic NuGet package, and 10600 when the
+    # notes are extracted from a PowerShell manifest. Publishing 0.3.0 hit both in turn --
+    # the second only after truncating to satisfy the first -- so the default is the smaller
+    # one. Everything below drives the boundary with a small -Limit rather than a fixture the
+    # size of the real limit, because the number is a parameter for exactly that reason.
+
+    It 'defaults to the manifest-extracted limit, not the larger NuGet one' {
+        # Pinned because the two numbers are easy to confuse and the larger one is what the
+        # first failure reports. A default of 35000 here publishes green and fails at the
+        # gallery, which is the exact sequence that produced two dead releases.
+        $blob = 'q' * 12000
+        $out = Get-PSMutantBoundedReleaseNotes -Notes $blob -Version '1.2.3'
+        $out.Length | Should-BeLessThanOrEqual 10600
+    }
 
     It 'returns short notes untouched' {
         # The overwhelmingly common case must not be reshaped, or every release page gains a
         # pointer nobody needs.
         $notes = "## Fixed`n`nsomething small."
-        Get-PSMutantBoundedReleaseNotes -Notes $notes -Version '1.2.3' -Limit 35000 | Should-Be $notes
+        Get-PSMutantBoundedReleaseNotes -Notes $notes -Version '1.2.3' | Should-Be $notes
     }
 
     It 'returns notes of exactly the limit untouched' {
         # The boundary, not a comfortable value: -le versus -lt is the whole difference here,
-        # and a 100-character fixture against a 35000 limit could never tell them apart.
+        # and a 100-character fixture against the real limit could never tell them apart.
         $notes = 'x' * 200
         (Get-PSMutantBoundedReleaseNotes -Notes $notes -Version '1.2.3' -Limit 200).Length | Should-Be 200
     }
