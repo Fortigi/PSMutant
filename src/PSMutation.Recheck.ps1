@@ -204,27 +204,35 @@ function Write-PSMutationRecheckReport {
     }
 }
 
-function Show-PSMutationRecheckSummary {
+function Get-PSMutationRecheckSummaryLine {
     # Counts, not a score, and the caveat every time -- a recheck that reads like a
-    # measurement is exactly how a filtered number ends up quoted as a real one.
+    # measurement is exactly how a filtered number ends up quoted as a real one. Pure;
+    # Write-PSMutationOutput emits.
+    [OutputType([object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Summary,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
         [string]$ReportPath
     )
-    $col = if ($Summary.StillSurviving -eq 0) { 'Green' } else { 'Yellow' }
-    Write-Host "`n----------------------------------------------" -ForegroundColor DarkGray
-    Write-Host ("  Recheck: {0} of {1} previous survivor(s) now killed" -f $Summary.NowKilled, $Summary.Rechecked) -ForegroundColor $col
+    $lines = [System.Collections.Generic.List[object]]::new()
+    $role = if ($Summary.StillSurviving -eq 0) { 'Good' } else { 'Warn' }
+    $lines.Add((New-PSMutationLine -Role 'Rule' -Text "`n----------------------------------------------"))
+    $lines.Add((New-PSMutationLine -Role $role `
+                -Text ("  Recheck: {0} of {1} previous survivor(s) now killed" -f $Summary.NowKilled, $Summary.Rechecked)))
     if ($Summary.StillSurviving -gt 0) {
-        Write-Host "  Still surviving:" -ForegroundColor Yellow
+        $lines.Add((New-PSMutationLine -Role 'Warn' -Text '  Still surviving:'))
         $Results | Where-Object Status -eq 'Survived' | ForEach-Object {
-            Write-Host ("    {0}:{1}  {2}" -f $_.File, $_.Line, $_.Description) -ForegroundColor Yellow
+            $lines.Add((New-PSMutationLine -Role 'Warn' -Data $_ `
+                        -Text ("    {0}:{1}  {2}" -f $_.File, $_.Line, $_.Description)))
         }
     }
-    Write-Host "  Not a mutation score - this run skipped every mutant that was already killed." -ForegroundColor DarkGray
-    Write-Host "  Run the full set before trusting a number: edited tests can revive mutants this run never saw." -ForegroundColor DarkGray
-    Write-Host "  Report: $ReportPath" -ForegroundColor Gray
+    # Muted, not Rule. Both print DarkGray, but these are the caveats that stop a partial
+    # number being quoted as a real one -- a renderer that drops separators must keep them.
+    $lines.Add((New-PSMutationLine -Role 'Muted' -Text '  Not a mutation score - this run skipped every mutant that was already killed.'))
+    $lines.Add((New-PSMutationLine -Role 'Muted' -Text '  Run the full set before trusting a number: edited tests can revive mutants this run never saw.'))
+    $lines.Add((New-PSMutationLine -Role 'Detail' -Text "  Report: $ReportPath"))
+    return [object[]]$lines.ToArray()
 }
 
 function Invoke-PSMutationRecheckRun {
@@ -258,7 +266,8 @@ function Invoke-PSMutationRecheckRun {
         throw ("Cannot recheck against '$RecheckFrom': " + ($why -join '; ') + '. Run the full set to regenerate the report.')
     }
     $targets = Select-PSMutationRecheckCandidate -Candidates $Candidates -Report $prior -SandboxRoot $SandboxRoot -Equivalents $Equivalents
-    if (-not $Quiet) { Write-Host "  Rechecking $($targets.Count) previous survivor(s)`n" -ForegroundColor Gray }
+    Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Detail' `
+            -Text "  Rechecking $($targets.Count) previous survivor(s)`n")
 
     $results = Invoke-PSMutationLoop -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
         -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -Quiet:$Quiet
@@ -270,6 +279,7 @@ function Invoke-PSMutationRecheckRun {
     $summary = Write-PSMutationRecheckReport -Results $results -ReportPath $recheckPath `
         -PriorSurvivorCount @($prior.survivors).Count -SourceReportPath $RecheckFrom `
         -SourceHashes $SourceHashes -Operators $Operators -Provenance (& $Provenance)
-    if (-not $Quiet) { Show-PSMutationRecheckSummary -Summary $summary -Results $results -ReportPath $recheckPath }
+    Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationRecheckSummaryLine -Summary $summary `
+            -Results $results -ReportPath $recheckPath)
     return $summary
 }

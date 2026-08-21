@@ -3,6 +3,7 @@
 
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
+    . (Join-Path $src 'PSMutation.Output.ps1')
     . (Join-Path $src 'PSMutation.Report.ps1')
 
     $script:mixed = @(
@@ -162,102 +163,110 @@ Describe 'Write-PSMutationReport' {
     }
 }
 
-Describe 'Show-PSMutationSummary' {
-    BeforeEach {
-        # $script: and set in BeforeEach, not the Describe body: a variable assigned
-        # in a Describe body only exists during discovery, so at run time it is $null
-        # -- and `84 -ge $null` is TRUE, which silently paints every score green.
-        $script:lines = [System.Collections.Generic.List[string]]::new()
-        $script:colours = [System.Collections.Generic.List[string]]::new()
-        Mock Write-Host { $script:lines.Add([string]$Object); $script:colours.Add([string]$ForegroundColor) }
-    }
+Describe 'Get-PSMutationSummaryLine' {
+    # No Mock Write-Host anywhere below. The function returns what the run should SAY, so
+    # the assertions are against roles and text rather than against a cmdlet's arguments.
+    # That is the point of the seam: rewording a line no longer breaks a test, and the role
+    # a line carries is checked instead of the colour some renderer picked for it.
 
-    It 'prints the score and every survivor with its file, line and change' {
-        # The survivor list IS the tool's output -- a caller works from these lines,
-        # so dropping the line number or the change text makes the run useless even
-        # though the score still looks right. Asserted on the killed/total text
-        # rather than the percentage, which renders as 66,7 under a comma locale.
-        Show-PSMutationSummary -Summary (Get-PSMutationScore -Results $script:mixed) `
+    It 'names the score and every survivor with its file, line and change' {
+        # The survivor list IS the tool's output -- a caller works from these lines, so
+        # dropping the line number or the change text makes the run useless even though the
+        # score still looks right. Asserted on the killed/total text rather than the
+        # percentage, which renders as 66,7 under a comma locale.
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $script:mixed) `
             -Results $script:mixed -High 85 -Low 70 -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should-BeLikeString '*2 killed / 3*'
-        ($script:lines -join "`n") | Should-BeLikeString '*a.ps1:3*z*'
-        ($script:lines -join "`n") | Should-BeLikeString '*r.json*'
+        ($lines.Text -join "`n") | Should-BeLikeString '*2 killed / 3*'
+        ($lines.Text -join "`n") | Should-BeLikeString '*a.ps1:3*z*'
+        ($lines.Text -join "`n") | Should-BeLikeString '*r.json*'
     }
 
-    It 'does not print a survivor section when nothing survived' {
-        Show-PSMutationSummary -Summary (Get-PSMutationScore -Results @([pscustomobject]@{ Status = 'Killed' })) `
+    It 'carries the survivor row as data, not only as text' {
+        # What makes this a seam rather than a rename. A renderer emitting CI annotations
+        # needs the file and line as values; if the only copy is inside the formatted
+        # string, every such renderer has to parse the text back apart.
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $script:mixed) `
+            -Results $script:mixed -High 85 -Low 70 -ReportPath 'r.json'
+        $survivor = @($lines | Where-Object { $_.Data -and $_.Data.Status -eq 'Survived' })
+        $survivor.Count | Should-Be 1
+        $survivor[0].Data.Line | Should-Be 3
+    }
+
+    It 'says nothing about survivors when nothing survived' {
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results @([pscustomobject]@{ Status = 'Killed' })) `
             -Results @([pscustomobject]@{ Status = 'Killed' }) -High 85 -Low 70 -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should-NotBeLikeString '*Survivors*'
+        ($lines.Text -join "`n") | Should-NotBeLikeString '*Survivors*'
     }
 
     It 'says how many mutants were excluded as declared-equivalent' -ForEach @(
         @{ Count = 1 }   # the discriminating case: `-gt 0` and `-gt 1` agree at 0 and 3
         @{ Count = 3 }
     ) {
-        # A 100% built on a dozen declarations is a different claim from a 100% that
-        # killed everything, and the reader must not have to open the config to
-        # tell them apart. ONE exclusion is the case that separates "any" from
-        # "more than one" -- at exactly one declaration, `-gt 1` prints nothing.
-        Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; DeclaredEquivalent = $Count }) `
+        # A 100% built on a dozen declarations is a different claim from a 100% that killed
+        # everything, and the reader must not have to open the config to tell them apart.
+        # ONE exclusion is the case that separates "any" from "more than one" -- at exactly
+        # one declaration, `-gt 1` says nothing.
+        $lines = Get-PSMutationSummaryLine -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; DeclaredEquivalent = $Count }) `
             -Results @() -High 85 -Low 70 -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should-BeLikeString "*$Count mutant(s) excluded as declared-equivalent*"
+        ($lines.Text -join "`n") | Should-BeLikeString "*$Count mutant(s) excluded as declared-equivalent*"
     }
 
     It 'does not list a declared equivalent among the survivors to go and fix' {
-        # It is excluded from the score, so listing it as work sends the reader
-        # after a mutant the config already argued is unkillable.
+        # It is excluded from the score, so listing it as work sends the reader after a
+        # mutant the config already argued is unkillable.
         $eq = [pscustomobject]@{ 'a.ps1:3:z' = 'cannot change behaviour' }
-        Show-PSMutationSummary -Summary (Get-PSMutationScore -Results $script:mixed -Equivalents $eq) `
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $script:mixed -Equivalents $eq) `
             -Results $script:mixed -High 85 -Low 70 -ReportPath 'r.json' -Equivalents $eq
-        ($script:lines -join "`n") | Should-NotBeLikeString '*a.ps1:3*'
-        ($script:lines -join "`n") | Should-NotBeLikeString '*Survivors*'
+        ($lines.Text -join "`n") | Should-NotBeLikeString '*a.ps1:3*'
+        ($lines.Text -join "`n") | Should-NotBeLikeString '*Survivors*'
     }
 
     It 'still lists an undeclared survivor alongside a declared one' {
-        # The filter must remove only what was declared; dropping the whole section
-        # would hide real work behind one declaration.
+        # The filter must remove only what was declared; dropping the whole section would
+        # hide real work behind one declaration.
         $eq = [pscustomobject]@{ 'a.ps1:3:z' = 'cannot change behaviour' }
         $results = $script:mixed + [pscustomobject]@{ File = 'a.ps1'; Line = 9; Operator = 'BinaryOperator'; Description = 'q'; Status = 'Survived' }
-        Show-PSMutationSummary -Summary (Get-PSMutationScore -Results $results -Equivalents $eq) `
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $results -Equivalents $eq) `
             -Results $results -High 85 -Low 70 -ReportPath 'r.json' -Equivalents $eq
-        ($script:lines -join "`n") | Should-BeLikeString '*a.ps1:9*q*'
-        ($script:lines -join "`n") | Should-NotBeLikeString '*a.ps1:3*'
+        ($lines.Text -join "`n") | Should-BeLikeString '*a.ps1:9*q*'
+        ($lines.Text -join "`n") | Should-NotBeLikeString '*a.ps1:3*'
     }
 
     It 'stays silent about exclusions when there are none' {
-        Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; DeclaredEquivalent = 0 }) `
+        $lines = Get-PSMutationSummaryLine -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; DeclaredEquivalent = 0 }) `
             -Results @() -High 85 -Low 70 -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should-NotBeLikeString '*declared-equivalent*'
+        ($lines.Text -join "`n") | Should-NotBeLikeString '*declared-equivalent*'
     }
 
-    It 'prints stale declarations loudly, with the offending key' {
-        Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0
-                                          StaleEquivalents = @('a.ps1:3:z -- declared equivalent but the suite killed it') }) `
-            -Results @() -High 85 -Low 70 -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should-BeLikeString '*INVALID equivalence declarations*'
-        ($script:lines -join "`n") | Should-BeLikeString '*a.ps1:3:z*'
-        $script:colours | Should-ContainCollection 'Red'
+    It 'reports stale declarations as Bad, with the offending key' {
+        $lines = Get-PSMutationSummaryLine -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0
+                StaleEquivalents = @('a.ps1:3:z -- declared equivalent but the suite killed it')
+            }) -Results @() -High 85 -Low 70 -ReportPath 'r.json'
+        ($lines.Text -join "`n") | Should-BeLikeString '*INVALID equivalence declarations*'
+        ($lines.Text -join "`n") | Should-BeLikeString '*a.ps1:3:z*'
+        $lines.Role | Should-ContainCollection 'Bad'
     }
 
-    It 'prints no stale section when the summary carries no stale list' {
-        # @($null).Count is 1, so an unfiltered count prints the alarm with a blank
-        # line under it on every ordinary run.
-        Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; StaleEquivalents = $null }) `
+    It 'reports no stale section when the summary carries no stale list' {
+        # @($null).Count is 1, so an unfiltered count raises the alarm with a blank line
+        # under it on every ordinary run.
+        $lines = Get-PSMutationSummaryLine -Summary ([pscustomobject]@{ Score = 100; Killed = 2; Total = 2; Survived = 0; StaleEquivalents = $null }) `
             -Results @() -High 85 -Low 70 -ReportPath 'r.json'
-        ($script:lines -join "`n") | Should-NotBeLikeString '*INVALID*'
+        ($lines.Text -join "`n") | Should-NotBeLikeString '*INVALID*'
     }
 
-    It 'colours the score green at the high threshold, yellow between, red below low' -ForEach @(
-        @{ Score = 85; Expected = 'Green'  }   # exactly high: the boundary, not 86
-        @{ Score = 84; Expected = 'Yellow' }   # one below high
-        @{ Score = 70; Expected = 'Yellow' }   # exactly low
-        @{ Score = 69; Expected = 'Red'    }   # one below low
+    It 'gives the score line the role its band earns' -ForEach @(
+        @{ Score = 85; Expected = 'Good' }   # exactly high: the boundary, not 86
+        @{ Score = 84; Expected = 'Warn' }   # one below high
+        @{ Score = 70; Expected = 'Warn' }   # exactly low
+        @{ Score = 69; Expected = 'Bad' }    # one below low
     ) {
-        # Boundary values, not comfortable ones: 90/50 would pass just as happily
-        # against `-gt` as against `-ge`, and would never notice the bands sliding.
-        Show-PSMutationSummary -Summary ([pscustomobject]@{ Score = $Score; Killed = 1; Total = 2; Survived = 0 }) `
+        # Boundary values, not comfortable ones: 90/50 would pass just as happily against
+        # `-gt` as against `-ge`, and would never notice the bands sliding. Which console
+        # colour each role becomes is asserted in Output.Tests.ps1, not here.
+        $lines = Get-PSMutationSummaryLine -Summary ([pscustomobject]@{ Score = $Score; Killed = 1; Total = 2; Survived = 0 }) `
             -Results @() -High 85 -Low 70 -ReportPath 'r.json'
-        $script:colours | Should-ContainCollection $Expected
+        $lines.Role | Should-ContainCollection $Expected
     }
 }
 
@@ -284,32 +293,32 @@ Describe 'ConvertTo-PSMutationRunResult' {
     }
 }
 
-Describe 'Get-PSMutationScoreColour' {
-    It 'colours <Score> against 85/70 as <Expected>' -ForEach @(
-        @{ Score = 100; High = 85; Low = 70; Expected = 'Green'  }
-        @{ Score = 85;  High = 85; Low = 70; Expected = 'Green'  }   # exactly high: -ge, not -gt
-        @{ Score = 84;  High = 85; Low = 70; Expected = 'Yellow' }   # one below high
-        @{ Score = 70;  High = 85; Low = 70; Expected = 'Yellow' }   # exactly low
-        @{ Score = 69;  High = 85; Low = 70; Expected = 'Red'    }   # one below low
-        @{ Score = 0;   High = 85; Low = 70; Expected = 'Red'    }   # the #40 headline
+Describe 'Get-PSMutationScoreRole' {
+    It 'scores <Score> against 85/70 as <Expected>' -ForEach @(
+        @{ Score = 100; High = 85; Low = 70; Expected = 'Good' }
+        @{ Score = 85;  High = 85; Low = 70; Expected = 'Good' }   # exactly high: -ge, not -gt
+        @{ Score = 84;  High = 85; Low = 70; Expected = 'Warn' }   # one below high
+        @{ Score = 70;  High = 85; Low = 70; Expected = 'Warn' }   # exactly low
+        @{ Score = 69;  High = 85; Low = 70; Expected = 'Bad' }   # one below low
+        @{ Score = 0;   High = 85; Low = 70; Expected = 'Bad' }   # a zero must never read Good
     ) {
         # Boundary values, not comfortable ones: 90/50 would pass just as happily against
         # `-gt` as against `-ge`, and would never notice the bands sliding by one.
-        Get-PSMutationScoreColour -Score $Score -High $High -Low $Low | Should-Be $Expected
+        Get-PSMutationScoreRole -Score $Score -High $High -Low $Low | Should-Be $Expected
     }
 
-    It 'reads red at zero even against bands of zero' {
+    It 'reads Good at zero even against bands of zero' {
         # Guards the degenerate config rather than assuming nobody writes it: with both
-        # bands at 0 every score is at or above high, so zero is green -- which is correct
+        # bands at 0 every score is at or above high, so zero reads Good -- which is correct
         # and is the user's explicit choice, not the silent null-comparison that made
-        # every score green regardless of what the config said.
-        Get-PSMutationScoreColour -Score 0 -High 0 -Low 0 | Should-Be 'Green'
+        # every score Good regardless of what the config said.
+        Get-PSMutationScoreRole -Score 0 -High 0 -Low 0 | Should-Be 'Good'
     }
 
-    It 'prefers green over yellow when the bands overlap' {
+    It 'prefers Good over Warn when the bands overlap' {
         # High below Low is a nonsense config, but it must still be decided rather than
-        # crash: the first branch wins, so the result is Green.
-        Get-PSMutationScoreColour -Score 50 -High 40 -Low 60 | Should-Be 'Green'
+        # crash: the first branch wins, so the result is Good.
+        Get-PSMutationScoreRole -Score 50 -High 40 -Low 60 | Should-Be 'Good'
     }
 }
 
