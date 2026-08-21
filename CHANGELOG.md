@@ -43,9 +43,6 @@ with worked examples. It was previously serving an internal note by accident.
 **Score colours are correct.** A config without colour bands used to print every score green,
 including 0%.
 
-**0.3.0 is unlisted.** It carried the same code as this release; only its gallery page was
-wrong. If you pinned it, move to 0.3.1 -- nothing else changes.
-
 ### Fixed
 - **The gallery page for a release was the maintainer changelog entry.** It opened mid-document
   at `### Changed`, ran to 9646 characters, and carried ten `[#nn]` references that are
