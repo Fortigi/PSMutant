@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-20. 31 issues open.
+Snapshot 2026-08-21, just after 0.3.0. 25 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -20,22 +20,26 @@ An entry leaves when the **work** is done, which can be slightly before its issu
 the count above may briefly exceed what is listed here. Ordering is the only thing this file
 claims; the issues remain the record of what is open.
 
+**0.3.0 is out**, which changes one thing about sequencing rather than many: the public surface
+is now written down and published -- `Invoke-PSMutation`, the report JSON, and the two schemas in
+`schemas/v1/`. Anything that changes those shapes is a **breaking** change with a version cost
+attached, where before 0.3.0 it was free. #54 and #4 are the two queued items that do, and both
+are better early in a cycle than late.
+
 ---
 
 ## The constraints that force the order
 
 ```
-#47 output seam        ---> #11 annotations, #10 -ListOnly, #6 per-file scores
-                            all three add a new rendering of the same data
-
 #1 parallelism         <==> #39 resumability
                             both restructure the same loop: one PR, or strictly sequenced
 ```
 
 Two things follow that are worth stating out loud:
 
-- **#1 is the most-requested item and should not be first.** It rewrites the loop that #39 also
-  needs and the output that #47 wants to abstract. Doing it early means doing parts of it twice.
+- **#1 is the most-requested item and should not be first.** It rewrites the loop #39 also
+  needs. The output half of that argument is spent -- the seam exists -- but the loop half is
+  not, and doing #1 early still means doing parts of it twice.
 - **#1 is bigger than "add a runspace pool".** The architecture review established that
   sequential evaluation is a *correctness invariant*, not a tuning default: the loop mutates one
   shared sandbox copy and runs the covering tests against the whole tree
@@ -54,26 +58,6 @@ Two things follow that are worth stating out loud:
 
 ---
 
-## Wave C -- structural groundwork
-
-One prerequisite left, and it changes no behaviour. Worth doing before the features that
-each want it, rather than paying for it three times.
-
-| Order | Issue | Why here |
-|---|---|---|
-| 1 | **#47** output seam | Separate deciding what to say from saying it. Unblocks three issues, and the surface keeps growing -- the equivalence-key work added two more `Write-Host` sites to the summary. |
-
-#47 can slip to just before Wave E if you want output features sooner -- but then #11, #10 and #6
-each pay for it separately.
-
-**#52 is deliberately not a position here.** Option (a) -- correcting the three places that
-claimed dot-source order enforced the dependency direction -- is done. Option (b), the
-`tests/Layering.Tests.ps1` edge allowlist, is specified on the issue and is triggered rather than
-scheduled: do it with whichever of **#1**, **#8** or **#47** is picked up first. Those are the
-three changes that add edges in the region where a shortcut reads as reasonable in review, and an
-allowlist is worth most written just before the code that would violate it, rather than ageing
-quietly while nothing touches the graph. Within this wave that trigger is #47.
-
 ## Wave D -- the silent-wrong-answer cluster
 
 Now has a home to land in. This is the wave with the most user-visible value.
@@ -88,13 +72,25 @@ the mutant.
 
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#54**, **#56** | The run-result shape and the score function's fused scope. #56 blocks per-file scores in Wave E, and both sit in `Report.ps1`, which #28 and #3 have just been through. |
-| 2 | **#60**, **#61** | Two files documented Pure that do I/O, and `-Quiet` implemented two ways. Both are small, both are prerequisites for #47/#11 being done cleanly. |
+| 1 | **#54** with **#63** | The run result carries a verdict without its reason and has no field common to both modes -- which is what a run-context object fixes, so doing them apart means threading the same parameters twice. |
+| 2 | **#56** | The score function validates a whole config while scoring a subset, which blocks per-file scores in Wave E. |
+
+**#54 is breaking, so it wants to be EARLY in the 0.4.0 cycle**, not just before the release --
+the same argument that shipped 0.3.0 when it did rather than folding this in. Landing it now
+means the next release carries one deliberate surface change with time to settle; landing it
+late means either delaying the release or shipping it hot.
 
 ## Wave E -- output features
 
-**#11** CI annotations, then **#10** `-ListOnly`, then **#6** per-file scores and ratchet.
-All three want #47. #6 also wanted report provenance, which has landed.
+**#11** CI annotations, then **#10** `-ListOnly`, then **#6** per-file scores and ratchet. The
+seam all three wanted is built, and report provenance, which #6 also wanted, has landed.
+
+**Take #11 first, ahead of Wave D.** Not for its own value, though it has the most of any
+issue left -- survivors surfaced on the PR diff instead of buried in a log. Take it because
+the seam was justified by a claim that is still untested: *annotations become a new renderer
+rather than a change to the reporting layer*. A seam with exactly one renderer is a
+hypothesis. #11 is the first thing that can prove or break that design, and the cheapest
+moment to find out it is wrong is while the design is a week old rather than a year.
 
 ## Wave F -- the loop
 
@@ -136,15 +132,6 @@ Pick these up between waves; none blocks anything.
 - **#32** Windows CI matrix. Adds runner time, but the caching and concurrency work it was
   waiting on has landed, so it is affordable now.
 - **#22** sandbox self-mutation, **#9** killed-by map.
-- **#83** config values are never type-checked. Same class as `thresholds.brake`, reached by a
-  wrong type instead of a typo: `"timeoutFactor": "four"` validates, resolves to an empty
-  per-mutant timeout, and a timeout expiry scores as a kill -- so the run reports a number it
-  did not measure. Small, and it belongs with whoever next touches `Assert-PSMutationConfig`.
-- **#84** the report format has a version but no published schema. Natural completion of the
-  provenance work: a version number is worth much less without a description of what the
-  version denotes, and it would collapse three hand-maintained field lists into one statement.
-  Decide it together with #83 -- both want `Test-Json -Schema`, and the repo should grow one
-  convention rather than two.
 
 ---
 
