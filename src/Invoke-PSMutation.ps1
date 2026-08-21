@@ -115,11 +115,13 @@ function Invoke-PSMutation {
     try {
         $t = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox
 
-        if (-not $Quiet) { Write-Host "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite..." -ForegroundColor Cyan }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Banner' `
+                -Text "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite...")
         $baseline = Invoke-PSMutationBaseline -TestPath $t.AllTests -MutateFiles $t.Mutate
         Assert-PSMutationBaselineGreen -Baseline $baseline
         $timeout = Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds $baseline.DurationSeconds
-        if (-not $Quiet) { Write-Host ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout) -ForegroundColor Green }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Good' `
+                -Text ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout))
 
         $ops = Get-PSMutationOperatorList -Cfg $cfg
         $cands = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly (Get-PSMutationCoveredLinesOnly -Cfg $cfg) -CoveredLines $baseline.CoveredLines
@@ -141,7 +143,8 @@ function Invoke-PSMutation {
                 -ReportPath $reportPath -Equivalents $cfg.equivalents -Provenance $provenance -Quiet:$Quiet
         }
 
-        if (-not $Quiet) { Write-Host "  Mutants to evaluate: $($cands.Count)`n" -ForegroundColor Gray }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Detail' `
+                -Text "  Mutants to evaluate: $($cands.Count)`n")
 
         $results = Invoke-PSMutationLoop -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests -TimeoutSeconds $timeout -SandboxRoot $sandbox -Quiet:$Quiet
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
@@ -149,7 +152,8 @@ function Invoke-PSMutation {
         $summary = Write-PSMutationReport -Results $results -ReportPath $reportPath -Thresholds $cfg.thresholds `
             -SourceHashes $hashes -Operators $ops -Equivalents $cfg.equivalents -Provenance (& $provenance)
         $band = Get-PSMutationScoreBand -Cfg $cfg
-        if (-not $Quiet) { Show-PSMutationSummary -Summary $summary -Results $results -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationSummaryLine -Summary $summary -Results $results `
+                -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents)
 
         $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds
         return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit

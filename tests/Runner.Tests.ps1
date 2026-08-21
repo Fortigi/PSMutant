@@ -12,6 +12,7 @@ BeforeAll {
     . (Join-Path $src 'PSMutation.Operators.ps1')
     . (Join-Path $src 'PSMutation.Sandbox.ps1')
     . (Join-Path $src 'PSMutation.Pester.ps1')     # Get-PSMutationPesterPath, mocked below
+    . (Join-Path $src 'PSMutation.Output.ps1')
     . (Join-Path $src 'PSMutation.Runner.ps1')
 
     $script:fixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-runner-$PID.ps1"
@@ -57,32 +58,33 @@ Describe 'Select-PSMutationCandidate' {
     }
 }
 
-Describe 'Write-PSMutationProgress' {
-    BeforeEach {
-        $script:lines = [System.Collections.Generic.List[string]]::new()
-        $script:colours = [System.Collections.Generic.List[string]]::new()
-        Mock Write-Host { $script:lines.Add([string]$Object); $script:colours.Add([string]$ForegroundColor) }
-    }
-
-    It 'marks a survivor with . in yellow and a kill with x in grey' -ForEach @(
-        @{ Status = 'Survived'; Glyph = '.'; Colour = 'Yellow'   }
-        @{ Status = 'Killed';   Glyph = 'x'; Colour = 'DarkGray' }
+Describe 'Get-PSMutationProgressLine' {
+    It 'marks a survivor with . as Warn and a kill with x as Muted' -ForEach @(
+        @{ Status = 'Survived'; Glyph = '.'; Role = 'Warn' }
+        @{ Status = 'Killed'; Glyph = 'x'; Role = 'Muted' }
     ) {
-        # The glyph is how a long run is read at a glance; swapping them would
-        # invert the meaning of every line of output while still "printing progress".
-        Write-PSMutationProgress -Index 3 -Total 10 `
+        # The glyph is how a long run is read at a glance; swapping them would invert the
+        # meaning of every line of output while still "reporting progress".
+        $line = Get-PSMutationProgressLine -Index 3 -Total 10 `
             -Result ([pscustomobject]@{ Line = 42; Description = '-eq -> -ne'; Status = $Status }) -DisplayFile 'calc.ps1'
         # -Match with an escaped pattern, NOT -BeLike: in a wildcard, "[3/10]" is a
-        # character class matching one of 3 / 1 0, so the obvious assertion silently
-        # tests something else entirely.
-        ($script:lines -join '') | Should-MatchString ([regex]::Escape("[3/10] $Glyph "))
-        $script:colours | Should-ContainCollection $Colour
+        # character class matching one of 3 / 1 0, so the obvious assertion silently tests
+        # something else entirely.
+        $line.Text | Should-MatchString ([regex]::Escape("[3/10] $Glyph "))
+        $line.Role | Should-Be $Role
     }
 
     It 'shows the file, line and the change being tried' {
-        Write-PSMutationProgress -Index 1 -Total 2 `
+        $line = Get-PSMutationProgressLine -Index 1 -Total 2 `
             -Result ([pscustomobject]@{ Line = 42; Description = '-eq -> -ne'; Status = 'Killed' }) -DisplayFile 'calc.ps1'
-        ($script:lines -join '') | Should-BeLikeString '*calc.ps1:42*-eq -> -ne*'
+        $line.Text | Should-BeLikeString '*calc.ps1:42*-eq -> -ne*'
+    }
+
+    It 'carries the mutant row as data' {
+        # So a renderer other than the console has the values without parsing the text.
+        $row = [pscustomobject]@{ Line = 42; Description = '-eq -> -ne'; Status = 'Survived' }
+        $line = Get-PSMutationProgressLine -Index 1 -Total 2 -Result $row -DisplayFile 'calc.ps1'
+        $line.Data.Line | Should-Be 42
     }
 }
 
@@ -114,10 +116,10 @@ Describe 'Invoke-PSMutationLoop' {
         $r[0].Status | Should-Be 'Killed'
     }
 
-    It 'writes a progress line per mutant unless asked to be quiet' {
-        # Every other test here passes -Quiet, so the reporting branch never ran.
+    It 'renders a progress line naming the mutant it just finished' {
+        # Every other test here passes -Quiet, so this branch would otherwise never run.
         Mock Invoke-PSMutant { 'Killed' }
-        Mock Write-PSMutationProgress { }
+        Mock Write-PSMutationOutput { }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -126,12 +128,18 @@ Describe 'Invoke-PSMutationLoop' {
         Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) | Out-Null
 
-        Should-Invoke Write-PSMutationProgress -Exactly 1 -ParameterFilter { $Index -eq 1 -and $Total -eq 1 }
+        # [[]1/1] escapes the bracket: in a wildcard a bare [1/1] is a character class.
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Lines.Text -like '*[[]1/1]*' }
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { -not $Quiet }
     }
 
-    It 'stays silent when asked to be quiet' {
+    It 'hands -Quiet to the renderer rather than skipping the call' {
+        # The loop no longer decides whether to speak. It always renders and passes the
+        # switch on, because Write-PSMutationOutput is the single place -Quiet is honoured
+        # -- so what has to be proven here is that the switch is FORWARDED. A loop that
+        # dropped it would print for real while any "was not called" assertion stayed green.
         Mock Invoke-PSMutant { 'Killed' }
-        Mock Write-PSMutationProgress { }
+        Mock Write-PSMutationOutput { }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -140,7 +148,7 @@ Describe 'Invoke-PSMutationLoop' {
         Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet | Out-Null
 
-        Should-Invoke Write-PSMutationProgress -Exactly 0
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Quiet }
     }
 
     It 'falls back to the whole test set for a file with no per-file mapping' {
