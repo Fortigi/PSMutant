@@ -492,3 +492,152 @@ Describe 'the help a user actually gets' {
         (@($script:help.examples.example).code -join "`n") | Should-BeLikeString '*.recheck.json*'
     }
 }
+
+
+Describe 'the published report schema' {
+    # schemas/v1/report.schema.json is shipped with the module so a consumer can validate a
+    # report without reading this repo's tests. That only means anything if the reports we
+    # actually emit satisfy it, which is what this Describe is for -- a schema that has
+    # drifted from the writer is worse than none, because it invites a consumer to code
+    # against a shape they will not receive.
+    #
+    # Validated as TEXT, not as a parsed object. ConvertFrom-Json recognises the ISO-8601
+    # generatedAt and hands back a [datetime], so a round-tripped object no longer has the
+    # string the schema describes. The file is the contract.
+    BeforeAll {
+        $script:schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v1/report.schema.json') -Raw
+        $script:fullText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.json'))
+        $script:recheckText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.recheck.json'))
+
+        function Test-AgainstSchema { param([string]$Json)
+            try { Test-Json -Json $Json -Schema $script:schema -ErrorAction Stop | Out-Null; return $true }
+            catch { return $false }
+        }
+    }
+
+    It 'accepts the full report a real run just wrote' {
+        Should-BeTrue -Actual (Test-AgainstSchema -Json $script:fullText)
+    }
+
+    It 'accepts the recheck report a real run just wrote' {
+        # Both shapes, because the recheck report travels a different call path -- wiring a
+        # field into one writer and not the other is invisible until someone opens the file.
+        Should-BeTrue -Actual (Test-AgainstSchema -Json $script:recheckText)
+    }
+
+    It 'refuses a recheck report that carries a mutation score' {
+        # The safety property, and the reason this schema is worth shipping rather than
+        # merely writing down. A recheck measures a subset, so a score in one is a partial
+        # number wearing a real one's name -- the failure this whole project exists to
+        # prevent. Making it unrepresentable in the format is stronger than a caveat.
+        $tampered = $script:recheckText -replace '("mode"\s*:\s*"Recheck")', '$1, "mutationScore": 100'
+        # Asserted first, because a -replace that silently matched nothing would leave the
+        # document untouched and this test would pass while proving nothing about the schema.
+        $tampered | Should-NotBe $script:recheckText
+        Should-BeFalse -Actual (Test-AgainstSchema -Json $tampered)
+    }
+
+    It 'still accepts a report carrying a field it has never seen' {
+        # The additive promise, in the other direction: schemaVersion changes when a field
+        # changes meaning or disappears, NEVER when one is added. So the schema must permit
+        # extra properties, or every consumer validating against it breaks on the next
+        # release that records one more thing.
+        $widened = $script:fullText -replace '("generatedFrom"\s*:\s*"PSMutant")', '$1, "somethingAddedLater": 42'
+        $widened | Should-NotBe $script:fullText
+        Should-BeTrue -Actual (Test-AgainstSchema -Json $widened)
+    }
+}
+
+
+Describe 'the published config schema' {
+    # schemas/v1/config.schema.json is the definition of the config format -- the document
+    # every consumer configures PSMutant against. Assert-PSMutationConfig enforces the same
+    # format at run time.
+    #
+    # Two enforcements of one format is a standing invitation to drift, and a schema that
+    # disagrees with the code is worse than no schema: it green-lights a config the module
+    # will refuse, or flags one it would have accepted. So the agreement is asserted rather
+    # than maintained by hand -- the keys, the threshold keys, the operator vocabulary and
+    # the types all come from the code, never from a list written out again here.
+    BeforeAll {
+        $root = Split-Path -Parent $PSScriptRoot
+        . (Join-Path $root 'src/PSMutation.Operators.ps1')
+        . (Join-Path $root 'src/PSMutation.Config.ps1')
+        $script:cfgSchemaText = Get-Content (Join-Path $root 'schemas/v1/config.schema.json') -Raw
+        $script:cfgSchema = $script:cfgSchemaText | ConvertFrom-Json
+        $script:repoRoot = $root
+    }
+
+    It 'is where the validator gets its key list, rather than a second copy of it' {
+        # Not a comparison of two lists -- there is only one. Get-PSMutationConfigKey reads
+        # the schema, so this asserts the derivation happens at all: a hard-coded list that
+        # happened to match would pass a comparison and then rot the moment a key is added.
+        $fromCode = @(Get-PSMutationConfigKey | Sort-Object)
+        $fromSchema = @($script:cfgSchema.properties.PSObject.Properties.Name | Sort-Object)
+        ($fromCode -join ',') | Should-Be ($fromSchema -join ',')
+        # And it is not empty, which a broken path would silently produce -- an empty known
+        # list makes EVERY key unknown, or every key fine, depending which way it fails.
+        $fromCode.Count | Should-BeGreaterThan 5
+    }
+
+    It 'is where the threshold key list comes from too' {
+        $fromCode = @(Get-PSMutationConfigKey -Section 'thresholds' | Sort-Object)
+        ($fromCode -join ',') | Should-Be 'break,high,low'
+    }
+
+    It 'offers exactly the operators the module implements' {
+        # The drift that would hurt most: the schema blessing an operator name the module
+        # then refuses, or omitting one that works. The operator map is the single source,
+        # so the enum is checked against it rather than against a written list.
+        $inSchema = @($script:cfgSchema.properties.operators.items.enum | Sort-Object)
+        ($inSchema -join ',') | Should-Be ((Get-PSMutationKnownOperator) -join ',')
+    }
+
+    It 'requires what the validator requires and nothing more' {
+        # mutate and tests are the two the validator refuses a config for lacking.
+        (@($script:cfgSchema.required | Sort-Object) -join ',') | Should-Be 'mutate,tests'
+    }
+
+    It 'accepts the configs this repo actually ships' -ForEach @(
+        @{ Path = 'psmutant.self.config.json' }
+        @{ Path = 'examples/psmutant.config.json' }
+    ) {
+        # Both carry _-prefixed prose keys, so this also pins that the comment convention
+        # survives additionalProperties:false.
+        $json = Get-Content (Join-Path $script:repoRoot $Path) -Raw
+        # Called directly rather than wrapped in a "does not throw" assertion: there is no
+        # Should-NotThrow in Pester 6, because an unhandled exception fails the test by
+        # itself. Assert what it actually returned.
+        Should-BeTrue -Actual (Test-Json -Json $json -Schema $script:cfgSchemaText -ErrorAction Stop)
+    }
+
+    It 'refuses a misspelled key, the way the validator does' {
+        # additionalProperties:false is what makes a typo visible before the run starts.
+        # The message is worse than the module's -- no "did you mean" -- which is exactly
+        # why the code check stays.
+        $bad = '{ "mutate": ["a"], "tests": { "a": ["t"] }, "mutat": ["b"] }'
+        { Test-Json -Json $bad -Schema $script:cfgSchemaText -ErrorAction Stop } | Should-Throw
+    }
+
+    It 'refuses a wrong type when applied to raw JSON, as a consumer would apply it' {
+        # ONE case, not a table of them. Assert-PSMutationConfig now validates against this
+        # same schema, so Config.Tests.ps1 already covers the type cases through the real
+        # entry point -- which is the coverage that counts, and repeating them here would be
+        # the same assertion wearing a second hat.
+        #
+        # What this adds is the other application: a consumer validating a config FILE, text
+        # in hand, rather than the object the module re-serialises. Same schema, different
+        # caller, and only one of the two is exercised anywhere else.
+        $json = '{ "mutate": ["a"], "tests": { "a": ["t"] }, "timeoutFactor": "four" }'
+        { Test-Json -Json $json -Schema $script:cfgSchemaText -ErrorAction Stop } | Should-Throw
+    }
+
+    It 'accepts a $schema key naming the format the config is written against' {
+        # A config that cannot name its own schema cannot be checked before the run, so the
+        # key has to pass both here and in Assert-PSMutationConfig. Failing either one makes
+        # the shipped schema unusable in the one place it matters most.
+        $json = '{ "$schema": "./schemas/v1/config.schema.json", "mutate": ["a"], "tests": { "a": ["t"] } }'
+        Should-BeTrue -Actual (Test-Json -Json $json -Schema $script:cfgSchemaText -ErrorAction Stop)
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg ($json | ConvertFrom-Json))
+    }
+}
