@@ -686,15 +686,103 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   behaviour above it, which is what let the gap sit unnoticed. When a title says a *verb*,
   the body invokes that verb.
 
+- **A resolved number gets a floor that means something, and the floor refuses rather than
+  clamps.** The per-mutant budget is `max(floor, baseline x factor)`, and it must be at least as
+  long as the unmutated suite took -- not merely non-zero. A 1-second budget against a 3-second
+  baseline times out every mutant by construction, exactly as a 0-second one does, so a minimum
+  of 1 would only move the boundary. It throws instead of substituting a working value, because
+  the substituted number would then be written into the report as though the config had asked
+  for it -- a silent substitution in the same place a silent substitution caused the bug.
+
+  This is the project's own headline failure turned inward: every mutant dying on the clock is
+  scored Killed, so the run reports a perfect score over tests that never ran.
+
+- **Every path in a config is mapped into the sandbox, and the mapper checks where the path
+  landed.** Not whether it contains `..` -- `src/../src/a.ps1` is `src/a.ps1` and was never
+  ambiguous -- but whether the mapped result is still inside. The caller writes to whatever the
+  mapper returns, so a path that escapes is mutated in the directory the sandbox exists to
+  replace, and the promise that a hard kill cannot leave a mutant in tracked source then rests
+  on a `finally` rather than on the real files never being opened for write.
+
+  The check lives in the mapper because that is the single choke point both `mutate` and `tests`
+  pass through, and because it runs before the baseline, so a bad path fails immediately instead
+  of surfacing later as a red baseline.
+
+- **Record what you could not break, and check the negative for vacuity before believing it.**
+  A confirmed negative is worth as much as a finding and costs as much to establish, and without
+  it the same ground gets re-dug. The sandbox sweep deletes the *name* and not the target, so a
+  planted symlink does not redirect it; a hard kill leaves tracked source byte-identical **by
+  construction** rather than by cleanup, since the real files are never opened for write; no
+  config value reaches an eval sink; zero mutants scores 0% and exits 1, not a vacuous 100%; two
+  concurrent runs never sweep each other's live sandbox. `ROADMAP.md` carries the full list.
+
+  The vacuity check is the part that is easy to skip. "I changed X and nothing broke" means
+  nothing until you have also confirmed that a change which *should* break it does -- a fixture
+  that cannot fail proves the same thing about every hypothesis.
+
+- **Review by lens, not by file.** A pass over the same files with the same question finds what
+  the last one found. Pointing an unused question at the project -- what does a hostile local
+  user get, what does this cost per mutant, what does a monorepo layout do to it -- returned
+  seventeen issues at once, two of them outranking everything already in the backlog. Both were
+  in code that had been read many times and was at 100% coverage and 100% self-mutation.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
 issue; the rule is what stops the next instance, and it moves up to "Practices to preserve"
 in the PR that closes its issue.
 
-**This section is empty again.** That is a state to notice rather than a milestone: it means
-the last findings have all landed, not that there is nothing left to find.
+- **A config path gets a resolver, exactly like every other config value** (#100, #103, #104,
+  #109, #110). This is one missing concept, not five bugs. Every other config value got a
+  resolver with a documented default; paths did not, so `..` copies outside the sandbox and is
+  never cleaned up, a `[` fails with a message naming neither the file nor the cause,
+  `reportPath` is documented optional and is in practice mandatory, and a path that does not
+  survive into the sandbox is diagnosed as a red baseline. Fixing them separately produces five
+  guards in five places.
 
+- **A number in the report answers for what it excluded** (#96, #7, #59). The coverage filter can
+  remove a whole `mutate` file from the score with nothing recording that it did, and a
+  timed-out mutant is counted as Killed. Both make the score go **up**. Anything that drops a
+  mutant, or classifies one without observing a test fail, has to be visible in the report next
+  to the number it changed.
+
+- **A failure that leaves the run green is worse than one that fails** (#98, #55). The report
+  write fails non-terminatingly and the run still returns `Score=100, ExitCode=0`; nothing
+  asserts that Pester's result is two-valued, though the mutant classifier depends on it. Every
+  fake-perfect-score bug in this project's history is this shape.
+
+- **The unit of isolation is the run, not the process** (#53, #22, #95, #105). Fusing ownership
+  and liveness into `$PID` is why the sandbox file cannot be self-mutated, why a planted symlink
+  at a predictable path is reachable at all, and why `psmut-coverage-$PID.xml` accumulates in
+  temp forever with a sweep that structurally cannot match it. Four issues, one identity.
+
+- **A guarantee proven on one OS is proven on one OS** (#32, #35). CI runs Linux only, and the
+  path layer carries the headline guarantee. Every fixture is also PSMutant's own flat
+  `src/`+`tests/`, so the consumer-shaped layout the module promises to support is never
+  executed.
+
+- **Assert the exact answer when the fixture has one** (#36, #43). End-to-end counts are asserted
+  as open inequalities over a fixture whose answer is exact, which passes against a run that
+  produced twice what it should. Test files sharing `$script:` state across blocks means a
+  filtered run fails on tests that are fine -- and a suite that cannot be run in part cannot be
+  bisected.
+
+- **A per-mutant cost is paid once per mutant** (#101, #102, #107, #108, #62). Each mutant reads
+  and writes the whole file twice, re-imports Pester into a fresh runspace, and -- with no
+  `tests` entry -- runs the entire suite. None of it is wrong; all of it multiplies. Measure
+  before choosing a mechanism, and note that the timeout is derived from a *serial* baseline, so
+  parallel evaluation (#1) would manufacture false kills on top of whatever it saved.
+
+- **A pin nobody watches has already drifted** (#89, #94). `.github/pins.env` and the `uses:` SHAs
+  go stale silently, and `ci.yml` declares no `permissions` block, so it executes third-party
+  code with a write-scoped token.
+
+- **A run needs a context object before it needs another mode** (#63, #54, #56). Each mode
+  currently adds another long parameter list threaded through the orchestrator; the run result
+  carries a verdict without its reason and has no field common to both modes; and
+  `Get-PSMutationScore` validates the whole config while scoring a subset, so per-file scores
+  (#6) cannot reuse it. Three of the queued features push through this seam, and it is cheaper
+  to widen once than three times.
 
 ## Writing tests here
 
