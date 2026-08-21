@@ -348,5 +348,23 @@ function Get-PSMutationTimeout {
     param($Cfg, [Parameter(Mandatory)] [double]$BaselineSeconds)
     $factor = if ($Cfg.timeoutFactor) { $Cfg.timeoutFactor } else { 4 }
     $floor = if ($Cfg.timeoutFloorSeconds) { $Cfg.timeoutFloorSeconds } else { 15 }
-    return [int][math]::Max($floor, $BaselineSeconds * $factor)
+    $budget = [int][math]::Max($floor, $BaselineSeconds * $factor)
+
+    # Refuse a budget the unmutated suite could not itself meet. Below that line every
+    # mutant expires on the clock rather than on behaviour, and an expiry is scored as a
+    # KILL -- so the run comes back 100% over tests that never finished. That is the
+    # failure the floor above exists to prevent, and nothing was bounding the result.
+    #
+    # An error rather than a clamp. Clamping would run to completion under a budget the
+    # config did not ask for and cannot be seen in the report; the two configs that reach
+    # here are a floor and factor that are both tiny, and neither is a thing anyone means.
+    $least = [math]::Max(1, $BaselineSeconds)
+    if ($budget -lt $least) {
+        throw ("Per-mutant timeout resolves to ${budget}s, which is below the " +
+            "$([math]::Round($BaselineSeconds, 1))s the unmutated suite took. Every mutant would " +
+            "expire on the clock rather than on behaviour, and an expiry is scored as a kill -- " +
+            "the run would report a perfect score over tests that never finished. Raise " +
+            "'timeoutFloorSeconds' (currently $floor) or 'timeoutFactor' (currently $factor).")
+    }
+    return $budget
 }
