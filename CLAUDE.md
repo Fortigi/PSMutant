@@ -179,6 +179,7 @@ self-mutating on their own terms. Keep new decisions there rather than in the bo
 | `PSMutation.Recheck.ps1` | 100% | yes |
 | `PSMutation.Pester.ps1` | 100% | yes |
 | `PSMutation.Config.ps1` | 100% | yes |
+| `PSMutation.Output.ps1` | 100% | yes |
 | `PSMutation.Runner.ps1` | 100% | yes |
 | `Invoke-PSMutation.ps1` | 100% | yes |
 | `PSMutation.Sandbox.ps1` | 100% | **no** — see below |
@@ -192,6 +193,33 @@ the live run's sandbox mid-baseline and turns the run red before a single mutant
 Its behaviour is pinned by the normal suite at 100% coverage instead.
 
 ---
+
+## Output: deciding what to say, and saying it
+
+Every file that produces output returns **lines**; `src/PSMutation.Output.ps1` emits them and
+holds the module's only `Write-Host`. `tests/Layering.Tests.ps1` asserts that count, so a
+second one anywhere in `src/` fails a test naming the renderer it should have gone through.
+PSScriptAnalyzer cannot do that job: `PSAvoidUsingWriteHost` is excluded repo-wide because
+the gate scripts in `tools/` print for a living.
+
+A line carries a **role**, never a colour: `Banner`, `Good`, `Warn`, `Bad`, `Detail`,
+`Muted`, `Rule`. The console renderer maps role to colour; a renderer for CI annotations or
+markdown maps the same roles to its own vocabulary. An unknown role **throws** -- a silently
+uncoloured line reads as a styling slip, when what it signals is a renderer that will not
+know what to do with the line at all.
+
+`Rule` and `Muted` both print DarkGray and are still distinct, which is the point of roles
+rather than colours: a renderer that is not a console drops separators, and must not take
+the recheck caveats with them.
+
+A survivor line carries the mutant row in **`-Data`**. Annotations need the file and line as
+values, and recovering them by parsing the formatted text back apart is exactly the coupling
+this seam removes.
+
+**`-Quiet` is honoured in one place**: `Write-PSMutationOutput`. Callers always render and
+pass the switch down; they never guard. Guarding at the call site means each new emitter has
+to remember, and one that forgets prints in quiet mode while every existing test stays green,
+because those tests assert on the output the *current* callers produce.
 
 ## Operators, and the vacuous 100%
 
@@ -233,7 +261,9 @@ src/PSMutation.Operators.ps1   AST walk -> mutation candidates; the operator set
 src/PSMutation.Sandbox.ps1     temp sandbox: create, path-map, sweep. Side-effects.
 src/PSMutation.Pester.ps1      the boundary with Pester: which one, its path, the child's contract.
 src/PSMutation.Config.ps1      config resolution: subtrees, timeout, the sandbox plan. Pure.
-src/PSMutation.Report.ps1      scoring, thresholds, equivalents, report JSON, run result. Pure.
+src/PSMutation.Output.ps1      the console seam: what a line is, and the ONE Write-Host.
+src/PSMutation.Report.ps1      scoring, thresholds, equivalents, the report document, the
+                               summary lines, run result. Pure except for writing the JSON.
 src/PSMutation.Recheck.ps1     -RecheckFrom, whole: compatibility, selection, the run.
 src/PSMutation.Runner.ps1      baseline + its green guard, per-mutant execution, the loop.
 src/Invoke-PSMutation.ps1      public entry point. Wiring, and nothing else.
@@ -539,6 +569,28 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   that does not in the same call. Two items, because a single-outcome fixture passes just as
   well against a stage that was deleted. This is the strongest routine check in the repo and
   it has exactly this blind spot; nothing else will catch it for you. (#31)
+- **A new file-to-file edge in `src/` is a decision, and `tests/Layering.Tests.ps1` makes you
+  make it.** Every other gate is blind to DIRECTION: a shortcut call from `Operators.ps1`
+  into `Report.ps1` still reaches full coverage and still survives self-mutation. The test
+  holds an allowlist of file-to-file *relationships* -- one entry per pair, not per call
+  site -- so adding a call between files that already have an edge is free and adding the
+  first one is deliberate.
+
+  It fails in **both** directions. An undeclared edge fails, and so does a declared edge the
+  code no longer has: an allowlist describing relationships that were dropped is a document
+  nobody can trust, and it silently readmits an edge later. Same argument as a stale
+  equivalence declaration.
+
+  It also asserts the graph is **acyclic**, which the allowlist alone cannot give you -- two
+  edges each reasonable on their own review make a cycle between them, and nobody reviewing
+  the second is looking at the first.
+
+  Two blind spots are stated in the file rather than left to be rediscovered: the child
+  runspace script is a here-string, so the parser never sees inside it, and the operator map
+  is dispatched through `& $fn`, whose callee is a variable. Both are within-file today.
+
+  The ordered list in `PSMutant.psm1` is not enforcement and never was -- every cross-file
+  reference resolves at call time, so reverse-loading behaves identically.
 - **A test's title names what the test calls.** The test titled "does NOT sweep the sandbox
   of a concurrently running process" never called the sweep. It was not wrong about anything
   -- it asserted a true fact about the predicate -- but its title claimed coverage of the

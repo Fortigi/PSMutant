@@ -253,11 +253,14 @@ function Write-PSMutationReport {
     return $summary
 }
 
-function Get-PSMutationScoreColour {
-    # Green at or above High, yellow at or above Low, red below it.
+function Get-PSMutationScoreRole {
+    # Good at or above High, Warn at or above Low, Bad below it.
+    #
+    # A ROLE, not a colour: which console colour that becomes is the renderer's business.
+    # Returning a colour here puts console vocabulary in a file whose job is arithmetic.
     #
     # Resolved numbers only, never a raw config value: `$score -ge $null` is $true, so an
-    # unresolved band prints every score green rather than failing.
+    # unresolved band reports every score as Good rather than failing.
     [OutputType([string])]
     [CmdletBinding()]
     param(
@@ -265,13 +268,18 @@ function Get-PSMutationScoreColour {
         [Parameter(Mandatory)] [double]$High,
         [Parameter(Mandatory)] [double]$Low
     )
-    if ($Score -ge $High) { return 'Green' }
-    if ($Score -ge $Low) { return 'Yellow' }
-    return 'Red'
+    if ($Score -ge $High) { return 'Good' }
+    if ($Score -ge $Low) { return 'Warn' }
+    return 'Bad'
 }
 
-function Show-PSMutationSummary {
-    # Human-readable summary + the list of survivors to go add assertions for.
+function Get-PSMutationSummaryLine {
+    # What a completed run should say: the score, what qualified it, and the survivors to
+    # go add assertions for. Pure -- it decides, Write-PSMutationOutput emits.
+    #
+    # No comma-wrap: this never returns fewer than three lines and its caller binds the
+    # result to an [object[]] parameter, so there is no single-item case to protect.
+    [OutputType([object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Summary,
@@ -281,21 +289,23 @@ function Show-PSMutationSummary {
         [string]$ReportPath,
         $Equivalents
     )
+    $lines = [System.Collections.Generic.List[object]]::new()
+    $lines.Add((New-PSMutationLine -Role 'Rule' -Text "`n----------------------------------------------"))
     # Resolved numbers in, not the raw config. Comparing against $Thresholds.high directly
     # compares against $null for every config without colour bands, and `$score -ge $null`
-    # is $true -- so every score prints green, 0% included.
-    $col = Get-PSMutationScoreColour -Score $Summary.Score -High $High -Low $Low
-    Write-Host "`n----------------------------------------------" -ForegroundColor DarkGray
-    Write-Host ("  Mutation score: {0}%  ({1} killed / {2})" -f $Summary.Score, $Summary.Killed, $Summary.Total) -ForegroundColor $col
-    # Printed next to the score, not buried in the report: a 100% built on a dozen
-    # declared equivalents is a different claim from a 100% that killed everything.
+    # is $true -- so every score reads as Good, 0% included.
+    $lines.Add((New-PSMutationLine -Role (Get-PSMutationScoreRole -Score $Summary.Score -High $High -Low $Low) `
+                -Text ("  Mutation score: {0}%  ({1} killed / {2})" -f $Summary.Score, $Summary.Killed, $Summary.Total)))
+    # Said next to the score, not buried in the report: a 100% built on a dozen declared
+    # equivalents is a different claim from a 100% that killed everything.
     if ($Summary.DeclaredEquivalent -gt 0) {
-        Write-Host ("  {0} mutant(s) excluded as declared-equivalent (see config)" -f $Summary.DeclaredEquivalent) -ForegroundColor DarkGray
+        $lines.Add((New-PSMutationLine -Role 'Muted' `
+                    -Text ("  {0} mutant(s) excluded as declared-equivalent (see config)" -f $Summary.DeclaredEquivalent)))
     }
     $stale = @($Summary.StaleEquivalents | Where-Object { $_ })   # @($null).Count is 1
     if ($stale.Count -gt 0) {
-        Write-Host "  INVALID equivalence declarations - the config is claiming something untrue:" -ForegroundColor Red
-        $stale | ForEach-Object { Write-Host "    $_" -ForegroundColor Red }
+        $lines.Add((New-PSMutationLine -Role 'Bad' -Text '  INVALID equivalence declarations - the config is claiming something untrue:'))
+        $stale | ForEach-Object { $lines.Add((New-PSMutationLine -Role 'Bad' -Text "    $_")) }
     }
     # A declared equivalent is not a survivor to go and fix: listing it here sends
     # the reader after a mutant the config already argued is unkillable, which is
@@ -303,12 +313,17 @@ function Show-PSMutationSummary {
     $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
     $open = @($Results | Where-Object { $_.Status -eq 'Survived' -and -not (Get-PSMutationDeclaredKey -Result $_ -Declared $declared) })
     if ($open.Count -gt 0) {
-        Write-Host "  Survivors (add assertions to kill these):" -ForegroundColor Yellow
+        $lines.Add((New-PSMutationLine -Role 'Warn' -Text '  Survivors (add assertions to kill these):'))
+        # -Data carries the mutant row itself. A renderer emitting CI annotations needs the
+        # file and line as values, and recovering them by parsing the text back out is the
+        # coupling this seam exists to remove.
         $open | ForEach-Object {
-            Write-Host ("    {0}:{1}  {2}" -f $_.File, $_.Line, $_.Description) -ForegroundColor Yellow
+            $lines.Add((New-PSMutationLine -Role 'Warn' -Data $_ `
+                        -Text ("    {0}:{1}  {2}" -f $_.File, $_.Line, $_.Description)))
         }
     }
-    Write-Host "  Report: $ReportPath" -ForegroundColor Gray
+    $lines.Add((New-PSMutationLine -Role 'Detail' -Text "  Report: $ReportPath"))
+    return [object[]]$lines.ToArray()
 }
 
 function ConvertTo-PSMutationRunResult {

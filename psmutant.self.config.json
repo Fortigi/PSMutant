@@ -10,6 +10,7 @@
     "src/PSMutation.Recheck.ps1",
     "src/PSMutation.Pester.ps1",
     "src/PSMutation.Config.ps1",
+    "src/PSMutation.Output.ps1",
     "src/PSMutation.Runner.ps1",
     "src/Invoke-PSMutation.ps1"
   ],
@@ -28,6 +29,9 @@
     ],
     "src/PSMutation.Config.ps1": [
       "tests/Config.Tests.ps1"
+    ],
+    "src/PSMutation.Output.ps1": [
+      "tests/Output.Tests.ps1"
     ],
     "src/PSMutation.Runner.ps1": [
       "tests/Runner.Tests.ps1"

@@ -16,6 +16,7 @@ foreach ($file in @(
         'PSMutation.Sandbox.ps1'
         'PSMutation.Pester.ps1'
         'PSMutation.Config.ps1'
+        'PSMutation.Output.ps1'
         'PSMutation.Report.ps1'
         'PSMutation.Recheck.ps1'
         'PSMutation.Runner.ps1'
