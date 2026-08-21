@@ -126,11 +126,24 @@ function Get-PSMutantBoundedReleaseNotes {
         the rest.
 
     .DESCRIPTION
-        The PowerShell Gallery rejects a package whose ReleaseNotes exceed 35000 characters,
-        and it rejects it at the LAST step -- the irreversible one. A 0.3.0 release reached
-        Publish-Module, having passed staging, the package smoke test and every gate, and
-        died on `400 (A package's ReleaseNotes property may not be more than 35000
-        characters long.)`.
+        The gallery enforces TWO different limits, and the smaller one is the one that
+        applies here. A generic NuGet package may carry 35000 characters of ReleaseNotes; a
+        package whose notes are EXTRACTED FROM A POWERSHELL MANIFEST may carry 10600. Only
+        the first is mentioned when you exceed it:
+
+            400 (A package's ReleaseNotes property may not be more than 35000 characters long.)
+            400 (The package is invalid. The error encountered was:'A package's ReleaseNotes
+                 property extracted from the PowerShell manifest may not be more than 10600
+                 characters long.')
+
+        Both were hit publishing 0.3.0, in that order -- the second only after truncating to
+        26290 to satisfy the first. So the number below is 10600, and the reason it is not
+        35000 is written down here because the larger number is what the first failure tells
+        you, and believing it costs a second failed release.
+
+        It rejects at the LAST step either way. The 0.3.0 publish reached Publish-Module
+        having passed release consistency, staging, and the package smoke test that loads the
+        artifact and runs a real mutation.
 
         Truncating rather than failing is deliberate. Nothing about the run is weakened by
         shorter notes: they are gallery-page prose, not a gate. Failing the release instead
@@ -150,7 +163,7 @@ function Get-PSMutantBoundedReleaseNotes {
 
     .PARAMETER Limit
         Maximum characters. The gallery's own limit, kept as a parameter so a test can drive
-        the boundary without a 35000-character fixture.
+        the boundary without a fixture the size of the real limit.
 
     .OUTPUTS
         [string] the notes to publish. Never longer than -Limit.
@@ -162,7 +175,7 @@ function Get-PSMutantBoundedReleaseNotes {
     param(
         [Parameter(Mandatory)] [AllowEmptyString()] [string]$Notes,
         [Parameter(Mandatory)] [string]$Version,
-        [int]$Limit = 35000
+        [int]$Limit = 10600
     )
     if ($Notes.Length -le $Limit) { return $Notes }
 
@@ -216,7 +229,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     # the decision back in a YAML snippet, where it is untested and cannot be run by hand.
     $bounded = Get-PSMutantBoundedReleaseNotes -Notes $notes -Version $version
     if ($bounded.Length -lt $notes.Length) {
-        Write-Host "::warning::Release notes for $version are $($notes.Length) characters and the gallery accepts 35000. Publishing an abridged $($bounded.Length) with a link to the full CHANGELOG entry."
+        Write-Host "::warning::Release notes for $version are $($notes.Length) characters; the gallery accepts 10600 when they come from a PowerShell manifest. Publishing an abridged $($bounded.Length) with a link to the full CHANGELOG entry."
     }
 
     # Emitted so the publish workflow can put them on the staged manifest, instead of anyone
