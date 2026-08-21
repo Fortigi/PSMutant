@@ -177,14 +177,18 @@ function Invoke-PSMutant {
     }
 }
 
-function Write-PSMutationProgress {
-    # One per-mutant progress line.
+function Get-PSMutationProgressLine {
+    # One per-mutant progress line. Pure, and emitted as the loop goes rather than
+    # collected: a run of several hundred mutants takes minutes, and a progress report
+    # delivered at the end is not a progress report.
+    [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([int]$Index, [int]$Total, $Result, [string]$DisplayFile)
     $survived = $Result.Status -eq 'Survived'
     $glyph = if ($survived) { '.' } else { 'x' }
-    $col = if ($survived) { 'Yellow' } else { 'DarkGray' }
-    Write-Host ("  [{0}/{1}] {2} {3}:{4} {5}" -f $Index, $Total, $glyph, $DisplayFile, $Result.Line, $Result.Description) -ForegroundColor $col
+    $role = if ($survived) { 'Warn' } else { 'Muted' }
+    return New-PSMutationLine -Role $role -Data $Result `
+        -Text ("  [{0}/{1}] {2} {3}:{4} {5}" -f $Index, $Total, $glyph, $DisplayFile, $Result.Line, $Result.Description)
 }
 
 function Invoke-PSMutationLoop {
@@ -223,7 +227,8 @@ function Invoke-PSMutationLoop {
             Operator = $c.Operator; Description = $c.Description; Status = $status
         }
         $results.Add($row)
-        if (-not $Quiet) { Write-PSMutationProgress -Index $n -Total $Candidates.Count -Result $row -DisplayFile (Split-Path $display -Leaf) }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationProgressLine -Index $n `
+                -Total $Candidates.Count -Result $row -DisplayFile (Split-Path $display -Leaf))
     }
     return , $results.ToArray()
 }

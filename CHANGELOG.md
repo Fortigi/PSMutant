@@ -306,6 +306,52 @@ All notable changes to PSMutant are documented here. Format follows
   would have quietly substituted the default for it.
 
 ### Internal
+- **Output has a seam: deciding what to say is separated from saying it** ([#47], [#60], [#61]).
+  Twenty `Write-Host` calls were spread across four files, each picking its own
+  `-ForegroundColor`. There is **one** now, in `Write-PSMutationOutput`, and
+  `tests/Layering.Tests.ps1` asserts that count -- a second one anywhere in `src/` fails a
+  test naming the renderer it should have gone through. PSScriptAnalyzer cannot do that job,
+  since `PSAvoidUsingWriteHost` is excluded repo-wide for the gate scripts in `tools/`.
+
+  Everything above the seam returns **lines**, each carrying a *role* rather than a colour --
+  `Banner`, `Good`, `Warn`, `Bad`, `Detail`, `Muted`, `Rule`. CI annotations and markdown
+  become a second renderer instead of a conditional at twenty call sites. A survivor line
+  also carries the mutant row in `-Data`, so a renderer has the file and line as values
+  rather than parsing them back out of formatted text.
+
+  Nothing a consumer sees changes: same text, same colours.
+
+  **This is why the output tests were the way they were.** Every one either mocked
+  `Write-Host` or captured the information stream and pattern-matched prose, so rewording a
+  line broke tests. They now assert on roles and text returned by a function. One file still
+  mocks `Write-Host` -- `tests/Output.Tests.ps1`, where the emitting *is* the subject.
+
+  **`-Quiet` has one implementation** ([#61]). It was enforced two ways: as a switch some
+  functions honoured, and as an `if (-not $Quiet)` wrapper the caller had to remember --
+  including around the two functions holding most of the output, which had no `-Quiet`
+  parameter at all. There are zero caller-side guards now; callers always render and pass
+  the switch to `Write-PSMutationOutput`, the only place it is honoured. A new emitter
+  inherits the contract by signature instead of by copying whichever pattern it read first.
+
+  **Two files no longer claim to be pure while printing** ([#60]). `Report.ps1` and
+  `Recheck.ps1` were labelled Pure in the layout table while holding 15 `Write-Host` calls
+  and 4 file writes between them. The console half is gone; the JSON write is not, and the
+  table now says so rather than being edited to match a compromise.
+- **The dependency direction between `src/` files is enforced** ([#52]). Every other gate is
+  blind to it: a shortcut call from `Operators.ps1` into `Report.ps1` still reaches full
+  coverage and still survives self-mutation. `tests/Layering.Tests.ps1` holds an allowlist of
+  file-to-file relationships -- one entry per pair, not per call site -- and fails in both
+  directions, since an allowlist describing edges the code dropped silently readmits them
+  later. It also asserts the graph is acyclic, which the allowlist alone cannot give: two
+  edges each reasonable on their own review make a cycle between them.
+
+  Written now rather than earlier because this change adds four edges, and an allowlist is
+  worth most written just beside the code that would violate it. Its two blind spots are
+  stated in the file: the child-runspace script is a here-string, and the operator map is
+  dispatched through `& $fn`.
+
+  It found one thing already: there are **no** cross-file `$script:` reads left, so the
+  locality rule now holds mechanically rather than by convention.
 - **A scoped self-mutation config for the development loop.**
   `tools/New-PSMutantScopedConfig.ps1` narrows the real config to the files the current
   change touched: one file is about 80 mutants and half a minute, against 400-odd and
