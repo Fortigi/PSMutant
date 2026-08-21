@@ -5,6 +5,34 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.2] - 2026-08-21
+
+### For consumers
+
+**A per-mutant timeout that resolves too low is now refused instead of faking a perfect
+score.** The budget is `max(timeoutFloorSeconds, baseline x timeoutFactor)`, and with a small
+enough floor *and* factor it could resolve to zero. A zero-second budget expires immediately,
+an expired mutant counts as a kill, and so every mutant was killed on the clock rather than on
+behaviour -- 100%, exit 0, over tests that never ran. The budget must now be at least as long
+as your unmutated suite took, and a config that asks for less fails with a message saying so.
+
+If this affects you, your reported score was wrong in the flattering direction, and the run
+that fails after upgrading is the honest one.
+
+**A config path that escapes the source root is now refused.** Every path in a config is
+copied into a temp sandbox and mutated there; a leading `..` survived that mapping, so a path
+like `../shared/Util.ps1` was mutated **where it lives**, in your working tree. Interrupt such
+a run and the mutated file stays on disk. Paths that merely contain `..` and still resolve
+inside -- `src/../src/a.ps1` -- keep working.
+
+### Fixed
+
+- `Get-PSMutationTimeout` bounds the resolved budget below by the baseline duration rather
+  than by zero, because a budget shorter than the suite times out every mutant by construction
+  whatever the number is.
+- `ConvertTo-PSMutationSandboxPath` checks where a mapped path landed, not whether the input
+  contained `..`.
+
 ## [0.3.1] - 2026-08-21
 
 ### For consumers
