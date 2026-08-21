@@ -34,7 +34,7 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 |---|---|
 | Import smoke | module loads, `Invoke-PSMutation` is exported |
 | Lint | `tools/Invoke-PSMutantAnalyzer.ps1` — PSScriptAnalyzer over `PSSA_PATHS`, **every severity**. The same script code scanning runs |
-| Unit tests | whole `tests/` directory, must be 0 failures |
+| Unit tests | whole `tests/` directory, must be 0 failures. Two gates live only here: `Layering.Tests.ps1` (file-to-file edges, acyclicity, the one `Write-Host`) and the public-help and schema assertions in `EndToEnd.Tests.ps1` |
 | Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
 | Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
 | Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100. Several hundred mutants and a handful of minutes -- deliberately not a figure to keep in step, because a hand-maintained count is how the numbers here became folklore before |
@@ -221,6 +221,84 @@ pass the switch down; they never guard. Guarding at the call site means each new
 to remember, and one that forgets prints in quiet mode while every existing test stays green,
 because those tests assert on the output the *current* callers produce.
 
+## The two published schemas
+
+`schemas/` holds the formats this module exchanges with the outside world, and both ship in
+the package -- the staging `Copy-Item` in `publish.yml` is the single place that decides
+whether they travel, and `tools/Test-PSMutantPackage.ps1` fails if they do not arrive.
+
+- **`config.schema.json` is the config format** -- and not a description of it. The module
+  READS it: `Get-PSMutationConfigKey` takes the key names and the threshold sub-keys from
+  it, and `Get-PSMutationConfigTypeFault` validates against it with `Test-Json`. There is no
+  second copy in PowerShell to fall out of step, because there is no second copy.
+- **`report.schema.json` is the report format**, covering both shapes.
+
+**What stays in code is only what a schema cannot say**, and each earns its place by giving
+a better answer than the schema would:
+
+| In code | Because the schema would say |
+|---|---|
+| nearest-name suggestion for an unknown key | "property not allowed" -- which does not say `break` when you wrote `brake` |
+| `mutate` / `tests` missing or empty | "required properties are not present" -- true, and it teaches nothing |
+| operator names, checked against the operator map | it would need the vocabulary copied out of the map, which is the drift this move removed |
+
+**The ORDER those run in is the message quality**, so do not reshuffle
+`Assert-PSMutationConfig` casually: name, then missing-or-empty, then the schema. Absence
+and emptiness come before the type check because they are about the *value*, not its kind;
+an object in `mutate` falls through to the schema and is named as a type error, which is the
+better answer for that one.
+
+**The module now depends on a data file at run time**, which nothing in `src/` did before.
+Two consequences, both handled and both easy to undo by accident:
+
+- `Get-PSMutationConfigSchema` **throws, naming the path**, when the schema is absent. A
+  validator that skips when it cannot find its schema accepts every config, including the
+  ones this exists to catch. The package smoke test asserts both schemas ship.
+- `psmutant.self.config.json` copies `schemas` into the sandbox. A sandboxed `src/` that
+  cannot find the schema refuses every config and turns the baseline red before a mutant is
+  tried.
+
+Three things about the schemas worth knowing before editing either:
+
+- **Validate the FILE, not a parsed object**, for reports. `ConvertFrom-Json` re-types the
+  ISO-8601 `generatedAt` into a `[datetime]`, so the string the schema describes is gone by
+  the time PowerShell hands you an object. The config path re-serialises instead, because
+  the caller holds an object and a config has no field that survives the round trip badly.
+- **`Test-Json` silently ignores `not`.** The obvious spelling of "a recheck must not carry
+  a mutationScore" is a clause that can never fire. It is written as
+  `"properties": { "mutationScore": false }`, which NJsonSchema does honour. Verify any new
+  keyword the same way -- a schema rule that cannot fire looks exactly like one that passes.
+- **Prefer a type union to `oneOf`.** `oneOf` reports a failure in every branch as a
+  sub-error, so an unrelated mistake elsewhere in the file drags a bogus complaint about
+  this key along with it and points the reader at a line that is fine. `"type": ["array",
+  "string", "null"]` with `items` says the same thing with one accurate error.
+
+Additional properties are permitted in the **report** schema on purpose: `schemaVersion`
+changes when a field changes meaning or disappears, never when one is added, so a consumer
+validating against it survives a release that records more. That is also why the exact field
+lists stay pinned in the tests -- the schema states the guaranteed **minimum** for
+consumers, and the literal lists keep *widening* a deliberate act on our side. The **config**
+schema is the opposite: `additionalProperties: false`, because an unrecognised key there is
+a typo that would otherwise weaken the run in silence.
+
+Two things about the report schema worth knowing before editing it:
+
+- **Validate the FILE, not a parsed object.** `ConvertFrom-Json` re-types the ISO-8601
+  `generatedAt` into a `[datetime]`, so the string the schema describes no longer exists by
+  the time PowerShell hands you an object.
+- **`Test-Json` silently ignores `not`.** The obvious spelling of "a recheck must not carry
+  a mutationScore" is a clause that can never fail. It is written as
+  `"properties": { "mutationScore": false }` instead, which NJsonSchema does honour --
+  verified, because a schema rule that cannot fire is exactly the kind of quiet
+  non-enforcement this repo exists to distrust. Check any new keyword the same way.
+
+Additional properties are permitted in the report schema on purpose. `schemaVersion` changes
+when a field changes meaning or disappears, never when one is added, so a consumer
+validating against it survives a release that records more. That is also why the exact
+field lists stay pinned in the tests: the schema states the guaranteed **minimum** for
+consumers, and the literal lists keep *widening* a deliberate act on our side. Two
+assertions, two different claims.
+
 ## Operators, and the vacuous 100%
 
 The default set mutates **expressions**: `BinaryOperator`, `BooleanLiteral`,
@@ -267,6 +345,8 @@ src/PSMutation.Report.ps1      scoring, thresholds, equivalents, the report docu
 src/PSMutation.Recheck.ps1     -RecheckFrom, whole: compatibility, selection, the run.
 src/PSMutation.Runner.ps1      baseline + its green guard, per-mutant execution, the loop.
 src/Invoke-PSMutation.ps1      public entry point. Wiring, and nothing else.
+schemas/                       the two published formats. config.schema.json is READ at run
+                               time -- it is the config format, not a copy of it.
 tools/                         the committed coverage, analyzer and compatibility gates.
 ```
 
@@ -474,7 +554,16 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   exists to prevent. `_`-prefixed keys are exempt, because JSON has no comments and the
   shipped configs use them.
 
-  Adding a key means adding it to that list and to the README table in the same commit. (#24)
+  **The type is checked too, and the schema is what checks it.** A wrong type does not
+  error in PowerShell, it produces a confident wrong answer: a non-numeric `timeoutFactor`
+  makes the timeout arithmetic yield *nothing*, and a timeout expiry is scored as a
+  **kill**. `coveredLinesOnly` is milder and the same shape of bug -- any non-empty string
+  is `$true`.
+
+  **Adding a key means editing `schemas/config.schema.json`, and that is the whole list.**
+  The key names, the threshold sub-keys and every type are read back out of the schema at
+  run time, so there is no PowerShell copy to keep in step. Update the README table in the
+  same commit; that one is still on you. (#24, #83, #84)
 - **Never compare a raw config value; compare a resolved one.** Both of PowerShell's
   null coercions fail *open* -- `$anyNumber -ge $null` is `$true`, and `[bool]$null` is
   `$false` -- so an unresolved config value does not produce an error, it produces a

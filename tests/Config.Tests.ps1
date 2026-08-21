@@ -1,11 +1,10 @@
-# Unit tests for config resolution -- the "what did the user ask for, and what do we
-# do when they didn't say" decisions. These lived inside Invoke-PSMutation, past the
-# nested Pester run that destroys the outer run's coverage breakpoints, so they could
-# not be measured there. Out here they are ordinary pure functions.
+# Unit tests for config resolution -- the "what did the user ask for, and what do we do
+# when they didn't say" decisions, and the validator that refuses a config asking for
+# something this module does not understand.
 #
-# Resolvers only. The baseline guard and the public result shape were tested here while
-# they lived in Config.ps1; they are now covered beside the baseline they judge
-# (Runner.Tests.ps1) and the report contract they belong to (Report.Tests.ps1) -- #45.
+# Also the covering suite for self-mutating src/PSMutation.Config.ps1 - keep it
+# self-contained: the sandbox copies only src/ and tests/, so anything reaching for a file
+# at the repo root proves nothing and leaves the file silently unmutated.
 
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
@@ -378,5 +377,170 @@ Describe 'Get-PSMutationScoreBand' {
         $band = Get-PSMutationScoreBand -Cfg ('{ "thresholds": { "low": 40 } }' | ConvertFrom-Json)
         $band.High | Should-Be 85
         $band.Low | Should-Be 40
+    }
+}
+
+
+Describe 'the schema the validator reads' {
+    # Moving the config format into a data file buys one source of truth and costs a new
+    # failure mode: the file can be absent. These pin that it fails LOUDLY, because a
+    # validator that quietly skips when its schema is missing passes every config -- and the
+    # configs it would have caught are the ones that report a number nobody measured.
+    It 'looks for the schema beside src/, where the package puts it' {
+        (Get-PSMutationConfigSchemaPath) | Should-BeLikeString '*schemas*config.schema.json'
+    }
+
+    It 'reads the schema once and remembers it' {
+        # Not a performance assertion. The cache is the only thing standing between one file
+        # read and one per config key checked, and a mutant that disables it is invisible in
+        # every other test -- identical answers, quietly re-reading the file each time.
+        $script:PSMutationConfigSchema = $null
+        Mock Get-Content { '{ "type": "object" }' }
+        Get-PSMutationConfigSchema | Out-Null
+        Get-PSMutationConfigSchema | Out-Null
+        Should-Invoke Get-Content -Exactly 1
+    }
+
+    It 'throws, naming the path, when the schema is not there' {
+        $script:PSMutationConfigSchema = $null
+        Mock Test-Path { $false } -ParameterFilter { "$Path" -like '*config.schema.json' }
+        { Get-PSMutationConfigSchema } | Should-Throw -ExceptionMessage '*config schema is missing*config.schema.json*'
+    }
+
+    AfterEach {
+        # The cache is module state, so a test that emptied it must not leave it empty for
+        # the next one -- which would pass anyway, and hide that this one had any effect.
+        $script:PSMutationConfigSchema = $null
+    }
+}
+
+Describe 'a config value of the wrong type' {
+    # Both of PowerShell's coercions fail OPEN, so a wrong type does not error -- it
+    # produces a confident wrong answer in whichever direction flatters the run. These pin
+    # the refusal for the kinds where that is true, and pin the ACCEPTANCE of the correct
+    # value beside each, because a validator that refused everything would pass a
+    # refusal-only test just as happily.
+    BeforeAll {
+        $script:ok = '{ "mutate": ["src/a.ps1"], "tests": { "src/a.ps1": ["tests/a.Tests.ps1"] } }'
+        function Get-TestCfg { param([string]$Extra)
+            $body = if ($Extra) { $script:ok -replace '}$', ", $Extra }" } else { $script:ok }
+            return $body | ConvertFrom-Json
+        }
+    }
+
+    It 'refuses a string where a number belongs, naming the key and what it found' {
+        # The headline case. Get-PSMutationTimeout computes max(floor, baseline * factor);
+        # with a non-numeric factor the multiplication yields NOTHING, so the per-mutant
+        # deadline is empty -- and a timeout expiry is scored as a KILL. The run reports a
+        # number it never measured, which is the failure this project exists to prevent.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFactor": "four"') } |
+            Should-Throw -ExceptionMessage "*schema*should be `"number, null`"*'/timeoutFactor'*"
+    }
+
+    It 'accepts a real number for the same key' {
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFactor": 2.5'))
+    }
+
+    It 'refuses a non-empty string where a boolean belongs' {
+        # [bool]'yes please' is $true, so this silently means "mutate uncovered lines too"
+        # -- the opposite of what someone typing "yes please" was reaching for is not even
+        # the risk; the risk is that they get an answer and never learn it was not theirs.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"coveredLinesOnly": "yes please"') } |
+            Should-Throw -ExceptionMessage "*schema*should be `"boolean, null`"*'/coveredLinesOnly'*"
+    }
+
+    It 'refuses 1 and 0 where a boolean belongs' -ForEach @(
+        @{ Literal = '1' }
+        @{ Literal = '0' }
+    ) {
+        # Both, because they are the two a JSON writer coming from another language reaches
+        # for, and they coerce in opposite directions.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg "`"coveredLinesOnly`": $Literal") } |
+            Should-Throw -ExceptionMessage "*schema*should be `"boolean, null`"*'/coveredLinesOnly'*"
+    }
+
+    It 'accepts a real boolean for the same key' -ForEach @(
+        @{ Literal = 'true' }
+        @{ Literal = 'false' }
+    ) {
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg "`"coveredLinesOnly`": $Literal"))
+    }
+
+    It 'refuses a string where the tests map belongs' {
+        # A [string] has properties, so `"tests": "src/a.ps1"` passes the non-empty check
+        # and then maps its Length as though it were a file.
+        { Assert-PSMutationConfig -Cfg ('{ "mutate": ["a"], "tests": "src/a.ps1" }' | ConvertFrom-Json) } |
+            Should-Throw -ExceptionMessage "*schema*should be `"object, null`"*'/tests'*"
+    }
+
+    It 'refuses a string inside thresholds' {
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"thresholds": { "break": "100" }') } |
+            Should-Throw -ExceptionMessage "*schema*'/thresholds/break'*"
+    }
+
+    It 'still allows a threshold to be absent, which means report-only' {
+        # Absence is meaningful here and must not be confused with a wrong type: an unset
+        # thresholds.break is the documented way to ask for a report without a gate.
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg '"thresholds": { "high": 85 }'))
+    }
+
+    It 'still allows an explicit null, for the same reason' {
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFactor": null'))
+    }
+
+    It 'still allows a single file written without a list' {
+        # Every reader wraps with @(), so a one-file `"mutate": "src/a.ps1"` has always
+        # worked. Type checking must not break configs that were never ambiguous.
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg ('{ "mutate": "src/a.ps1", "tests": { "src/a.ps1": ["t.ps1"] } }' | ConvertFrom-Json))
+    }
+
+    It 'refuses an object where a list belongs, which no wrapping rescues' {
+        { Assert-PSMutationConfig -Cfg ('{ "mutate": { "a": 1 }, "tests": { "a": ["t"] } }' | ConvertFrom-Json) } |
+            Should-Throw -ExceptionMessage "*schema*'/mutate'*"
+    }
+
+    It 'ignores the type of an _-prefixed key' {
+        # JSON has no comments, so the shipped configs use _-prefixed keys for prose. They
+        # are exempt from the unknown-key check and must be exempt from this one too.
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg '"_comment": 42'))
+    }
+
+    It 'refuses a boolean where a number belongs, and says so' {
+        # $true is not an [int] in PowerShell, so the numeric test would reject this on its
+        # own -- but only by accident of type identity. The guard is explicit because a
+        # later widening of that test ("accept anything that casts to a number") would
+        # otherwise let `true` through as 1 and silently halve or double the timeout.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFactor": true') } |
+            Should-Throw -ExceptionMessage "*schema*should be `"number, null`"*'/timeoutFactor'*"
+    }
+
+    It 'refuses a list where a scalar belongs, and says so' {
+        # Named as a list rather than as System.Object[], because the reader is looking for
+        # square brackets in a file, not for a .NET type name.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"coveredLinesOnly": [true, false]') } |
+            Should-Throw -ExceptionMessage "*schema*should be `"boolean, null`"*'/coveredLinesOnly'*"
+    }
+
+    It 'still checks the operators after a thresholds block that is fine' {
+        # The two checks are separate loops, and the second only runs if the first falls
+        # through. A first loop that returned on its opening property -- valid or not --
+        # would swallow this operator, and a dropped operator is exactly how a file scores a
+        # vacuous 100%: nothing mutates it, so nothing can survive.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"thresholds": { "high": 85 }, "operators": ["Nonsense"]') } |
+            Should-Throw -ExceptionMessage "*Unknown operators key 'Nonsense'*"
+    }
+
+    It 'checks every operator in the list, not just the first' {
+        # A valid name in front of an invalid one, because a loop that stops after the first
+        # entry answers correctly for a single-operator config and silently drops the rest.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"operators": ["BinaryOperator", "Nonsense"]') } |
+            Should-Throw -ExceptionMessage "*Unknown operators key 'Nonsense'*"
+    }
+
+    It 'reports a misspelled key as a misspelling, not as a wrong type' {
+        # Order matters: an unknown key has no expected kind to be measured against, so
+        # checking types first would answer a question the reader did not ask.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFacter": "four"') } |
+            Should-Throw -ExceptionMessage '*timeoutFacter*timeoutFactor*'
     }
 }
