@@ -107,6 +107,56 @@ Describe 'Get-PSMutationTimeout' {
         Get-PSMutationTimeout -Cfg ([pscustomobject]@{}) -BaselineSeconds 0.2 | Should-Be 15
     }
 
+    It 'refuses a budget the unmutated suite could not itself meet' {
+        # The floor above prevents this for a DEFAULT config. Nothing prevented it for a
+        # configured one: floor and factor both small resolve to 0, every mutant expires on
+        # the clock, an expiry is scored as a kill, and the run reports 100% over tests that
+        # never finished. Both configs below are taken from a run that did exactly that.
+        $cfg = [pscustomobject]@{ timeoutFactor = 0.5; timeoutFloorSeconds = 0.5 }
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.6 } |
+            Should-Throw -ExceptionMessage '*resolves to 0s*below the 0.6s*'
+    }
+
+    It 'names both keys and the consequence when it refuses' {
+        # The reader has to know which of the two numbers to change, and why a budget that
+        # looks merely small is actually fatal.
+        $cfg = [pscustomobject]@{ timeoutFactor = 0.001; timeoutFloorSeconds = 0.5 }
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.6 } |
+            Should-Throw -ExceptionMessage "*scored as a kill*'timeoutFloorSeconds' (currently 0.5)*'timeoutFactor' (currently 0.001)*"
+    }
+
+    It 'allows a budget exactly equal to the baseline' {
+        # The boundary, and the whole difference between -lt and -le. A mutant given exactly
+        # as long as the unmutated suite took is tight but not fatal; one given less is.
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFactor = 1; timeoutFloorSeconds = 1 }) `
+            -BaselineSeconds 30 | Should-Be 30
+    }
+
+    It 'allows a one-second budget when the baseline is faster than a second' {
+        # The lower arm of the same guard, and the case that fixes its constant in place.
+        # With a sub-second baseline the minimum is 1, not the baseline -- so a budget of
+        # exactly 1 is allowed. Raise that minimum to 2 and this config starts being refused
+        # for no reason, which is a mutant nothing else here can catch.
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFactor = 1; timeoutFloorSeconds = 1 }) `
+            -BaselineSeconds 0.5 | Should-Be 1
+    }
+
+    It 'reports the baseline to one decimal place' {
+        # 0.66 rounds to 0.7 at one decimal and stays 0.66 at two, so this pins the
+        # precision rather than merely the presence of a number. A message quoting
+        # 0.66000000001s would be technically true and useless to read.
+        $cfg = [pscustomobject]@{ timeoutFactor = 0.1; timeoutFloorSeconds = 0.1 }
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.66 } |
+            Should-Throw -ExceptionMessage '*below the 0.7s*'
+    }
+
+    It 'still gives at least one second when the baseline is faster than a second' {
+        # A sub-second baseline must not license a 0s budget just because it is larger than
+        # the baseline: 0 is never a budget, whatever the arithmetic says.
+        $cfg = [pscustomobject]@{ timeoutFactor = 0.1; timeoutFloorSeconds = 0.1 }
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.2 } | Should-Throw
+    }
+
     It 'honours a configured factor and floor' {
         Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFactor = 10 }) -BaselineSeconds 10 | Should-Be 100
         Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFloorSeconds = 60 }) -BaselineSeconds 1 | Should-Be 60
