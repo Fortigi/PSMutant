@@ -306,6 +306,22 @@ All notable changes to PSMutant are documented here. Format follows
   would have quietly substituted the default for it.
 
 ### Internal
+- **A scoped self-mutation config for the development loop.**
+  `tools/New-PSMutantScopedConfig.ps1` narrows the real config to the files the current
+  change touched: one file is about 80 mutants and half a minute, against 400-odd and
+  several minutes for the whole set. Maintainer tooling -- nothing shipped changes.
+
+  It is built so a scoped run cannot be mistaken for the gate, because that is the only way
+  it could do harm: its score describes the files it mutated and can be a confident 100%
+  over a change that broke something two files away. So the generated config is untracked,
+  writes to its own `reportPath` rather than the artifact CI reads, prints the files it left
+  out **by name**, and carries the warning in a `_comment` key.
+
+  Two narrowing decisions earn their tests. A changed *test* file pulls in the source it
+  covers, since writing the assertion that kills a survivor is the edit whose effect you
+  most want to see. And declarations are subset with the files -- carrying the full set into
+  a narrowed run leaves every out-of-scope declaration matching no mutant, which fails the
+  run for a reason unrelated to the change.
 - The rules that closed issues were supposed to leave behind are now actually written down,
   and two workflows gained the guard [#42] only ever applied to one of them. An audit of the
   nine issues closed so far found four gaps:
