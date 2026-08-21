@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-21, just after 0.3.0. 26 issues open.
+Snapshot 2026-08-21, after 0.3.1. 43 issues open.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -28,11 +28,78 @@ are better early in a cycle than late.
 
 ---
 
+## Wave H -- what an audit of the unexamined lenses found
+
+Seventeen issues arrived at once (#94-#110) from applying lenses this project had never been
+pointed at: security, supply chain, edge-case robustness and performance. They are listed
+first because two of them outrank everything already on this roadmap, and because they are not
+seventeen independent problems.
+
+**Two things are broken that this project exists to prevent.**
+
+| Issue | What happens |
+|---|---|
+| **#99** | A resolved per-mutant timeout at or below 0.5s becomes **0**, and then *every mutant is scored Killed*. A silent, perfect, fake score -- in the tool built to expose exactly that. |
+| **#97** | A `..` in a config path escapes the sandbox and mutates a **real file in place**. A hard kill there leaves the mutant in tracked source, which CLAUDE.md states cannot happen. |
+
+Do these two first, ahead of anything else in this file. Neither is large.
+
+**Five more are the same failure class** -- the run reports a number it did not measure:
+**#96** (the coverage filter drops whole mutate files out of the score, silently), **#98** (the
+report write fails non-terminatingly and the run still returns `Score=100, ExitCode=0`),
+**#103** (a path that does not survive into the sandbox is diagnosed as a red baseline),
+**#107** (a file listed twice doubles the denominator), and **#108** (a missing `tests` entry
+silently runs the whole suite for every mutant).
+
+**And five trace to one missing concept: config paths have no resolver.** #97, #100 (`..` in
+`sandboxSubtrees` copies outside the sandbox, carries no `$PID`, and is never cleaned up),
+#104 (`reportPath` is documented optional and is mandatory in practice, and the run finds out
+last), #109 (a `[` in a path fails with a message naming neither the file nor the cause) and
+#110 (concurrent runs race on `reportPath`, and a `-RecheckFrom` seeded from the survivor
+answers confidently about the wrong survivor set).
+
+That is worth treating as one piece of work rather than five. Every other config value gained a
+resolver with a documented default in 0.3.0; paths did not. Give them one -- resolve against
+the source root, refuse an escape, name the file when it fails -- and four of those five close
+together.
+
+The rest are performance and housekeeping, and none blocks anything: **#101** (each mutant
+reads and writes the whole mutate file twice), **#102** (a flat 130 ms Pester re-import per
+mutant), **#105** (`psmut-coverage-$PID.xml` accumulates in temp forever -- the sweep's regex
+structurally cannot match it), **#106** (every recheck round pays for coverage instrumentation
+that cannot change what it rechecks).
+
+**Security, in proportion.** **#95** is real but narrow: a symlink pre-planted at the
+predictable `/tmp/psmut-sandbox-<pid>` path leaks the mutated source to another local user. CI
+runners are single-tenant and Windows temp is per-user, so this reaches shared Linux build
+hosts and nothing else. It wants the same change as **#53**, which already proposes moving
+isolation off `$PID` -- do them together. **#94** is a missing `permissions` block on `ci.yml`
+against a `write` default, which matters because that job installs four modules from the
+gallery and then executes them.
+
+**What the audit could NOT break is worth as much as what it could**, and is recorded so it is
+not re-tested: the sweep cannot be redirected through a junction or symlink -- it deletes the
+name, not the target; its name match is anchored; a hard kill leaves tracked source
+byte-identical **by construction**, because the real files are never opened for write; nothing
+in a consumer's config reaches an eval sink; zero mutants scores 0% and exits 1 rather than a
+vacuous 100%; two processes never sweep each other's live sandbox, so #2's fix holds; and
+scoring is linear, not quadratic. The one documented self-mutation exclusion was verified
+empirically rather than inherited.
+
+---
+
 ## The constraints that force the order
 
 ```
 #1 parallelism         <==> #39 resumability
                             both restructure the same loop: one PR, or strictly sequenced
+
+a config path resolver ---> #97, #100, #104, #109, #110
+                            one missing concept, five issues; every other config value got a
+                            resolver in 0.3.0 and paths did not
+
+#53 isolation off $PID ---> #95 symlink disclosure, #22 sandbox self-mutation
+                            all three want the sandbox named by something other than the pid
 ```
 
 Two things follow that are worth stating out loud:
