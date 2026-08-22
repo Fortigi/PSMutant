@@ -390,6 +390,18 @@ Describe 'Get-PSMutantManifestNotesFault' {
     It 'says nothing when the manifest already matches' {
         Get-PSMutantManifestNotesFault -Actual 'same' -Expected 'same' | Should-BeNull
     }
+    It 'ignores line-ending style, which git rewrites on checkout' {
+        # The same commit reads LF on a Linux runner and CRLF on a Windows one, because
+        # core.autocrlf rewrites newlines inside the stored string. Comparing exactly made
+        # this gate pass in CI and fail on a maintainer's machine -- a gate reporting on the
+        # checkout rather than on the content.
+        Get-PSMutantManifestNotesFault -Actual "one`r`ntwo" -Expected "one`ntwo" | Should-BeNull
+    }
+    It 'still catches a real difference that is not just newlines' {
+        # Paired with the case above: normalising must not turn the check into a no-op.
+        Get-PSMutantManifestNotesFault -Actual "one`r`ntwo" -Expected "one`nthree" |
+            Should-BeLikeString '*-Apply*'
+    }
     It 'names the fix when they differ' {
         # Paired with the case above: a fault function that always returns a string would
         # fail every release, and one that never does would catch none.
