@@ -323,3 +323,77 @@ Describe 'the real CHANGELOG, as the gallery will see it' {
         $script:consumer.Length | Should-BeLessThanOrEqual 10600
     }
 }
+
+Describe 'Get-PSMutantRewrittenManifest' {
+    BeforeAll {
+        $script:Manifest = @'
+@{
+    RootModule        = 'PSMutant.psm1'
+    ModuleVersion     = '9.9.9'
+    # NO RequiredModules entry for Pester, deliberately.
+    PrivateData = @{
+        PSData = @{
+            ProjectUri   = 'https://example/repo'
+            ReleaseNotes = 'old notes'
+        }
+    }
+}
+'@
+    }
+
+    It 'replaces the notes and leaves everything else alone' {
+        # The whole reason this exists instead of Update-ModuleManifest, which regenerates the
+        # file: the comment about RequiredModules is the most load-bearing line in the real
+        # manifest, and regenerating drops it.
+        $out = Get-PSMutantRewrittenManifest -ManifestText $script:Manifest -Notes 'new notes'
+        $out | Should-BeLikeString "*ReleaseNotes = 'new notes'*"
+        $out | Should-BeLikeString '*NO RequiredModules entry for Pester, deliberately.*'
+        $out | Should-BeLikeString "*ModuleVersion     = '9.9.9'*"
+        $out | Should-NotBeLikeString '*old notes*'
+    }
+
+    It 'doubles a quote so the manifest still parses' {
+        # An apostrophe would otherwise close the string and leave a manifest that cannot be
+        # read at all -- found at publish, on the step that cannot be undone.
+        $out = Get-PSMutantRewrittenManifest -ManifestText $script:Manifest -Notes "it's fixed"
+        $f = Join-Path ([System.IO.Path]::GetTempPath()) "psd-$([System.Guid]::NewGuid().ToString('N')).psd1"
+        try {
+            Set-Content -LiteralPath $f -Value $out -Encoding utf8
+            (Import-PowerShellDataFile -LiteralPath $f).PrivateData.PSData.ReleaseNotes |
+                Should-Be "it's fixed"
+        }
+        finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'keeps a multi-line block intact, which is the shape that ships' {
+        # The published notes are the CHANGELOG block, newlines and markdown included.
+        $notes = "First line.`nSecond line."
+        $out = Get-PSMutantRewrittenManifest -ManifestText $script:Manifest -Notes $notes
+        $f = Join-Path ([System.IO.Path]::GetTempPath()) "psd-$([System.Guid]::NewGuid().ToString('N')).psd1"
+        try {
+            Set-Content -LiteralPath $f -Value $out -Encoding utf8
+            (Import-PowerShellDataFile -LiteralPath $f).PrivateData.PSData.ReleaseNotes |
+                Should-Be $notes
+        }
+        finally { Remove-Item -LiteralPath $f -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'refuses a manifest with no ReleaseNotes rather than silently doing nothing' {
+        # Returning the text unchanged would make -Apply a no-op while the verify step failed
+        # forever, with no way to reconcile them.
+        { Get-PSMutantRewrittenManifest -ManifestText '@{ ModuleVersion = ''1.0.0'' }' -Notes 'x' } |
+            Should-Throw
+    }
+}
+
+Describe 'Get-PSMutantManifestNotesFault' {
+    It 'says nothing when the manifest already matches' {
+        Get-PSMutantManifestNotesFault -Actual 'same' -Expected 'same' | Should-BeNull
+    }
+    It 'names the fix when they differ' {
+        # Paired with the case above: a fault function that always returns a string would
+        # fail every release, and one that never does would catch none.
+        Get-PSMutantManifestNotesFault -Actual 'stale' -Expected 'fresh' |
+            Should-BeLikeString '*-Apply*'
+    }
+}

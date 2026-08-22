@@ -180,16 +180,22 @@ jobs:
       # The Gallery page is permanent, so the notes on it are derived from CHANGELOG.md
       # rather than transcribed. Only the STAGED manifest is rewritten; the one in git keeps
       # whatever it has, and the changelog stays the single source of truth.
-      - name: Apply the changelog notes to the staged manifest
+      # The release check above already fails when PSMutant.psd1 disagrees with the CHANGELOG,
+      # and the staged manifest is a copy of it -- so this asserts rather than rewrites. It
+      # used to call Update-ModuleManifest, which does not update a manifest but REGENERATES
+      # one: the shipped psd1 arrived as machine boilerplate with every comment dropped,
+      # including the one saying Pester is deliberately absent from RequiredModules.
+      - name: Staged manifest carries the changelog notes
         if: steps.exists.outputs.already != 'true'
         shell: pwsh
         run: |
           $notes = Get-Content $env:RELEASE_NOTES_FILE -Raw
           if ([string]::IsNullOrWhiteSpace($notes)) { throw 'Captured release notes are empty' }
-          Update-ModuleManifest -Path (Join-Path $env:STAGE_DIR 'PSMutant.psd1') -ReleaseNotes $notes
-          $check = (Import-PowerShellDataFile (Join-Path $env:STAGE_DIR 'PSMutant.psd1')).PrivateData.PSData.ReleaseNotes
-          if ([string]::IsNullOrWhiteSpace($check)) { throw 'ReleaseNotes did not survive the manifest update' }
-          Write-Host 'Staged manifest now carries the CHANGELOG notes for this version.'
+          $staged = (Import-PowerShellDataFile (Join-Path $env:STAGE_DIR 'PSMutant.psd1')).PrivateData.PSData.ReleaseNotes
+          if ($staged -ne $notes.TrimEnd("`r", "`n")) {
+            throw 'Staged manifest ReleaseNotes do not match the captured CHANGELOG notes.'
+          }
+          Write-Host 'Staged manifest carries the CHANGELOG notes for this version.'
 
       # The gate this whole issue exists for: load the artifact that is about to become
       # permanent, and run a real mutation with it. A gallery version cannot be withdrawn.
