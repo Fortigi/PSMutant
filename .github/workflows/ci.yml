@@ -26,6 +26,15 @@ concurrency:
   group: ci-${{ github.ref }}
   cancel-in-progress: ${{ github.event_name == 'pull_request' }}
 
+# Least privilege. The repository default is a WRITE-scoped token, and this job installs
+# four modules from the gallery and then executes them -- a compromised or hijacked package
+# would be running with rights to push to this repo. Nothing here writes anything back.
+#
+# code-scanning.yml and publish.yml already declared theirs; this was the one job left with
+# more authority than it uses, which is also the one that runs the most third-party code.
+permissions:
+  contents: read
+
 jobs:
   test:
     runs-on: ubuntu-latest
