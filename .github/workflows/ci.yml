@@ -36,7 +36,11 @@ permissions:
   contents: read
 
 jobs:
-  test:
+  # Renamed from `test` because a matrix suffixes its legs: the checks are now
+  # "gates (ubuntu-latest)" and "gates (windows-latest)". The aggregate job below keeps a
+  # check called `test` in existence, which is what the branch ruleset requires and what
+  # publish.yml queries -- both would otherwise wait for a context that can never report.
+  gates:
     # BOTH operating systems, because this module's headline guarantee is a PATH property:
     # a mutant is never written into tracked source, the sandbox is mapped by relative
     # offset, ownership is keyed on $PID, and stale sandboxes are swept by name. Separators,
@@ -197,3 +201,25 @@ jobs:
       - name: Pester compatibility guard (runs under the version the suite does not use)
         shell: pwsh
         run: ./tools/Test-PSMutantPesterCompatibility.ps1 -PesterVersion $env:PESTER_COMPAT_VERSION
+
+  # One check named `test`, green only when EVERY matrix leg was green.
+  #
+  # A required status check is matched by name, and a matrix does not produce one: adding
+  # Windows renamed `test` to `test (ubuntu-latest)` and `test (windows-latest)`, so the rule
+  # requiring `test` waited on a context that no longer existed and every PR blocked. The same
+  # name is queried by publish.yml before a release.
+  #
+  # if: always() so a failed leg still reports here rather than leaving the aggregate skipped,
+  # which a branch rule cannot tell apart from pending.
+  test:
+    needs: gates
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Every matrix leg passed
+        shell: pwsh
+        run: |
+          $result = '${{ needs.gates.result }}'
+          if ($result -ne 'success') { throw "CI matrix result was '$result', not success." }
+          Write-Host 'All matrix legs passed.'
