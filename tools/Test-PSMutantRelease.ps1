@@ -315,7 +315,14 @@ function Get-PSMutantManifestNotesFault {
         [Parameter(Mandatory)] [AllowEmptyString()] [string]$Actual,
         [Parameter(Mandatory)] [AllowEmptyString()] [string]$Expected
     )
-    if ($Actual -eq $Expected) { return $null }
+    # Compared with line endings normalised, because they are not ours to control. The
+    # changelog extractor joins with `n, and git rewrites newlines INSIDE the stored string
+    # on checkout: the same commit reads LF on a Linux runner and CRLF on a Windows one. An
+    # exact comparison therefore passes in CI and fails on a maintainer's machine, which is
+    # a gate that reports on the checkout rather than on the content.
+    $left = $Actual -replace "`r`n", "`n"
+    $right = $Expected -replace "`r`n", "`n"
+    if ($left -eq $right) { return $null }
     return ("PSMutant.psd1 ReleaseNotes do not match the '### For consumers' block in " +
         "CHANGELOG.md. The changelog is the source; run ./tools/Test-PSMutantRelease.ps1 -Apply " +
         "to regenerate the manifest field from it.")
