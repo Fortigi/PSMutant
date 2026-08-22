@@ -171,3 +171,39 @@ Describe 'Get-PSMutantPinValue' {
         Should-NotBeNull -Actual (Get-PSMutantPinValue -Line (Get-Content $real) -Name 'PSSA_VERSION')
     }
 }
+
+Describe 'Get-PSMutantTestRunFault' {
+    It 'says nothing about a run where every container passed' {
+        Get-PSMutantTestRunFault -FailedCount 0 -ContainerResult @('Passed', 'Passed') -ContainerName @('a', 'b') |
+            Should-BeNull
+    }
+
+    It 'catches a file that never ran, which FailedCount cannot see' {
+        # The whole point. A test file with a parse error contributes zero tests AND zero
+        # failures, so every gate asking only about the failure count reports green over a
+        # suite that is missing an entire file.
+        Get-PSMutantTestRunFault -FailedCount 0 -ContainerResult @('Passed', 'Failed') -ContainerName @('ok.Tests.ps1', 'broken.Tests.ps1') |
+            Should-BeLikeString '*broken.Tests.ps1*'
+    }
+
+    It 'reports failing tests FIRST when there are both' {
+        # A genuinely failing test marks its container 'Failed' as well, so both conditions
+        # hold. "3 tests failed" points the reader somewhere better than "a file did not run".
+        Get-PSMutantTestRunFault -FailedCount 3 -ContainerResult @('Failed') -ContainerName @('a.Tests.ps1') |
+            Should-BeLikeString '*3 test(s) failed*'
+    }
+
+    It 'allows a deliberately skipped container' {
+        # Paired with the catch above: treating every non-Passed result as a fault would
+        # fail the build on a legitimate -Skip, and the fix for that would be to delete the
+        # check entirely.
+        Get-PSMutantTestRunFault -FailedCount 0 -ContainerResult @('Passed', 'Skipped') -ContainerName @('a', 'b') |
+            Should-BeNull
+    }
+
+    It 'names every unrun file rather than only the first' {
+        Get-PSMutantTestRunFault -FailedCount 0 -ContainerResult @('Failed', 'Failed') -ContainerName @('x.Tests.ps1', 'y.Tests.ps1') |
+            Should-BeLikeString '*x.Tests.ps1, y.Tests.ps1*'
+    }
+}
+

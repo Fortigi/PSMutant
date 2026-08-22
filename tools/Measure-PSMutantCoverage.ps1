@@ -65,5 +65,13 @@ Write-Host ("Coverage: $percent% over $(@($covered + $missed).Count) commands in
 # The verdict is a pure function so it can be tested (#27). A red suite is rejected before
 # the percentage is believed: lines are still executed on the way to a failure, so a broken
 # build could otherwise measure 100%.
+# A file that never RAN is rejected before the percentage is believed too, and for a
+# different reason than a red suite: it contributes no failures at all, so the coverage
+# figure is simply measured over less code than the caller asked for.
+$unrun = Get-PSMutantTestRunFault -FailedCount $result.FailedCount `
+    -ContainerResult @($result.Containers | ForEach-Object { [string]$_.Result }) `
+    -ContainerName @($result.Containers | ForEach-Object { Split-Path $_.Item -Leaf })
+if ($unrun) { throw "$unrun Coverage over a suite that did not fully run means nothing." }
+
 $why = Get-PSMutantCoverageFailure -Percent $percent -Minimum $Minimum -FailedTestCount $result.FailedCount
 if ($why) { throw $why }
