@@ -37,11 +37,21 @@ permissions:
 
 jobs:
   test:
-    runs-on: ubuntu-latest
+    # BOTH operating systems, because this module's headline guarantee is a PATH property:
+    # a mutant is never written into tracked source, the sandbox is mapped by relative
+    # offset, ownership is keyed on $PID, and stale sandboxes are swept by name. Separators,
+    # case sensitivity, temp semantics and file locking all differ on Windows, and none of
+    # it was exercised by a gate. The release check shipped platform-dependent and passed
+    # here for three PRs before anyone noticed.
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
     # The module bounds each mutant with its own timeout, but nothing bounded the job.
-    # A wedged runner would otherwise sit on the 6-hour default. The chain runs in about
-    # 6 minutes, of which self-mutation is the long pole.
-    timeout-minutes: 25
+    # A wedged runner would otherwise sit on the 6-hour default. Windows is the slower of
+    # the two, so the limit is set for it rather than for the faster runner.
+    timeout-minutes: 40
     steps:
       - uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
 
@@ -74,7 +84,11 @@ jobs:
       - name: Cache pinned PowerShell modules
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
-          path: ~/.local/share/powershell/Modules
+          # Both paths: the user module directory differs by platform, and runner.os is in
+          # the key, so the two caches never overwrite one another.
+          path: |
+            ~/.local/share/powershell/Modules
+            ~/Documents/PowerShell/Modules
           key: psmodules-${{ runner.os }}-pester${{ env.PESTER_VERSION }}-${{ env.PESTER_COMPAT_VERSION }}-pssa${{ env.PSSA_VERSION }}-psc${{ env.PSCOMPLEXITY_VERSION }}
 
       # Install only what the cache did not restore. Every gate below asserts the exact
@@ -160,7 +174,14 @@ jobs:
             throw 'Complexity gate failed -- a unit exceeds 15 cyclomatic or cognitive.'
           }
 
+      # Linux only, and this is the one step where that is the right call. A mutation SCORE
+      # is platform-independent -- it asks whether a test notices a changed operator, not
+      # whether a path resolved. What is platform-dependent is the sandbox underneath it,
+      # and that is exercised on both by the unit tests and by the compatibility guard
+      # below, which runs a real end-to-end mutation. This step is the long pole of the
+      # chain, so doubling it buys the least of anything here.
       - name: Mutation test PSMutant against itself (gated)
+        if: matrix.os == 'ubuntu-latest'
         shell: pwsh
         run: |
           Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
