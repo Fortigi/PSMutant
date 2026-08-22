@@ -40,7 +40,21 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = 'FIXED, both of the same kind - the tool reporting a number it did not measure. A per-mutant timeout could resolve to zero when timeoutFloorSeconds and timeoutFactor were both small: a zero-second budget expires at once, an expired mutant counts as a kill, and so every mutant was scored Killed on the clock rather than on behaviour - a perfect score, exit 0, over tests that never ran. The budget must now be at least as long as your unmutated suite took, and a config asking for less is refused with a message saying so; if this affected you, the run that fails after upgrading is the honest one. And a config path with a leading .. escaped the temp sandbox and was mutated where it lives, in your working tree - interrupt such a run and the mutated file stays on disk. Those are refused now, while a path that contains .. and still resolves inside the source root keeps working. Requires PowerShell 7.2+ and Pester 5.0+; Pester is a run-time dependency and is deliberately not declared in RequiredModules, so PSMutant runs under whichever Pester 5 or 6 your repo already has.'
+            ReleaseNotes = '**A per-mutant timeout that resolves too low is now refused instead of faking a perfect
+score.** The budget is `max(timeoutFloorSeconds, baseline x timeoutFactor)`, and with a small
+enough floor *and* factor it could resolve to zero. A zero-second budget expires immediately,
+an expired mutant counts as a kill, and so every mutant was killed on the clock rather than on
+behaviour -- 100%, exit 0, over tests that never ran. The budget must now be at least as long
+as your unmutated suite took, and a config that asks for less fails with a message saying so.
+
+If this affects you, your reported score was wrong in the flattering direction, and the run
+that fails after upgrading is the honest one.
+
+**A config path that escapes the source root is now refused.** Every path in a config is
+copied into a temp sandbox and mutated there; a leading `..` survived that mapping, so a path
+like `../shared/Util.ps1` was mutated **where it lives**, in your working tree. Interrupt such
+a run and the mutated file stays on disk. Paths that merely contain `..` and still resolve
+inside -- `src/../src/a.ps1` -- keep working.'
         }
     }
 }

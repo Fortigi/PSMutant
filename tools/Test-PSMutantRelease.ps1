@@ -30,6 +30,7 @@
 #>
 [CmdletBinding()]
 param(
+    [switch]$Apply,
     [string]$ManifestPath,
     [string]$ChangelogPath
 )
@@ -259,6 +260,67 @@ function Test-PSMutantUnreleasedEmpty {
     return [string]::IsNullOrWhiteSpace($body)
 }
 
+function Get-PSMutantRewrittenManifest {
+    <#
+    .SYNOPSIS
+        Pure: the manifest TEXT with only its ReleaseNotes value replaced. Writes nothing.
+
+    .DESCRIPTION
+        Not Update-ModuleManifest. That does not update a manifest, it REGENERATES one from
+        the data it parsed: the hand-written layout goes, a "Generated on <today>" header
+        arrives that churns on every run, and every comment justifying a setting is dropped.
+        This manifest's most load-bearing line is a comment -- the one saying Pester is
+        deliberately absent from RequiredModules, without which someone re-adds it and
+        recreates the collision that shipped a fake 100%.
+
+        A release note is one string, so changing it touches one string.
+
+    .PARAMETER ManifestText
+        The manifest source.
+
+    .PARAMETER Notes
+        The value to place in ReleaseNotes.
+
+    .OUTPUTS
+        [string] the manifest text, with that one value replaced.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$ManifestText,
+        [Parameter(Mandatory)] [string]$Notes
+    )
+    # A literal quote inside a single-quoted PowerShell string is escaped by doubling it.
+    # Without this an apostrophe closes the string and the manifest stops parsing at all --
+    # discovered at publish, on the one step that cannot be undone.
+    $literal = "'" + ($Notes -replace "'", "''") + "'"
+    $pattern = "(?s)(ReleaseNotes\s*=\s*)'.*?'(?=\s*(
+?
+|\}))"
+    if ($ManifestText -notmatch $pattern) {
+        throw 'Manifest has no single-quoted ReleaseNotes value to replace.'
+    }
+    return [regex]::Replace($ManifestText, $pattern, { param($m) $m.Groups[1].Value + $literal }, 1)
+}
+
+function Get-PSMutantManifestNotesFault {
+    # The manifest's ReleaseNotes against what the CHANGELOG produces, as a sentence.
+    #
+    # Publishing overwrites a STAGED copy, so this field never reaches the gallery -- which is
+    # exactly why it drifts: it is a second copy of the same prose that nothing reads and
+    # nothing checks. Someone reading the manifest, or publishing by hand, gets the stale one.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Actual,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Expected
+    )
+    if ($Actual -eq $Expected) { return $null }
+    return ("PSMutant.psd1 ReleaseNotes do not match the '### For consumers' block in " +
+        "CHANGELOG.md. The changelog is the source; run ./tools/Test-PSMutantRelease.ps1 -Apply " +
+        "to regenerate the manifest field from it.")
+}
+
 # Entry point. Skipped when this file is dot-sourced, so tests get the functions only.
 if ($MyInvocation.InvocationName -ne '.') {
     $ErrorActionPreference = 'Stop'
@@ -300,6 +362,22 @@ if ($MyInvocation.InvocationName -ne '.') {
     if ($bounded.Length -lt $consumer.Length) {
         Write-Host "::warning::Release notes for $version are $($notes.Length) characters; the gallery accepts 10600 when they come from a PowerShell manifest. Publishing an abridged $($bounded.Length) with a link to the full CHANGELOG entry."
     }
+
+    # The repo manifest is checked against the same string, so there is no unchecked second
+    # copy of this prose anywhere. -Apply regenerates it; without the switch this only
+    # reports, so CI can never rewrite the thing it is meant to be checking.
+    $actual = [string](Import-PowerShellDataFile $ManifestPath).PrivateData.PSData.ReleaseNotes
+    if ($Apply) {
+        $text = Get-Content -LiteralPath $ManifestPath -Raw
+        Get-PSMutantRewrittenManifest -ManifestText $text -Notes $bounded |
+            Set-Content -LiteralPath $ManifestPath -NoNewline -Encoding utf8
+        $check = [string](Import-PowerShellDataFile $ManifestPath).PrivateData.PSData.ReleaseNotes
+        if ($check -ne $bounded) { throw 'ReleaseNotes did not survive the manifest update.' }
+        Write-Host "Applied $($bounded.Length) chars of release notes for $version."
+        return
+    }
+    $fault = Get-PSMutantManifestNotesFault -Actual $actual -Expected $bounded
+    if ($fault) { throw $fault }
 
     # Emitted so the publish workflow can put them on the staged manifest, instead of anyone
     # maintaining a second copy of the same prose by hand.

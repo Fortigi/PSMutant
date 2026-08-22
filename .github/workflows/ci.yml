@@ -101,6 +101,10 @@ jobs:
           Import-Module ./PSMutant.psd1 -Force
           Get-Command Invoke-PSMutation -ErrorAction Stop | Out-Null
 
+      - name: Release consistency (ModuleVersion, CHANGELOG, ReleaseNotes)
+        shell: pwsh
+        run: ./tools/Test-PSMutantRelease.ps1 | Out-Null
+
       - name: Lint (PSScriptAnalyzer)
         shell: pwsh
         run: |
