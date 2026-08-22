@@ -158,7 +158,14 @@ jobs:
           # keeps it that way. It does not reach the fixture files the suite writes out.
           $cfg.Should.DisableV5 = $true
           $r = Invoke-Pester -Configuration $cfg
-          if ($r.FailedCount -gt 0) { throw "$($r.FailedCount) test(s) failed" }
+          # FailedCount alone cannot see a test file that failed to PARSE: it contributes
+          # zero tests and zero failures, so the run reads green while a whole file never
+          # executed. The decision is a tested pure function.
+          . ./tools/GateDecisions.ps1
+          $fault = Get-PSMutantTestRunFault -FailedCount $r.FailedCount `
+              -ContainerResult @($r.Containers | ForEach-Object { [string]$_.Result }) `
+              -ContainerName @($r.Containers | ForEach-Object { Split-Path $_.Item -Leaf })
+          if ($fault) { throw $fault }
 
       # Coverage is measured by a committed script, not by a snippet living only here, so
       # that a developer checking by hand runs exactly what the gate runs. The figure used
