@@ -153,3 +153,62 @@ function Get-PSMutantPinValue {
     }
     return $null
 }
+
+function Get-PSMutantTestRunFault {
+    <#
+    .SYNOPSIS
+        Pure: why a Pester run must not be treated as green, or $null when it may be.
+
+    .DESCRIPTION
+        FailedCount alone is not enough, and that is the whole reason this exists. A test
+        file that fails to PARSE contributes zero tests and zero failures, so the run reports
+
+            total=429  passed=429  failed=0      <- every gate says green
+            Report.Tests.ps1  result=Failed      <- the covering suite never ran
+
+        and each gate that asks only about the failure count agrees. Observed here, not
+        theorised: appending an unclosed Describe to tests/Report.Tests.ps1 produced exactly
+        that, and the unit-test gate passed.
+
+        Only the coverage gate noticed, and for the wrong reason -- an unrun file stops
+        exercising its source, so the percentage drops and the build fails talking about
+        COVERAGE. That is two gates agreeing by accident, and it holds only while the
+        coverage bar is 100.
+
+    .PARAMETER FailedCount
+        Failing tests in the run.
+
+    .PARAMETER ContainerResult
+        One result string per container: 'Passed', 'Failed', 'Skipped'...
+
+    .PARAMETER ContainerName
+        Names for the message, aligned with ContainerResult.
+
+    .OUTPUTS
+        [string] the fault, or $null when the run may be trusted.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [int]$FailedCount,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$ContainerResult,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$ContainerName
+    )
+    # Failures first: when a test genuinely fails its container is 'Failed' too, and
+    # "3 tests failed" points the reader somewhere better than "a file did not run".
+    if ($FailedCount -gt 0) { return "$FailedCount test(s) failed." }
+
+    $unrun = @()
+    for ($i = 0; $i -lt $ContainerResult.Count; $i++) {
+        # Skipped is legitimate -- a container can be filtered out deliberately. Anything
+        # else, with no failures behind it, means the file did not run at all.
+        if ($ContainerResult[$i] -ne 'Passed' -and $ContainerResult[$i] -ne 'Skipped') {
+            $unrun += $(if ($i -lt $ContainerName.Count) { $ContainerName[$i] } else { "container $i" })
+        }
+    }
+    if ($unrun.Count -gt 0) {
+        return ("$($unrun.Count) test file(s) reported no failures because they never ran: " +
+            ($unrun -join ', ') + '. A parse error in a test file looks exactly like a green suite.')
+    }
+    return $null
+}
