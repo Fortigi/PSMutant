@@ -5,6 +5,15 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+### Security
+
+- `publish.yml` no longer interpolates the tag name into a PowerShell script. An Actions
+  expression is pasted into the script as text before pwsh parses it, so a tag name
+  containing a quote closed the string literal and ran as code -- in the one job holding
+  the gallery API key. git accepts `v1.0";$x;"` as a ref name, and pushing a tag requires
+  no review while pushing to main does. The name now arrives through an environment
+  variable, which is read at run time and stays data whatever it contains.
+
 ## [0.3.2] - 2026-08-21
 
 ### Internal
