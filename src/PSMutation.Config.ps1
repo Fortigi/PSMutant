@@ -318,7 +318,7 @@ function Get-PSMutationPathFault {
     return $null
 }
 
-function Test-PSMutationPathEscapes {
+function Test-PSMutationPathOutsideRoot {
     <#
     .SYNOPSIS
         Whether a path resolves outside the root it is supposed to sit under.
@@ -427,7 +427,7 @@ function Get-PSMutationSubtree {
         # New-PSMutationSandbox copy from outside the source root INTO the sandbox, and the
         # sweep that reclaims sandboxes keys on a name it no longer recognises -- so the copy
         # is left behind, holding whatever was above the root.
-        if (Test-PSMutationPathEscapes -Path $t -Root $SourceRoot) {
+        if (Test-PSMutationPathOutsideRoot -Path $t -Root $SourceRoot) {
             throw ("Config key 'sandboxSubtrees' names '$t', which resolves outside the source " +
                 'root. Subtrees are copied into a temp sandbox by relative position, so one that ' +
                 'escapes copies from outside the root and is not reclaimed by the sweep. Name a ' +
