@@ -648,9 +648,21 @@ Describe 'a config path answers for itself before anything uses it' {
         Should-BeTrue -Actual (Test-PSMutationPathOutsideRoot -Path '..' -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
     }
 
+    It 'does not see an escape in an absolute path that is inside the root' {
+        # The kept half of the absolute pair. Without it, a resolver that called EVERY rooted
+        # path an escape would pass the case below -- and refuse a config that names its files
+        # by full path, which is a legal thing to write.
+        $root = Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'
+        Should-BeFalse -Actual (Test-PSMutationPathOutsideRoot -Path (Join-Path $root 'src/a.ps1') -Root $root)
+    }
+
     It 'sees an escape in an absolute path that leaves the root behind entirely' {
         # The first clause on its own: an absolute path elsewhere is not under the root at
         # all, so relative-ising it returns something ROOTED rather than a '..' chain.
+        # This failed on Linux and passed on Windows before the fix: the check joined an
+        # already-rooted path onto the root, so /tmp/elsewhere/x.ps1 became
+        # /tmp/anchor/tmp/elsewhere/x.ps1 and relativised to something INSIDE. An absolute
+        # path in a config is legal, so that was a real hole, not a fixture artefact.
         $elsewhere = Join-Path ([System.IO.Path]::GetTempPath()) 'somewhere-else/x.ps1'
         Should-BeTrue -Actual (Test-PSMutationPathOutsideRoot -Path $elsewhere -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
     }

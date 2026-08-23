@@ -332,7 +332,13 @@ function Test-PSMutationPathOutsideRoot {
     # Asked as a relative path rather than by string-matching for '..', because a path may
     # contain '..' and still resolve inside: `src/../src` is `src`, and refusing that would
     # reject a config that was never ambiguous.
-    $full = [System.IO.Path]::GetFullPath((Join-Path $Root $Path))
+    # An ALREADY-ROOTED path is taken as it stands. Joining it onto the root instead produces
+    # nonsense that differs by platform: on Linux `Join-Path /tmp/anchor /tmp/elsewhere/x.ps1`
+    # yields /tmp/anchor/tmp/elsewhere/x.ps1, which then relativises to something INSIDE the
+    # root -- so an absolute config path pointing anywhere on the machine reported itself as
+    # safe. Windows masked it, because Join-Path there produced a path that failed differently.
+    $full = if ([System.IO.Path]::IsPathRooted($Path)) { [System.IO.Path]::GetFullPath($Path) }
+    else { [System.IO.Path]::GetFullPath((Join-Path $Root $Path)) }
     $back = [System.IO.Path]::GetRelativePath($Root, $full)
     return [System.IO.Path]::IsPathRooted($back) -or $back -eq '..' -or
         $back.StartsWith('..' + [System.IO.Path]::DirectorySeparatorChar)
