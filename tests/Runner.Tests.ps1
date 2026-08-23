@@ -45,15 +45,30 @@ Describe 'Test-PSMutantCovered' {
 
 Describe 'Select-PSMutationCandidate' {
     It 'returns all candidates when coverage filtering is off' {
-        $c = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
-            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false -CoveredLines @{}
+        $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false -CoveredLines @{}).Candidates
         $c.Count | Should-BeGreaterThan 0
     }
+    It 'reports what filtering removed, per file' {
+        # The pre-filter count exists only here. Without it the caller cannot tell a file
+        # that contributed nothing from one that was never in `mutate`, because the file is
+        # still listed and still hashed into the report either way.
+        $full = [System.IO.Path]::GetFullPath($script:fixture)
+        $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
+        $sel.PerFile.Count | Should-Be 1
+        # Discriminating: Produced must exceed Kept here, or the fixture proves nothing about
+        # a filter that removed anything.
+        $sel.PerFile[0].Produced | Should-BeGreaterThan $sel.PerFile[0].Kept
+        $sel.PerFile[0].Kept | Should-Be $sel.Candidates.Count
+    }
+
     It 'keeps only candidates on covered lines when filtering is on' {
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
-        $c = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
-            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
+        $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered).Candidates
         ($c | ForEach-Object Line | Sort-Object -Unique) | Should-Be 3
     }
 }
@@ -404,16 +419,16 @@ Describe 'ids are assigned before the coverage filter, not after' {
         # Assigned directly, NOT wrapped in @(). Select-PSMutationCandidate comma-wraps its
         # return to preserve a single-element array, so @(...) hands back one item that IS
         # the array and every count below reads 1 (see the convention note in #38).
-        $all = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
-            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false
+        $all = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false).Candidates
         $all.Count | Should-BeGreaterThan 1
 
         # Admit only the lines of the LAST candidate, so any renumbering shows up as id 1.
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $last = $all[-1]
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@($last.Line) }
-        $filtered = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
-            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
+        $filtered = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered).Candidates
 
         $filtered.Count | Should-BeLessThan $all.Count
         # The surviving candidate keeps the id it had in the full set. Renumbering after
