@@ -80,8 +80,16 @@ function Test-PSMutantCovered {
 }
 
 function Select-PSMutationCandidate {
-    # Enumerate candidates across the mutate files, keeping only covered ones (opt).
-    [OutputType([object[]])]
+    # Enumerate candidates across the mutate files, keeping only covered ones (opt), and
+    # report what that removed.
+    #
+    # Returns BOTH, rather than only the survivors, because the coverage filter can empty a
+    # whole mutate file and the score then answers for a smaller set than the config asked
+    # for -- upward, and silently. It fires the moment a file joins `mutate` before its tests
+    # exist, or a refactor stops a suite exercising a module. The per-file tally is the only
+    # place the pre-filter count still exists; recomputing it later would mean parsing every
+    # file a second time.
+    [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string[]]$MutateFiles,
@@ -90,12 +98,14 @@ function Select-PSMutationCandidate {
         $CoveredLines
     )
     $out = [System.Collections.Generic.List[object]]::new()
+    $perFile = [System.Collections.Generic.List[object]]::new()
     foreach ($file in $MutateFiles) {
-        Get-PSMutationCandidate -Path $file -Operators $Operators |
-            Where-Object { -not $CoveredLinesOnly -or (Test-PSMutantCovered -Candidate $_ -CoveredLines $CoveredLines) } |
-            ForEach-Object { $out.Add($_) }
+        $produced = @(Get-PSMutationCandidate -Path $file -Operators $Operators)
+        $kept = @($produced | Where-Object { -not $CoveredLinesOnly -or (Test-PSMutantCovered -Candidate $_ -CoveredLines $CoveredLines) })
+        foreach ($c in $kept) { $out.Add($c) }
+        $perFile.Add([pscustomobject]@{ File = $file; Produced = $produced.Count; Kept = $kept.Count })
     }
-    return , $out.ToArray()
+    return [pscustomobject]@{ Candidates = $out.ToArray(); PerFile = $perFile.ToArray() }
 }
 
 # The outcomes this module understands from a covering-test run. Pester's run-level result
