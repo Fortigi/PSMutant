@@ -170,8 +170,7 @@ function Write-PSMutationRecheckReport {
         [hashtable]$Provenance = @{}
     )
     $killed = @($Results | Where-Object Status -eq 'Killed').Count
-    New-Item -ItemType Directory -Path (Split-Path $ReportPath -Parent) -Force | Out-Null
-    [pscustomobject]@{
+    $document = [pscustomobject]@{
         generatedFrom      = 'PSMutant'
         # Same block as a full report, so a consumer can read provenance the same way from
         # either shape rather than learning two conventions.
@@ -196,7 +195,8 @@ function Write-PSMutationRecheckReport {
         sourceHashes       = $SourceHashes
         operators          = @($Operators | Sort-Object)
         mutants            = $Results
-    } | ConvertTo-Json -Depth 6 | Set-Content $ReportPath
+    }
+    Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath
     return [pscustomobject]@{
         Mode = 'Recheck'; PriorSurvivors = $PriorSurvivorCount
         Rechecked = $Results.Count; NowKilled = $killed
