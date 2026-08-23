@@ -137,20 +137,26 @@ function Invoke-PSMutation {
                 -TotalSeconds $runClock.Elapsed.TotalSeconds
         }
 
+        # Two clusters, each shared by two of the three callees below: what a run EXECUTES
+        # with, and what the report DOCUMENTS itself with. A value is spelled once here, so
+        # adding one is an edit at its source rather than at every call site forwarding it.
+        # Provenance stays explicit because the two callees want different things from it --
+        # the recheck takes the scriptblock and invokes it after its own loop, the report
+        # takes the already-invoked result.
+        $exec = @{ Candidates = $cands; TimeoutSeconds = $timeout; SandboxRoot = $sandbox; Quiet = $Quiet }
+        $doc = @{ SourceHashes = $hashes; Operators = $ops; Equivalents = $cfg.equivalents; ReportPath = $reportPath }
+
         if ($RecheckFrom) {
-            return Invoke-PSMutationRecheckRun -RecheckFrom $RecheckFrom -Candidates $cands -Plan $t `
-                -SourceHashes $hashes -Operators $ops -TimeoutSeconds $timeout -SandboxRoot $sandbox `
-                -ReportPath $reportPath -Equivalents $cfg.equivalents -Provenance $provenance -Quiet:$Quiet
+            return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance
         }
 
         Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Detail' `
                 -Text "  Mutants to evaluate: $($cands.Count)`n")
 
-        $results = Invoke-PSMutationLoop -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests -TimeoutSeconds $timeout -SandboxRoot $sandbox -Quiet:$Quiet
+        $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
         # totalSeconds records how long the run took to start rather than to finish.
-        $summary = Write-PSMutationReport -Results $results -ReportPath $reportPath -Thresholds $cfg.thresholds `
-            -SourceHashes $hashes -Operators $ops -Equivalents $cfg.equivalents -Provenance (& $provenance)
+        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance)
         $band = Get-PSMutationScoreBand -Cfg $cfg
         Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationSummaryLine -Summary $summary -Results $results `
                 -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents)
