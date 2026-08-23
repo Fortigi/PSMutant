@@ -122,6 +122,42 @@ files in the current change and writes an untracked `psmutant.scoped.config.json
 One file scopes to about 80 mutants and half a minute, against 400-odd and several minutes
 for the whole set.
 
+**Run the full set only when you are about to push.** During development there are two
+cheaper answers and they are not interchangeable:
+
+| Situation | Use | Cost |
+|---|---|---|
+| changed a file, want to know if it is still clean | `New-PSMutantScopedConfig.ps1 -Since HEAD` | ~80 mutants, ~30s |
+| just fixed a survivor, want to know if it is dead | `-RecheckFrom <report>` | the survivors only, seconds |
+| about to push, or opening a PR | the real config | 500-odd mutants, ~9 min |
+
+The middle row is the one that gets forgotten, and it is the one this module exists to
+provide. A recheck seeded from the last report evaluates **only** what survived, skips
+declared equivalents -- no test can kill those, so re-evaluating them is guaranteed-wasted
+work -- and answers in seconds. Measured on this repo: 4 survivors in the report, 1 actually
+re-evaluated, **19.2s**, against **~9 minutes** for the full sweep that answers the same
+question.
+
+Verifying one mutant does not need the whole suite either. The config maps each source file
+to one covering suite, so `Config.Tests.ps1` is 101 tests in 4.6s where the whole `tests/`
+directory is 546 in 49s. Apply the mutant by hand, run that one file, restore.
+
+**CI is the LAST gate, not the first.** It exists to catch what local checking cannot see --
+the other operating system, the pinned dependency set, and the interaction between gates. A
+Linux-only defect shipped green from a Windows machine this way: a hard-coded backslash in a
+path normaliser, which is a no-op on Linux and therefore invisible to the very gate that would
+have caught it. None of that is reproducible here.
+
+So do not push in order to find out whether something works. A red CI should be a surprise
+worth investigating, not a step in the loop -- `publish.yml` requires CI green for the exact
+commit, and a signal that fires routinely stops being a signal. Run the cheap local checks
+always, the full local gate when the change is broad, and expect CI green.
+
+The corollary is a gap worth knowing: when CI's mutation gate does fail, it prints
+`Self mutation score: 99.8% (532/533)` and nothing else. `-Quiet` is all-or-nothing and the
+run result carries no survivor list, so the one number a backstop produces cannot say what
+failed. That is #54's subject, and until it is fixed the answer is a local `-RecheckFrom`.
+
 **A scoped run is never the gate, and every part of this is built to keep that true.** Its
 score describes the files it mutated, not this project, so it can be a confident 100% over
 a change that broke something two files away. The output is untracked, it writes to its own
@@ -809,6 +845,11 @@ Traps that have bitten in this repo specifically:
   the source is not wrong; only the resolution is. File headers in `src/` are `#` line
   comments for that reason, and `tests/EndToEnd.Tests.ps1` asserts the public help resolves
   to the real thing.
+- **A `$null` in a `-ForEach` case hashtable does not bind the variable.** `@{ Value = $null }`
+  runs the body with `$Value` unset, so the case silently exercises whatever the previous case
+  left behind rather than the null it names. A null arm tested that way is not tested: the
+  self-mutation gate found one by flipping `-or` to `-and` in a guard whose null branch nothing
+  reached. Test `$null` in its own `It`, where it is passed explicitly.
 - **Pester 6 removed mock fall-through.** A call that matches none of your
   `-ParameterFilter` mocks no longer runs the real command — it throws. Any command
   mocked with a filter needs either a default mock or a filter for every shape of call

@@ -77,18 +77,20 @@ Describe 'Get-PSMutationSandboxPlan' {
     }
 }
 
+$script:root = [System.IO.Path]::GetTempPath()
+
 Describe 'Get-PSMutationSubtree' {
     It 'uses the subtrees the config names' {
-        Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('lib', 'spec') }) |
+        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ([pscustomobject]@{ sandboxSubtrees = @('lib', 'spec') }) |
             Should-BeCollection @('lib', 'spec')
     }
     It 'falls back to the module convention when the config is silent' {
         # A consuming repo whose layout is src/ + tests/ should not have to say so.
-        Get-PSMutationSubtree -Cfg ([pscustomobject]@{}) | Should-BeCollection @('src', 'tests')
+        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ([pscustomobject]@{}) | Should-BeCollection @('src', 'tests')
     }
     It 'wraps a single subtree as a list' {
         # JSON gives a bare string for a one-element array; the caller indexes it.
-        Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = 'onlysrc' }) |
+        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ([pscustomobject]@{ sandboxSubtrees = 'onlysrc' }) |
             Should-BeCollection @('onlysrc')
     }
 }
@@ -367,7 +369,7 @@ Describe 'the defaults the README documents' {
     }
 
     It 'defaults sandboxSubtrees to src and tests' {
-        Get-PSMutationSubtree -Cfg ('{}' | ConvertFrom-Json) | Should-BeCollection @('src', 'tests')
+        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ('{}' | ConvertFrom-Json) | Should-BeCollection @('src', 'tests')
     }
 
     It 'defaults timeoutFactor to 4 and timeoutFloorSeconds to 15' {
@@ -592,5 +594,127 @@ Describe 'a config value of the wrong type' {
         # checking types first would answer a question the reader did not ask.
         { Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFacter": "four"') } |
             Should-Throw -ExceptionMessage '*timeoutFacter*timeoutFactor*'
+    }
+}
+
+Describe 'a config path answers for itself before anything uses it' {
+    # Every other config value got a resolver; paths did not, so each failed in its own place
+    # and its own way -- and none of the messages named the key that caused it.
+
+    It 'refuses an empty path, naming the key' -ForEach @(
+        @{ Value = '' }
+        @{ Value = '   ' }
+    ) {
+        Get-PSMutationPathFault -Value $Value -Key 'reportPath' | Should-MatchString "reportPath"
+    }
+
+    It 'refuses a null path, naming the key' {
+        # Outside the -ForEach on purpose. A $null in a Pester case hashtable does not bind
+        # the variable, so `@{ Value = $null }` runs the body with $Value unset -- which tests
+        # the empty-string arm a second time and leaves the null arm unexercised. The
+        # self-mutation gate found it: `-or` flipped to `-and` and nothing failed.
+        Get-PSMutationPathFault -Value $null -Key 'reportPath' | Should-MatchString "reportPath"
+    }
+
+    It 'refuses a path that is not a string' {
+        Get-PSMutationPathFault -Value 42 -Key 'reportPath' | Should-MatchString 'must be a string'
+    }
+
+    It 'refuses a wildcard metacharacter, naming it' -ForEach @(
+        @{ Path = 'sr[c]' }
+        @{ Path = 'reports/m*.json' }
+        @{ Path = 'a?b.ps1' }
+    ) {
+        # `[a]` is a character class that matches nothing, so Pester finds no files and the
+        # run dies far away with a message naming neither the key nor the cause.
+        Get-PSMutationPathFault -Value $Path -Key 'mutate' | Should-MatchString 'wildcard'
+    }
+
+    It 'accepts an ordinary path' {
+        # The kept case. Without it a resolver that refused EVERY path would pass all of the
+        # above, and no config would run at all.
+        Should-BeNull -Actual (Get-PSMutationPathFault -Value 'src/Calc.ps1' -Key 'mutate')
+    }
+
+    It 'sees a path that escapes its root' {
+        Should-BeTrue -Actual (Test-PSMutationPathOutsideRoot -Path '../outside' -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
+    It 'sees an escape in a path that resolves to exactly the parent' {
+        # EXACTLY '..', not '../something'. The check is three clauses joined by -or, and
+        # '../outside' satisfies the StartsWith clause on its own -- so it passes even when
+        # the clauses are joined wrongly, and only a path whose relative form IS '..' can
+        # tell the difference. A config naming the directory above the root lands here.
+        Should-BeTrue -Actual (Test-PSMutationPathOutsideRoot -Path '..' -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
+    It 'does not see an escape in an absolute path that is inside the root' {
+        # The kept half of the absolute pair. Without it, a resolver that called EVERY rooted
+        # path an escape would pass the case below -- and refuse a config that names its files
+        # by full path, which is a legal thing to write.
+        $root = Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'
+        Should-BeFalse -Actual (Test-PSMutationPathOutsideRoot -Path (Join-Path $root 'src/a.ps1') -Root $root)
+    }
+
+    It 'sees an escape in an absolute path that leaves the root behind entirely' {
+        # The first clause on its own: an absolute path elsewhere is not under the root at
+        # all, so relative-ising it returns something ROOTED rather than a '..' chain.
+        # This failed on Linux and passed on Windows before the fix: the check joined an
+        # already-rooted path onto the root, so /tmp/elsewhere/x.ps1 became
+        # /tmp/anchor/tmp/elsewhere/x.ps1 and relativised to something INSIDE. An absolute
+        # path in a config is legal, so that was a real hole, not a fixture artefact.
+        $elsewhere = Join-Path ([System.IO.Path]::GetTempPath()) 'somewhere-else/x.ps1'
+        Should-BeTrue -Actual (Test-PSMutationPathOutsideRoot -Path $elsewhere -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
+    It 'does not see an escape in a path that resolves back inside' {
+        # `src/../src` is `src`. Matching on '..' as a string would reject a config that was
+        # never ambiguous, which is why this asks for the resolved position instead.
+        Should-BeFalse -Actual (Test-PSMutationPathOutsideRoot -Path 'src/../src' -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
+    It 'refuses a sandboxSubtree that escapes the source root' {
+        { Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('src', '../outside') }) -SourceRoot $script:root } |
+            Should-Throw -ExceptionMessage '*resolves outside the source root*'
+    }
+
+    It 'applies the documented default when reportPath is absent' {
+        # Documented optional and, until this resolver, mandatory in practice: Join-Path with
+        # $null returns the root itself, so the run failed at the very end trying to write a
+        # report over a directory.
+        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{}) -SourceRoot $script:root) |
+            Should-MatchString ([regex]::Escape('ps-mutation.json'))
+    }
+
+    It 'uses the configured reportPath when it is given' {
+        # Paired with the case above: a resolver that ALWAYS returned the default would pass
+        # that one and silently ignore every consumer's setting.
+        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/mine.json' }) -SourceRoot $script:root) |
+            Should-MatchString ([regex]::Escape('mine.json'))
+    }
+
+    It 'throws through the reportPath resolver, not just the primitive' {
+        # Through the resolver, because a fault function can be correct in both arms while
+        # the caller ignores what it returns -- the caller is one line that deletes clean.
+        { Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/m[1].json' }) -SourceRoot $script:root } |
+            Should-Throw -ExceptionMessage '*wildcards*'
+    }
+
+    It 'throws through the subtree resolver for a bracketed subtree' {
+        { Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('sr[c]') }) -SourceRoot $script:root } |
+            Should-Throw -ExceptionMessage '*wildcards*'
+    }
+
+    It 'names the paths that did not survive into the sandbox, and what decides that' {
+        $gone = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-absent-$([guid]::NewGuid())/Public/Get-Grade.ps1"
+        $why = Get-PSMutationMissingSandboxPath -Paths @($gone) -Subtrees @('src', 'tests')
+        $why | Should-MatchString ([regex]::Escape('Get-Grade.ps1'))
+        # The cause, not just the symptom: sandboxSubtrees is what decides, and a repo laid
+        # out any other way copies nothing the config points at.
+        $why | Should-MatchString 'sandboxSubtrees'
+    }
+
+    It 'says nothing when every path is present' {
+        Should-BeNull -Actual (Get-PSMutationMissingSandboxPath -Paths @($PSCommandPath) -Subtrees @('src'))
     }
 }
