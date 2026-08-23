@@ -169,7 +169,8 @@ function Write-PSMutationRecheckReport {
         [AllowEmptyCollection()] [string[]]$Operators = @(),
         [hashtable]$Provenance = @{}
     )
-    $killed = @($Results | Where-Object Status -eq 'Killed').Count
+    # Same rule as a full report: a timeout scores with the kills.
+    $killed = @($Results | Where-Object { $_.Status -eq 'Killed' -or $_.Status -eq 'TimedOut' }).Count
     $document = [pscustomobject]@{
         generatedFrom      = 'PSMutant'
         # Same block as a full report, so a consumer can read provenance the same way from
