@@ -8,6 +8,11 @@ All notable changes to PSMutant are documented here. Format follows
 ## [0.3.2] - 2026-08-21
 
 ### Internal
+- The complexity gate moves from PSComplexity 0.1.0 to **0.3.0**, two majors on. That release
+  scores the flow constructs PowerShell actually has -- `ForEach-Object`, `Where-Object`, `&&`,
+  `||`, `??` -- which previously counted as straight-line code, so 16 of this module's 78 units
+  score higher than they did. Nothing breaches: the worst unit is cognitive 13 against a
+  ceiling of 15.
 - `Get-PSMutationScore` is a per-set fold again. It also answered a whole-run question --
   whether a declaration matched no mutant, or several -- which made that answer wrong for
   any subset: scoring one file's rows accused every declaration belonging to another file of
