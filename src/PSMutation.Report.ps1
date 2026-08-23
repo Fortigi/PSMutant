@@ -209,6 +209,51 @@ function Get-PSMutationExitCode {
     return 0
 }
 
+function Get-PSMutationCoverageExclusion {
+    <#
+    .SYNOPSIS
+        What the coverage filter removed, so the score can answer for it.
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile)
+    # `declaredEquivalent` is already reported for exactly this reason -- a reader who cannot
+    # see how many mutants were excluded cannot tell a real 100% from an excluded one. The
+    # coverage filter removes far more than declarations do and said nothing at all.
+    $skipped = 0
+    $silent = [System.Collections.Generic.List[string]]::new()
+    foreach ($f in $PerFile) {
+        $skipped += $f.Produced - $f.Kept
+        # The dangerous case, and the reason this is file-level and not just a count: the file
+        # is still listed in `mutate` and still hashed into the report, so nothing downstream
+        # can tell it contributed nothing. A per-file score would read 0/0 and look fine.
+        if ($f.Produced -gt 0 -and $f.Kept -eq 0) { $silent.Add($f.File) }
+    }
+    return [pscustomobject]@{ Skipped = $skipped; FilesWithNoMutants = $silent.ToArray() }
+}
+
+function Get-PSMutationExclusionLine {
+    <#
+    .SYNOPSIS
+        The caveat a score carries when the coverage filter removed anything, or nothing.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param($Exclusion)
+    # Its own function so both arms are reachable from a test: written inline, the
+    # nothing-excluded arm runs on every clean run and is asserted by none.
+    # $null reaches here from the direct callers in tests, which do no filtering at all --
+    # for them "nothing was skipped" is the true answer, not a guess.
+    if ($null -eq $Exclusion -or $Exclusion.Skipped -eq 0) { return '' }
+    $line = "  $($Exclusion.Skipped) mutant(s) skipped as uncovered"
+    if ($Exclusion.FilesWithNoMutants.Count -gt 0) {
+        # Named, not counted. "2 files contributed none" sends the reader looking; the names
+        # are what turn it into an action.
+        $line += " ($($Exclusion.FilesWithNoMutants.Count) file(s) contributed none: $($Exclusion.FilesWithNoMutants -join ', '))"
+    }
+    return $line
+}
+
 function Save-PSMutationReportDocument {
     <#
     .SYNOPSIS
@@ -244,7 +289,10 @@ function Write-PSMutationReport {
         [string[]]$Operators,
         $Equivalents,
         # One block rather than four more parameters: this signature is already long.
-        [hashtable]$Provenance = @{}
+        [hashtable]$Provenance = @{},
+        # What the coverage filter removed. A score that cannot say what it excluded is the
+        # same failure as one that cannot say what it declared equivalent.
+        $Exclusion = $null
     )
     # The only place holding EVERY row, so the only place that can ask whether a
     # declaration matched nothing. The per-set fold no longer answers it.
@@ -268,6 +316,10 @@ function Write-PSMutationReport {
         # mutant count: total EXCLUDES declared equivalents, and a reader who cannot
         # see how many were excluded cannot tell a real 100% from a declared one.
         declaredEquivalent = $summary.DeclaredEquivalent
+        # Beside declaredEquivalent because it answers the same question: how much of what
+        # the config asked for is NOT behind this number. This one removes far more.
+        skippedAsUncovered = [int]$Exclusion.Skipped
+        filesWithNoMutants = @($Exclusion.FilesWithNoMutants)
         staleEquivalents = @($summary.StaleEquivalents)
         thresholds = $Thresholds
         # Recorded so a later -RecheckFrom can prove the mutant numbering in this
@@ -353,7 +405,8 @@ function Get-PSMutationSummaryLine {
         [Parameter(Mandatory)] [double]$High,
         [Parameter(Mandatory)] [double]$Low,
         [string]$ReportPath,
-        $Equivalents
+        $Equivalents,
+        $Exclusion
     )
     $lines = [System.Collections.Generic.List[object]]::new()
     $lines.Add((New-PSMutationLine -Role 'Rule' -Text "`n----------------------------------------------"))
@@ -362,6 +415,11 @@ function Get-PSMutationSummaryLine {
     # is $true -- so every score reads as Good, 0% included.
     $lines.Add((New-PSMutationLine -Role (Get-PSMutationScoreRole -Score $Summary.Score -High $High -Low $Low) `
                 -Text ("  Mutation score: {0}%  ({1} killed / {2})" -f $Summary.Score, $Summary.Killed, $Summary.Total)))
+    # Beside the score for the same reason the declared-equivalent line is: the coverage
+    # filter can empty a whole mutate file, and then a green 100% answers for a smaller set
+    # than the config asked for. This one removes far more mutants than declarations do.
+    $skipLine = Get-PSMutationExclusionLine -Exclusion $Exclusion
+    if ($skipLine) { $lines.Add((New-PSMutationLine -Role 'Muted' -Text $skipLine)) }
     # Said next to the score, not buried in the report: a 100% built on a dozen declared
     # equivalents is a different claim from a 100% that killed everything.
     if ($Summary.DeclaredEquivalent -gt 0) {
