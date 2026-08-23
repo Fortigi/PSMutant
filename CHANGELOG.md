@@ -5,6 +5,15 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+### Internal
+
+- The orchestrator splats two clusters of run values rather than naming each at every call
+  site: what a run **executes** with (candidates, timeout, sandbox, quiet) and what a report
+  **documents** itself with (source hashes, operators, equivalents, report path). Three calls
+  that needed line continuations now fit on one line each. `Provenance` stays explicit at both
+  sites, because the recheck takes the scriptblock and the report takes its invoked result --
+  a difference a shared key would hide.
+
 ### Security
 
 - `publish.yml` no longer interpolates the tag name into a PowerShell script. An Actions
