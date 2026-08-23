@@ -414,8 +414,8 @@ function Get-PSMutationCandidate {
         $c.Id = ++$i
         $c.Function = Get-PSMutationEnclosingFunction -Offset $c.StartOffset -Ranges $functions
     }
-    # NO comma-wrap here: this result is piped directly (Select-PSMutationCandidate),
-    # and `, $array` would enter the pipeline as ONE item, so Where-Object would run
-    # once against the whole array. Emit enumerated; callers that need an array wrap @().
+    # NO comma-wrap here. Select-PSMutationCandidate collects this with @(...), and
+    # `, $array` would make that a one-element array holding the array, so every per-file
+    # count it derives would read 1. Emit enumerated; callers that need an array wrap @().
     return $ordered
 }
