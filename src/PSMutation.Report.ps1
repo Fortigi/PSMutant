@@ -155,6 +155,16 @@ function Get-PSMutationScore {
     # quiet because the key still matches something. A declaration is a claim
     # about ONE mutant, so matching several is not a smaller claim, it is an
     # ambiguous one, and the run says so rather than banking the exclusion.
+    #
+    # PER SET, and only per set. Every number here -- Score, Killed, Survived, Total,
+    # DeclaredEquivalent -- is a fold over the rows handed in, and the "declared equivalent
+    # but the suite killed it" fault is too: it is observed on a row that is present.
+    #
+    # Whether a declaration matched NO mutant, or matched several, is a question about the
+    # WHOLE run and lives in Get-PSMutationDeclarationCoverageFault. Asking it here made the
+    # answer wrong for any subset: scoring one file's rows accused every declaration
+    # belonging to another file of being stale. Nothing did that yet, and per-file scores
+    # would have been the first thing to.
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
@@ -162,16 +172,12 @@ function Get-PSMutationScore {
         $Equivalents
     )
     $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
-    $stale    = [System.Collections.Generic.List[string]]::new()
-    # A count, not a set: "matched something" and "matched exactly one" are different
-    # claims, and only the second is the one a declaration makes.
-    $matched  = @{}
+    $stale = [System.Collections.Generic.List[string]]::new()
 
     $killed = 0; $survived = 0; $excluded = 0
     foreach ($r in $Results) {
         $key = Get-PSMutationDeclaredKey -Result $r -Declared $declared
         $isDeclared = $null -ne $key
-        if ($isDeclared) { $matched[$key] = 1 + [int]$matched[$key] }
         if ($r.Status -eq 'Killed') {
             $killed++
             if ($isDeclared) { $stale.Add("$key -- declared equivalent but the suite killed it") }
@@ -179,11 +185,6 @@ function Get-PSMutationScore {
         elseif ($isDeclared) { $excluded++ }
         else { $survived++ }
     }
-    foreach ($k in $declared.Keys) {
-        $fault = Get-PSMutationDeclarationFault -Key $k -Hits ([int]$matched[$k])
-        if ($fault) { $stale.Add($fault) }
-    }
-
     $total = $Results.Count - $excluded
     $score = if ($total -gt 0) { [math]::Round(100.0 * $killed / $total, 1) } else { 0 }
     return [pscustomobject]@{
@@ -222,7 +223,14 @@ function Write-PSMutationReport {
         # One block rather than four more parameters: this signature is already long.
         [hashtable]$Provenance = @{}
     )
+    # The only place holding EVERY row, so the only place that can ask whether a
+    # declaration matched nothing. The per-set fold no longer answers it.
     $summary = Get-PSMutationScore -Results $Results -Equivalents $Equivalents
+    # Concatenated unconditionally: guarding on a non-empty $coverage adds a branch whose
+    # false arm is indistinguishable from its true arm, since appending nothing changes
+    # nothing. Both of that guard's mutants survived.
+    $coverage = Get-PSMutationDeclarationCoverageFault -Results $Results -Equivalents $Equivalents
+    $summary.StaleEquivalents = [string[]]@(@($summary.StaleEquivalents) + @($coverage) | Where-Object { $_ })
     New-Item -ItemType Directory -Path (Split-Path $ReportPath -Parent) -Force | Out-Null
     [pscustomobject]@{
         generatedFrom = 'PSMutant'
@@ -251,6 +259,41 @@ function Write-PSMutationReport {
         mutants = $Results
     } | ConvertTo-Json -Depth 6 | Set-Content $ReportPath
     return $summary
+}
+
+function Get-PSMutationDeclarationCoverageFault {
+    # WHOLE RUN: every declaration that matched no mutant, or matched more than one.
+    #
+    # Separate from Get-PSMutationScore because it is the one question in scoring that a
+    # subset cannot answer. A declaration missing from a group of rows is not stale -- its
+    # mutant is simply in another group -- so the check is only correct over every row the
+    # run produced. Kept together with the fold in one pass, per-file scores would emit a
+    # false stale-equivalence accusation for every declaration belonging to another file,
+    # and that rule is the strongest correctness signal this tool has: it fires regardless
+    # of thresholds, so a false positive there is worse than a wrong number.
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
+        $Equivalents
+    )
+    $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
+    # A count, not a set: "matched something" and "matched exactly one" are different
+    # claims, and only the second is the one a declaration makes.
+    $matched = @{}
+    foreach ($r in $Results) {
+        $key = Get-PSMutationDeclaredKey -Result $r -Declared $declared
+        if ($null -ne $key) { $matched[$key] = 1 + [int]$matched[$key] }
+    }
+
+    # Filtered once at the end rather than guarded per key. `if ($fault)` looks like it
+    # earns its place and does not: the caller drops falsy entries anyway, so adding a $null
+    # here is unobservable and the guard's mutant survives. One filter, no branch.
+    $faults = foreach ($k in $declared.Keys) {
+        Get-PSMutationDeclarationFault -Key $k -Hits ([int]$matched[$k])
+    }
+    # No comma-wrap: the caller concatenates this with another array.
+    return [string[]]@($faults | Where-Object { $_ })
 }
 
 function Get-PSMutationScoreRole {

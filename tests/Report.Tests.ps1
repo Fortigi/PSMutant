@@ -72,9 +72,12 @@ Describe 'Get-PSMutationScore with declared equivalents' {
     It 'flags a declaration that matches no mutant at all' {
         # The code moved and nobody revisited the claim.
         $eq = [pscustomobject]@{ 'a.ps1:999:gone' = 'stale after a refactor' }
-        $s = Get-PSMutationScore -Results $script:mixed -Equivalents $eq
-        @($s.StaleEquivalents).Count | Should-Be 1
-        $s.StaleEquivalents[0] | Should-BeLikeString '*no such mutant exists*'
+        # @() at the ASSIGNMENT, not at the assertion: a single-element return unrolls, and
+        # indexing the bare value then hands Should-BeLikeString something that is not a
+        # string.
+        $faults = @(Get-PSMutationDeclarationCoverageFault -Results $script:mixed -Equivalents $eq)
+        $faults.Count | Should-Be 1
+        $faults[0] | Should-BeLikeString '*no such mutant exists*'
     }
 
     It 'scores exactly as before when nothing is declared' {
@@ -370,16 +373,42 @@ Describe 'an equivalence declaration must identify exactly one mutant' {
         # matched something. A declaration argues about one mutant; matching several is not
         # a smaller claim, it is an ambiguous one.
         $eq = [pscustomobject]@{ 'a.ps1:7:1 -> 2' = 'provably cannot change behaviour' }
-        (Get-PSMutationScore -Results $script:tied -Equivalents $eq).StaleEquivalents |
+        Get-PSMutationDeclarationCoverageFault -Results $script:tied -Equivalents $eq |
             Should-BeLikeString '*matches 2 mutants*ambiguous*'
     }
 
     It 'fails the run for an ambiguous declaration, regardless of thresholds' {
         # Same footing as a stale declaration: a false statement in the config inflating
         # the score is not a quality shortfall to be graded on a curve.
+        # Through Write-PSMutationReport rather than the fold: the coverage check is whole-run
+        # now, and this asserts the seam still MERGES it into the summary the exit code reads.
+        # Calling the fold alone would pass a summary that no longer carries the fault.
         $eq = [pscustomobject]@{ 'a.ps1:7:1 -> 2' = 'provably cannot change behaviour' }
-        $s = Get-PSMutationScore -Results $script:tied -Equivalents $eq
-        Get-PSMutationExitCode -Summary $s -Thresholds $null | Should-Be 1
+        $path = Join-Path ([System.IO.Path]::GetTempPath()) "psm-amb-$([System.Guid]::NewGuid().ToString('N')).json"
+        try {
+            $s = Write-PSMutationReport -Results $script:tied -ReportPath $path -Thresholds $null -Equivalents $eq
+            Get-PSMutationExitCode -Summary $s -Thresholds $null | Should-Be 1
+        }
+        finally { Remove-Item $path -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'does not accuse a declaration whose mutant is in another group' {
+        # The reason the whole-run check was lifted out. Scoring a SUBSET -- one file's rows,
+        # which is what per-file scores would do -- used to report every declaration
+        # belonging to a different file as stale. The fold is per-set now, so it cannot.
+        $groupB = @([pscustomobject]@{ File = 'b.ps1'; Line = 3; Operator = 'NumberLiteral'; Description = 'x -> y'; Status = 'Killed' })
+        $eq = [pscustomobject]@{ 'a.ps1:7:1 -> 2' = 'belongs to the other file' }
+        @((Get-PSMutationScore -Results $groupB -Equivalents $eq).StaleEquivalents | Where-Object { $_ }).Count |
+            Should-Be 0
+    }
+
+    It 'still accuses it when the whole run is asked' {
+        # Paired with the case above: a fold that simply stopped reporting would satisfy it.
+        # Over every row, the declaration matches nothing and must still be caught.
+        $groupB = @([pscustomobject]@{ File = 'b.ps1'; Line = 3; Operator = 'NumberLiteral'; Description = 'x -> y'; Status = 'Killed' })
+        $eq = [pscustomobject]@{ 'a.ps1:7:1 -> 2' = 'belongs to the other file' }
+        Get-PSMutationDeclarationCoverageFault -Results $groupB -Equivalents $eq |
+            Should-BeLikeString '*no such mutant exists*'
     }
 
     It 'accepts a declaration that matches exactly one mutant' {
@@ -396,7 +425,7 @@ Describe 'an equivalence declaration must identify exactly one mutant' {
         # The third arm. Zero, one and many are genuinely different answers, and only one
         # of them is acceptable.
         $eq = [pscustomobject]@{ 'a.ps1:99:nope -> nope' = 'stale claim' }
-        (Get-PSMutationScore -Results $script:tied -Equivalents $eq).StaleEquivalents |
+        Get-PSMutationDeclarationCoverageFault -Results $script:tied -Equivalents $eq |
             Should-BeLikeString '*no such mutant exists*'
     }
 }
