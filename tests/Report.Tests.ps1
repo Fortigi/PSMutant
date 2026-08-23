@@ -514,6 +514,75 @@ Describe 'a score answers for what the coverage filter removed' {
         $line | Should-MatchString ([regex]::Escape('src/Billing.ps1, src/Payroll.ps1'))
     }
 
+    It 'reaches the summary line, next to the score' {
+        # Through the real entry point, not the predicate. Get-PSMutationExclusionLine can be
+        # correct in both arms while the caller ignores its answer -- the caller is a line
+        # that can be deleted with every other test still green, which is how the sweep in
+        # Clear-PSMutationStaleSandbox once went missing.
+        $summary = Get-PSMutationScore -Results $script:mixed
+        $excl = [pscustomobject]@{ Skipped = 8; FilesWithNoMutants = @('src/Billing.ps1') }
+        $lines = Get-PSMutationSummaryLine -Summary $summary -Results $script:mixed -High 85 -Low 70 -Exclusion $excl
+        ($lines.Text -join "`n") | Should-MatchString ([regex]::Escape('8 mutant(s) skipped as uncovered'))
+    }
+
+    It 'says nothing on the summary line when nothing was excluded' {
+        # The kept half. Without it the test above passes against a renderer that emits the
+        # caveat unconditionally, which would put "0 mutant(s) skipped" on every clean run.
+        $summary = Get-PSMutationScore -Results $script:mixed
+        $none = [pscustomobject]@{ Skipped = 0; FilesWithNoMutants = @() }
+        $lines = Get-PSMutationSummaryLine -Summary $summary -Results $script:mixed -High 85 -Low 70 -Exclusion $none
+        ($lines.Text -join "`n") | Should-NotMatchString 'skipped as uncovered'
+    }
+
+    It 'reports a count with no file list when every file kept something' {
+        # The untested arm. Both existing cases have files to name or nothing to say at all,
+        # so a renderer that ALWAYS appended the parenthetical, or one that appended it for
+        # zero files, passed both. This is the shape where mutants were skipped across files
+        # that each still contributed.
+        $spread = [pscustomobject]@{ Skipped = 4; FilesWithNoMutants = @() }
+        $line = Get-PSMutationExclusionLine -Exclusion $spread
+        $line | Should-MatchString ([regex]::Escape('4 mutant(s) skipped as uncovered'))
+        $line | Should-NotMatchString 'contributed none'
+    }
+
+    It 'counts nothing skipped when every file kept everything' {
+        # Pins the accumulator's starting point. Seeded at anything but zero, a run where the
+        # filter removed nothing would still report mutants skipped.
+        $perFile = @([pscustomobject]@{ File = 'src/Calc.ps1'; Produced = 3; Kept = 3 })
+        (Get-PSMutationCoverageExclusion -PerFile $perFile).Skipped | Should-Be 0
+    }
+
+    It 'adds no line at all to the summary when nothing was excluded' {
+        # Not "adds no matching text" -- adds no LINE. Forcing the guard true appends an
+        # EMPTY line, which a text assertion cannot see: the run then prints a blank row
+        # under every score and every existing test still passes.
+        $summary = Get-PSMutationScore -Results $script:mixed
+        $none = [pscustomobject]@{ Skipped = 0; FilesWithNoMutants = @() }
+        $with = @(Get-PSMutationSummaryLine -Summary $summary -Results $script:mixed -High 85 -Low 70 -Exclusion ([pscustomobject]@{ Skipped = 2; FilesWithNoMutants = @() }))
+        $without = @(Get-PSMutationSummaryLine -Summary $summary -Results $script:mixed -High 85 -Low 70 -Exclusion $none)
+        ($with.Count - $without.Count) | Should-Be 1
+    }
+
+    It 'names a file that produced exactly one candidate and kept none' {
+        # ONE, deliberately. The existing fixtures produce 5 and 0, and both sit the same
+        # side of a shifted boundary -- `Produced -gt 1` behaves identically for them. A file
+        # with a single mutable construct that no test reaches is the smallest real instance
+        # of this bug and the only fixture that can see the boundary move.
+        $perFile = @([pscustomobject]@{ File = 'src/Thin.ps1'; Produced = 1; Kept = 0 })
+        $x = Get-PSMutationCoverageExclusion -PerFile $perFile
+        $x.Skipped | Should-Be 1
+        $x.FilesWithNoMutants | Should-Be 'src/Thin.ps1'
+    }
+
+    It 'names a single silent file without pluralising the claim away' {
+        # Exactly one file, for the same reason: with two, `Count -gt 0` and `Count -gt 1`
+        # agree, so the boundary is invisible and the parenthetical could be dropped for the
+        # single-file case with every other test still green.
+        $one = [pscustomobject]@{ Skipped = 3; FilesWithNoMutants = @('src/Billing.ps1') }
+        $line = Get-PSMutationExclusionLine -Exclusion $one
+        $line | Should-MatchString ([regex]::Escape('1 file(s) contributed none: src/Billing.ps1'))
+    }
+
     It 'records both numbers in the report document' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-excl-$([guid]::NewGuid())"
         try {
