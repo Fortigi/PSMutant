@@ -309,9 +309,23 @@ Describe 'Invoke-PSMutant' {
             -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'TimedOut'
     }
 
+    It 'refuses an outcome it does not model rather than scoring it' {
+        # The collapse below is toward the FLATTERING answer: an unmodelled value would be
+        # scored Killed, so a Pester that grew a third run-level state would report a perfect
+        # score with no test failing and nothing to notice. A rename fails loudly at the
+        # baseline; a widening does not, which is why the set is closed here.
+        Mock Invoke-PSBoundedPester { 'Inconclusive' }
+        { Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
+                -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } |
+            Should-Throw -ExceptionMessage '*flatters the score*'
+        # Asserted on the LAST fragment of the message, not the first. Breaking a `+` between
+        # the fragments raises a conversion error that QUOTES its left operand, so a pattern
+        # taken from an earlier fragment matches the mutant's own failure and the assertion
+        # passes against a message that was never built.
+    }
+
     It 'reports Killed for any outcome that is not a clean pass' -ForEach @(
         @{ Outcome = 'Failed' }
-        @{ Outcome = 'Inconclusive' }
     ) {
         # Anything but Passed is a kill, which is why an outcome that means "we could
         # not tell" must never reach here -- see Invoke-PSBoundedPester.
