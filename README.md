@@ -133,7 +133,12 @@ a 100% resting on a dozen declarations can never be mistaken for one that killed
 3. **Evaluate** — copies the source subtrees into a temp **sandbox**, splices each mutant
    into the copy, runs the covering tests in-process, and restores the copy. Tracked source
    is never touched.
-4. **Score** — `killed / total`, written to the JSON report.
+4. **Score** — `killed / total`, written to the JSON report. A mutant that hits the
+   per-mutant timeout counts toward `killed`, because a mutant that hangs your suite is a
+   fault -- but it is also reported on its own as `timedOut`, in the JSON and on the
+   summary line. "The suite proved this fault is caught" and "the suite hung and we
+   assumed so" are different claims, and a rising `timedOut` means your timeout is too
+   tight or a covering suite too slow, not that your tests got better.
 
 A **loop-condition guard** drops any candidate inside a `while`/`for`/`do` condition, so a
 flipped comparison can never spin an infinite loop — which is what makes in-process

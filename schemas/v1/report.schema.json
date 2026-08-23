@@ -78,6 +78,7 @@
     "total": { "type": "integer", "description": "Full runs only. Mutants counted in the score, excluding declared equivalents." },
     "killed": { "type": "integer", "description": "Full runs only." },
     "survived": { "type": "integer", "description": "Full runs only." },
+    "timedOut": { "type": "integer", "description": "Full runs only. Mutants that hit the per-mutant timeout. INCLUDED in killed, not beside it, so killed + survived still reconciles against total. Reported apart because a hang is not evidence the suite caught anything, and a rising count means the timeout is too tight or a suite too slow." },
     "declaredEquivalent": {
       "type": "integer",
       "description": "Full runs only. How many mutants the config argued cannot change behaviour, and which are therefore absent from 'total'. A reader who cannot see this number cannot tell a real 100% from a declared one."
