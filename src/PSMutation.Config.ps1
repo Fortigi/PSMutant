@@ -18,6 +18,12 @@
 # mechanism, and holds no opinion about a repo's layout.
 $script:PSMutationDefaultSubtrees = @('src', 'tests')
 
+# Where the report goes when the config does not say. Documented optional and, until this
+# existed, mandatory in practice: `Join-Path $root $null` returns the root itself, so an
+# omitted key produced "unable to clear content ... because it is a directory" from the
+# report writer -- after the whole run had already been done.
+$script:PSMutationDefaultReportPath = 'reports/ps-mutation.json'
+
 # The config format has ONE definition: schemas/v1/config.schema.json, which also ships to
 # consumers. The key names, the threshold sub-keys and the type of every value are read
 # from it rather than restated here -- a second copy in PowerShell would be a second place
@@ -276,6 +282,117 @@ function Get-PSMutationCoveredLinesOnly {
     return [bool]$Cfg.coveredLinesOnly
 }
 
+function Get-PSMutationPathFault {
+    <#
+    .SYNOPSIS
+        The fault, if any, in a raw config path -- before anything tries to use it.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] $Value,
+        [Parameter(Mandatory)] [string]$Key
+    )
+    # Every other config value got a resolver; paths did not, so each failed in its own place
+    # and its own way -- a missing one as "unable to clear content of a directory", a bracketed
+    # one as "the path is empty", neither naming the key that caused it. This answers for the
+    # value BEFORE it reaches Join-Path, Pester or the filesystem.
+    if ($null -eq $Value -or ($Value -is [string] -and [string]::IsNullOrWhiteSpace($Value))) {
+        return "Config key '$Key' is empty. Give it a path relative to the source root."
+    }
+    if ($Value -isnot [string]) {
+        return "Config key '$Key' must be a string path, not $($Value.GetType().Name)."
+    }
+    # Wildcard metacharacters. PowerShell's providers -- and Pester's Run.Path and
+    # CodeCoverage.Path -- expand these, so `sr[c]` is a character class that matches nothing:
+    # Pester finds no files and the run fails somewhere far away with a message naming neither
+    # the key nor the cause. Refused here, where both can be named.
+    $meta = '[', ']', '*', '?'
+    $found = @($meta | Where-Object { $Value.Contains($_) })
+    if ($found.Count -gt 0) {
+        return ("Config key '$Key' contains $($found -join ' and ') in '$Value'. PowerShell " +
+            'treats those as wildcards when resolving a path, so the file this names is not the ' +
+            'file that gets used -- and a class that matches nothing fails much later, naming ' +
+            'neither this key nor the reason. Rename the file or directory.')
+    }
+    return $null
+}
+
+function Test-PSMutationPathOutsideRoot {
+    <#
+    .SYNOPSIS
+        Whether a path resolves outside the root it is supposed to sit under.
+    #>
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [string]$Root
+    )
+    # Asked as a relative path rather than by string-matching for '..', because a path may
+    # contain '..' and still resolve inside: `src/../src` is `src`, and refusing that would
+    # reject a config that was never ambiguous.
+    # An ALREADY-ROOTED path is taken as it stands. Joining it onto the root instead produces
+    # nonsense that differs by platform: on Linux `Join-Path /tmp/anchor /tmp/elsewhere/x.ps1`
+    # yields /tmp/anchor/tmp/elsewhere/x.ps1, which then relativises to something INSIDE the
+    # root -- so an absolute config path pointing anywhere on the machine reported itself as
+    # safe. Windows masked it, because Join-Path there produced a path that failed differently.
+    $full = if ([System.IO.Path]::IsPathRooted($Path)) { [System.IO.Path]::GetFullPath($Path) }
+    else { [System.IO.Path]::GetFullPath((Join-Path $Root $Path)) }
+    $back = [System.IO.Path]::GetRelativePath($Root, $full)
+    return [System.IO.Path]::IsPathRooted($back) -or $back -eq '..' -or
+        $back.StartsWith('..' + [System.IO.Path]::DirectorySeparatorChar)
+}
+
+function Get-PSMutationReportPath {
+    <#
+    .SYNOPSIS
+        Where the report is written, resolved, with the documented default applied.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Cfg, [Parameter(Mandatory)] [string]$SourceRoot)
+    $raw = [string]$Cfg.reportPath
+    # Absence is meaningful here and means "use the default", so this tests for the empty
+    # value rather than truthiness -- and the default is applied BEFORE the fault check, so an
+    # omitted key is not reported as an empty one.
+    if ([string]::IsNullOrWhiteSpace($raw)) { $raw = $script:PSMutationDefaultReportPath }
+    $fault = Get-PSMutationPathFault -Value $raw -Key 'reportPath'
+    if ($fault) { throw $fault }
+    # No escape check: a report is an OUTPUT, not a mutation target, and writing one to a
+    # shared artifacts directory above the source root is a reasonable thing to ask for.
+    return [System.IO.Path]::GetFullPath((Join-Path $SourceRoot $raw))
+}
+
+function Get-PSMutationMissingSandboxPath {
+    <#
+    .SYNOPSIS
+        Config paths that did not survive into the sandbox, with what to do about it.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Paths,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Subtrees
+    )
+    # Asked BEFORE the baseline, because afterwards it is unanswerable. A mutate or tests file
+    # that is not in the sandbox makes Pester report a coverage path it cannot resolve, the
+    # baseline comes back not-green, and the run says "Baseline suite is not green - fix the
+    # tests before mutating." The suite is green. The message is an affirmatively false
+    # statement that sends the reader to debug the wrong files.
+    #
+    # The cause is almost always the same and is worth naming rather than leaving to be
+    # deduced: sandboxSubtrees decides what gets copied, and it defaults to this module's own
+    # layout, so a repo laid out any other way copies nothing the config points at.
+    $missing = @($Paths | Where-Object { -not (Test-Path -LiteralPath $_) })
+    if ($missing.Count -eq 0) { return $null }
+    return ("These config paths do not exist inside the sandbox: $($missing -join ', '). " +
+        "Only these subtrees are copied into it: $($Subtrees -join ', '). A path outside them " +
+        'is never copied, so the baseline runs against files that are not there and reports ' +
+        'itself not green -- which is not what went wrong. Add the directory to ' +
+        "'sandboxSubtrees', or point -SourceRoot at the directory that contains them all.")
+}
+
 function Get-PSMutationSandboxPlan {
     # Translate the config's source-relative mutate/tests into sandbox absolute paths.
     #
@@ -306,9 +423,25 @@ function Get-PSMutationSubtree {
     # this to match its own layout; unset means the module's own convention.
     [OutputType([string[]])]
     [CmdletBinding()]
-    param($Cfg)
-    if ($Cfg.sandboxSubtrees) { return [string[]]@($Cfg.sandboxSubtrees) }
-    return [string[]]$script:PSMutationDefaultSubtrees
+    param($Cfg, [Parameter(Mandatory)] [string]$SourceRoot)
+    $subtrees = if ($Cfg.sandboxSubtrees) { [string[]]@($Cfg.sandboxSubtrees) }
+    else { [string[]]$script:PSMutationDefaultSubtrees }
+    foreach ($t in $subtrees) {
+        $fault = Get-PSMutationPathFault -Value $t -Key 'sandboxSubtrees'
+        if ($fault) { throw $fault }
+        # The one path family that reached the filesystem unchecked. `..` in a subtree makes
+        # New-PSMutationSandbox copy from outside the source root INTO the sandbox, and the
+        # sweep that reclaims sandboxes keys on a name it no longer recognises -- so the copy
+        # is left behind, holding whatever was above the root.
+        if (Test-PSMutationPathOutsideRoot -Path $t -Root $SourceRoot) {
+            throw ("Config key 'sandboxSubtrees' names '$t', which resolves outside the source " +
+                'root. Subtrees are copied into a temp sandbox by relative position, so one that ' +
+                'escapes copies from outside the root and is not reclaimed by the sweep. Name a ' +
+                'directory inside the source root, or point -SourceRoot at the directory that ' +
+                'contains them all.')
+        }
+    }
+    return $subtrees
 }
 
 function Get-PSMutationScoreBand {

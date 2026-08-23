@@ -110,13 +110,17 @@ function Invoke-PSMutation {
     Assert-PSMutationPester
     Clear-PSMutationStaleSandbox
 
-    $subtrees = Get-PSMutationSubtree -Cfg $cfg
+    $subtrees = Get-PSMutationSubtree -Cfg $cfg -SourceRoot $root
     $sandbox = New-PSMutationSandbox -RepoRoot $root -Subtrees $subtrees
     try {
         $t = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox
 
         Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Banner' `
                 -Text "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite...")
+        # Before the baseline, because after it the answer is a false statement about the
+        # tests rather than a true one about the config.
+        $missing = Get-PSMutationMissingSandboxPath -Paths (@($t.Mutate) + @($t.AllTests)) -Subtrees $subtrees
+        if ($missing) { throw $missing }
         $baseline = Invoke-PSMutationBaseline -TestPath $t.AllTests -MutateFiles $t.Mutate
         Assert-PSMutationBaselineGreen -Baseline $baseline
         $timeout = Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds $baseline.DurationSeconds
@@ -130,7 +134,7 @@ function Invoke-PSMutation {
         # inside the selection; recomputing them later means parsing every file again.
         $exclusion = Get-PSMutationCoverageExclusion -PerFile $selection.PerFile
         $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $sandbox
-        $reportPath = Join-Path $root $cfg.reportPath
+        $reportPath = Get-PSMutationReportPath -Cfg $cfg -SourceRoot $root
 
         # Gathered here, in the wiring, because the two impure inputs -- the clock and the
         # loaded module -- are what would make New-PSMutationProvenance untestable. It stays
