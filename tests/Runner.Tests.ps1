@@ -62,6 +62,7 @@ Describe 'Get-PSMutationProgressLine' {
     It 'marks a survivor with . as Warn and a kill with x as Muted' -ForEach @(
         @{ Status = 'Survived'; Glyph = '.'; Role = 'Warn' }
         @{ Status = 'Killed'; Glyph = 'x'; Role = 'Muted' }
+        @{ Status = 'TimedOut'; Glyph = 'x'; Role = 'Muted' }
     ) {
         # The glyph is how a long run is read at a glance; swapping them would invert the
         # meaning of every line of output while still "reporting progress".
@@ -285,9 +286,16 @@ Describe 'Invoke-PSMutant' {
             -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Survived'
     }
 
+    It 'reports TimedOut apart from Killed, because a hang is not evidence' {
+        # The bounded runner has always distinguished this; the verdict was discarded one
+        # line later, so a suite that was merely too slow scored kills it never earned.
+        Mock Invoke-PSBoundedPester { 'TimedOut' }
+        Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
+            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'TimedOut'
+    }
+
     It 'reports Killed for any outcome that is not a clean pass' -ForEach @(
         @{ Outcome = 'Failed' }
-        @{ Outcome = 'TimedOut' }
         @{ Outcome = 'Inconclusive' }
     ) {
         # Anything but Passed is a kill, which is why an outcome that means "we could

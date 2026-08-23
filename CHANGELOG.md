@@ -14,6 +14,18 @@ All notable changes to PSMutant are documented here. Format follows
   sites, because the recheck takes the scriptblock and the report takes its invoked result --
   a difference a shared key would hide.
 
+### Fixed
+
+- **A timed-out mutant is no longer counted as a plain kill.** `Invoke-PSBoundedPester` has
+  always distinguished a timeout; the verdict was discarded one line later, so "the suite
+  proved this fault is caught" and "the suite hung and we assumed so" became the same number.
+  A covering suite that is merely too slow therefore inflated the score, and a genuinely
+  non-terminating mutant -- often a loop whose termination nothing asserts -- disappeared into
+  the kill count. Timeouts still score **with** the kills, so your number does not move, but
+  they are now reported apart from them: `timedOut` in the JSON report, and
+  `[N killed on the clock, not by a failing test]` on the summary line. A rising count means
+  the timeout is too tight or a suite too slow, not that the tests got better.
+
 ### Security
 
 - `publish.yml` no longer interpolates the tag name into a PowerShell script. An Actions

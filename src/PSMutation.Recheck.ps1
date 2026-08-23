@@ -169,7 +169,8 @@ function Write-PSMutationRecheckReport {
         [AllowEmptyCollection()] [string[]]$Operators = @(),
         [hashtable]$Provenance = @{}
     )
-    $killed = @($Results | Where-Object Status -eq 'Killed').Count
+    # Same rule as a full report: a timeout scores with the kills.
+    $killed = @($Results | Where-Object { $_.Status -eq 'Killed' -or $_.Status -eq 'TimedOut' }).Count
     New-Item -ItemType Directory -Path (Split-Path $ReportPath -Parent) -Force | Out-Null
     [pscustomobject]@{
         generatedFrom      = 'PSMutant'

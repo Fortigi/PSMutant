@@ -174,11 +174,15 @@ function Get-PSMutationScore {
     $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
     $stale = [System.Collections.Generic.List[string]]::new()
 
-    $killed = 0; $survived = 0; $excluded = 0
+    $killed = 0; $survived = 0; $excluded = 0; $timedOut = 0
     foreach ($r in $Results) {
         $key = Get-PSMutationDeclaredKey -Result $r -Declared $declared
         $isDeclared = $null -ne $key
-        if ($r.Status -eq 'Killed') {
+        # A timeout counts toward $killed so the headline score does not move, and is
+        # ALSO counted on its own so a rising number is visible. Reporting only the sum
+        # is what let a merely slow suite look like a thorough one.
+        if ($r.Status -eq 'TimedOut') { $timedOut++ }
+        if ($r.Status -eq 'Killed' -or $r.Status -eq 'TimedOut') {
             $killed++
             if ($isDeclared) { $stale.Add("$key -- declared equivalent but the suite killed it") }
         }
@@ -189,6 +193,7 @@ function Get-PSMutationScore {
     $score = if ($total -gt 0) { [math]::Round(100.0 * $killed / $total, 1) } else { 0 }
     return [pscustomobject]@{
         Score = $score; Killed = $killed; Survived = $survived; Total = $total
+        TimedOut = $timedOut
         DeclaredEquivalent = $excluded; StaleEquivalents = $stale.ToArray()
     }
 }
@@ -242,6 +247,9 @@ function Write-PSMutationReport {
         durations     = $Provenance.durations
         mutationScore = $summary.Score
         total = $summary.Total; killed = $summary.Killed; survived = $summary.Survived
+        # Additive, and included in `killed` rather than beside it: a consumer that never
+        # read this field still reconciles killed + survived against total.
+        timedOut = $summary.TimedOut
         # Reported so the headline score can always be reconciled against the raw
         # mutant count: total EXCLUDES declared equivalents, and a reader who cannot
         # see how many were excluded cannot tell a real 100% from a declared one.
@@ -316,6 +324,21 @@ function Get-PSMutationScoreRole {
     return 'Bad'
 }
 
+function Get-PSMutationTimeoutNote {
+    <#
+    .SYNOPSIS
+        The qualifier a score carries when mutants died on the clock, or nothing.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$TimedOut)
+    # Its own function so BOTH arms are reachable from a test. Written inline in the format
+    # string, the no-timeout arm is executed by every run and asserted by none, and the arm
+    # that matters -- the one that qualifies a score -- would never be exercised at all.
+    if ($TimedOut -eq 0) { return '' }
+    return "   [$TimedOut killed on the clock, not by a failing test]"
+}
+
 function Get-PSMutationSummaryLine {
     # What a completed run should say: the score, what qualified it, and the survivors to
     # go add assertions for. Pure -- it decides, Write-PSMutationOutput emits.
@@ -338,7 +361,8 @@ function Get-PSMutationSummaryLine {
     # compares against $null for every config without colour bands, and `$score -ge $null`
     # is $true -- so every score reads as Good, 0% included.
     $lines.Add((New-PSMutationLine -Role (Get-PSMutationScoreRole -Score $Summary.Score -High $High -Low $Low) `
-                -Text ("  Mutation score: {0}%  ({1} killed / {2})" -f $Summary.Score, $Summary.Killed, $Summary.Total)))
+                -Text ("  Mutation score: {0}%  ({1} killed / {2}){3}" -f $Summary.Score, $Summary.Killed, $Summary.Total,
+                    (Get-PSMutationTimeoutNote -TimedOut $Summary.TimedOut))))
     # Said next to the score, not buried in the report: a 100% built on a dozen declared
     # equivalents is a different claim from a 100% that killed everything.
     if ($Summary.DeclaredEquivalent -gt 0) {
