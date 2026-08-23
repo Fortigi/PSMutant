@@ -7,6 +7,16 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### Fixed
 
+- **An outcome PSMutant does not model is refused rather than scored.** Every mutant verdict
+  came from one comparison over an open string channel -- whatever Pester's run result says,
+  plus `TimedOut` minted into the same namespace -- and anything unrecognised fell through to
+  `Killed`, toward the flattering answer, with no test failing. The collapse is correct for
+  every shipping Pester, whose run-level result is two-valued; what was unguarded is a
+  **widened** vocabulary rather than a renamed one. A rename fails loudly at the baseline,
+  which compares against the literal `Passed` before any mutant runs; a third state coexisting
+  with it would leave the baseline green while every mutant returning it scored as killed.
+
+
 - **A report that cannot be written now fails the run instead of reporting success.** The
   directory creation and the write were both non-terminating, so an ordinary `reportPath`
   mistake -- one containing a `[`, an absolute path, a read-only directory, a file open in an

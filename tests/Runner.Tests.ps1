@@ -302,7 +302,11 @@ Describe 'Invoke-PSMutant' {
         Mock Invoke-PSBoundedPester { 'Inconclusive' }
         { Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
                 -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } |
-            Should-Throw -ExceptionMessage '*does not model*'
+            Should-Throw -ExceptionMessage '*flatters the score*'
+        # Asserted on the LAST fragment of the message, not the first. Breaking a `+` between
+        # the fragments raises a conversion error that QUOTES its left operand, so a pattern
+        # taken from an earlier fragment matches the mutant's own failure and the assertion
+        # passes against a message that was never built.
     }
 
     It 'reports Killed for any outcome that is not a clean pass' -ForEach @(
