@@ -49,7 +49,26 @@ function ConvertTo-PSMutationSandboxPath {
         [Parameter(Mandatory)] [string]$SandboxRoot
     )
     $rel = [System.IO.Path]::GetRelativePath($RepoRoot, [System.IO.Path]::GetFullPath($Path))
-    return [System.IO.Path]::GetFullPath((Join-Path $SandboxRoot $rel))
+    $mapped = [System.IO.Path]::GetFullPath((Join-Path $SandboxRoot $rel))
+
+    # Refuse a path that lands OUTSIDE the sandbox, because the caller writes to whatever
+    # comes back. A leading `..` survives the round trip above, so a config naming a file
+    # above the source root gets mutated where it lives -- and the promise that a hard kill
+    # cannot leave a mutant in tracked source then rests entirely on the `finally` that
+    # restores it, rather than on the mutant never touching a real file at all.
+    #
+    # Asked as a relative path rather than by string-matching for '..', because a path may
+    # contain '..' and still resolve inside: `src/../src/a.ps1` is `src/a.ps1`, and refusing
+    # that would reject a config that was never ambiguous.
+    $back = [System.IO.Path]::GetRelativePath($SandboxRoot, $mapped)
+    if ([System.IO.Path]::IsPathRooted($back) -or $back -eq '..' -or
+        $back.StartsWith('..' + [System.IO.Path]::DirectorySeparatorChar)) {
+        throw ("Config path '$Path' resolves outside the source root, to '$mapped'. Every path " +
+            "in a config is copied into a temp sandbox and mutated there; one that escapes would " +
+            "be mutated in place, in the directory the sandbox exists to replace. Use a path " +
+            "inside '$RepoRoot', or point -SourceRoot at the directory that contains them all.")
+    }
+    return $mapped
 }
 
 function ConvertFrom-PSMutationSandboxPath {

@@ -1,4 +1,6 @@
 {
+  "$schema": "https://raw.githubusercontent.com/Fortigi/PSMutant/main/schemas/v1/config.schema.json",
+
   "_comment": "Example PSMutant config. Copy into your repo, point `mutate` at pure/DB-free modules and `tests` at the Pester files that cover them. Paths are relative to -SourceRoot (default: current dir). Run: Invoke-PSMutation -ConfigFile ./psmutant.config.json",
 
   "sandboxSubtrees": ["src", "tests"],

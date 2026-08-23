@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-23, after **0.3.2 shipped**. 41 issues open.
+Snapshot 2026-08-23, after **0.3.2 shipped**, with four more fixes unreleased. 36 issues open.
 
 Since the last snapshot: Windows joined the CI matrix (#32), `ci.yml` dropped to
 least privilege (#94), the gates learned to see a test file that never ran (#122),
@@ -47,19 +47,20 @@ and a `..` in a config path escaped the sandbox and mutated a real file in the w
 Neither was large, and neither was visible from inside code at 100% coverage and 100%
 self-mutation.
 
-**Five more are the same failure class** -- the run reports a number it did not measure:
-**#96** (the coverage filter drops whole mutate files out of the score, silently), **#98** (the
-report write fails non-terminatingly and the run still returns `Score=100, ExitCode=0`),
-**#106** (a file listed twice doubles the denominator), and **#108** (a missing `tests` entry
-silently runs the whole suite for every mutant).
+**That failure class is now mostly closed.** #96 (the coverage filter dropped whole mutate
+files out of the score in silence), #98 (the report write failed non-terminatingly and the run
+still returned `Score=100, ExitCode=0`) and #7 (a timeout scored as a plain kill) are all fixed
+and unreleased. Each made the score go **up**, which is the direction that never announces
+itself. What is left of the class: **#106** (a file listed twice doubles the denominator) and
+**#108** (a missing `tests` entry silently runs the whole suite for every mutant).
 
-**And five trace to one missing concept: config paths have no resolver.** #100 (`..` in
-`sandboxSubtrees` copies outside the sandbox, carries no `$PID`, and is never cleaned up),
-#103 (a path that does not survive into the sandbox is diagnosed as a red baseline), #104
-(`reportPath` is documented optional and is mandatory in practice, and the run finds out
-last), #109 (a `[` in a path fails with a message naming neither the file nor the cause) and
-#110 (concurrent runs race on `reportPath`, and a `-RecheckFrom` seeded from the survivor
-answers confidently about the wrong survivor set).
+**The config-path cluster is closed, as one concept rather than four guards.** #100, #103,
+#104 and #109 are fixed: two primitives that answer for a raw path before anything uses it, and
+two resolvers over them. Fixing them separately would have produced four guards in four places,
+which is what this grouping existed to prevent.
+
+**#110 stays open and does not belong here.** Its fix is a run id in the report plus a check in
+the recheck gate -- run *identity*, not path resolution. It sits nearer #54.
 
 That is worth treating as one piece of work rather than five. Every other config value gained a
 resolver with a documented default in 0.3.0; paths did not. Give them one -- resolve against
@@ -160,8 +161,18 @@ the mutant.
 
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#54** with **#63** | The run result carries a verdict without its reason and has no field common to both modes -- which is what a run-context object fixes, so doing them apart means threading the same parameters twice. |
-| 2 | **#56** | The score function validates a whole config while scoring a subset, which blocks per-file scores in Wave E. |
+| 1 | **#54** | The run result carries a verdict without its reason and no field common to both modes. |
+
+**#56 shipped in 0.3.2** and is removed rather than ticked: `Get-PSMutationScore` is a per-set
+fold again, so per-file scores in Wave E are no longer blocked by it.
+
+**#54 and #63 are split, on evidence.** They were paired on the assumption that each new mode
+threads another parameter list -- and three fixes later, two of them added *zero* parameters.
+`Exclusion` turned out to be the argument AGAINST a context object rather than for one: it must
+**not** reach the recheck path, which does no coverage filtering, and a context object carries
+every field everywhere. #63 keeps waiting. #54 got stronger over the same period -- three
+numbers that qualify a score now live in the report and not in the run result, so CI's mutation
+gate prints a bare percentage and cannot say what failed.
 
 **#54 is breaking, so it wants to be EARLY in the 0.4.0 cycle**, not just before the release --
 the same argument that shipped 0.3.0 when it did rather than folding this in. Landing it now
@@ -220,12 +231,9 @@ had happen twice with its own documentation.
 
 Pick these up between waves; none blocks anything.
 
-- **#46** `switch`/ternary blind spot. Natural follow-up to the operators #5 landed.
-- **#55** nothing asserts Pester's result vocabulary is two-valued. Small, and it guards the
-  external boundary the module deliberately does not abstract.
-- **#63** no run-context object, so each new mode threads another long parameter list. Decide
-  before **#10** or **#8**, since both add a mode and the decision is far cheaper before there
-  are four call sites.
+- **#63** no run-context object. Re-measured after three fixes went through that seam, and the
+  case got *weaker*: two of the three added no parameters at all. Revisit when a value is
+  genuinely shared by three or more callees, not before.
 - **#39** interrupted runs -- see the note above; likely cheaper than its pairing with #1 implies.
 - **#49** child runspace script is an unparsed string.
 - **#41** missing `about_PSMutant`. **Smaller than its title implies, twice over.** The title
@@ -235,8 +243,6 @@ Pick these up between waves; none blocks anything.
   documentation. Parameters, examples and the synopsis are complete now and pinned by tests.
   What remains is the topic the help still points at and which does not exist.
 - **#36** end-to-end exact counts, **#43** cross-Context `$script:` coupling, **#35** consumer-shaped layout.
-- **#32** Windows CI matrix. Adds runner time, but the caching and concurrency work it was
-  waiting on has landed, so it is affordable now.
 - **#22** sandbox self-mutation, **#9** killed-by map.
 - **#89** nothing watches the pinned dependencies. Split unevenly: the `github-actions` half
   is a ten-line `dependabot.yml` and could go in beside anything, while `.github/pins.env`
@@ -276,5 +282,4 @@ can actually verify rather than by effort.
 | Order | Issue | Why here |
 |---|---|---|
 | 1 | **#4** fold recheck results into the baseline | Now the interesting one, and it answers a question worth asking: since the baseline already knows what every mutant did and the recheck knows what changed, why re-run anything to refresh the number? Because the arithmetic is only sound if the test changes were purely additive, and the compatibility guard watches the *source*, not the tests. The sound version is to hash the mapped test files too: a mutant whose covering tests are byte-identical is provably still killed and can be carried, one whose tests changed must be re-run. That trades a full run for re-running the file you were working in. Its prerequisite is met -- both report shapes now carry the same provenance block, so merging them is a question about the mutant rows rather than about telling the two shapes apart. |
-| 2 | **#59** option (2) | Identity independent of walk position. Option (1) landed in #75; (2) was blocked on #48 and is not any more. Fewer refusals means fewer forced full runs, which is the same bar again -- but it is the smallest remaining item here, not the most valuable. |
 

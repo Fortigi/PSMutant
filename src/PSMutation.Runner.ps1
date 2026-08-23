@@ -80,8 +80,16 @@ function Test-PSMutantCovered {
 }
 
 function Select-PSMutationCandidate {
-    # Enumerate candidates across the mutate files, keeping only covered ones (opt).
-    [OutputType([object[]])]
+    # Enumerate candidates across the mutate files, keeping only covered ones (opt), and
+    # report what that removed.
+    #
+    # Returns BOTH, rather than only the survivors, because the coverage filter can empty a
+    # whole mutate file and the score then answers for a smaller set than the config asked
+    # for -- upward, and silently. It fires the moment a file joins `mutate` before its tests
+    # exist, or a refactor stops a suite exercising a module. The per-file tally is the only
+    # place the pre-filter count still exists; recomputing it later would mean parsing every
+    # file a second time.
+    [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string[]]$MutateFiles,
@@ -90,13 +98,20 @@ function Select-PSMutationCandidate {
         $CoveredLines
     )
     $out = [System.Collections.Generic.List[object]]::new()
+    $perFile = [System.Collections.Generic.List[object]]::new()
     foreach ($file in $MutateFiles) {
-        Get-PSMutationCandidate -Path $file -Operators $Operators |
-            Where-Object { -not $CoveredLinesOnly -or (Test-PSMutantCovered -Candidate $_ -CoveredLines $CoveredLines) } |
-            ForEach-Object { $out.Add($_) }
+        $produced = @(Get-PSMutationCandidate -Path $file -Operators $Operators)
+        $kept = @($produced | Where-Object { -not $CoveredLinesOnly -or (Test-PSMutantCovered -Candidate $_ -CoveredLines $CoveredLines) })
+        foreach ($c in $kept) { $out.Add($c) }
+        $perFile.Add([pscustomobject]@{ File = $file; Produced = $produced.Count; Kept = $kept.Count })
     }
-    return , $out.ToArray()
+    return [pscustomobject]@{ Candidates = $out.ToArray(); PerFile = $perFile.ToArray() }
 }
+
+# The outcomes this module understands from a covering-test run. Pester's run-level result
+# supplies 'Passed' and 'Failed'; 'TimedOut' is minted here by Invoke-PSBoundedPester. Anything
+# outside this set is refused rather than scored -- see Invoke-PSMutant.
+$script:PSMutationKnownOutcomes = @('Passed', 'Failed', 'TimedOut')
 
 function Invoke-PSBoundedPester {
     <#
@@ -155,8 +170,11 @@ function Invoke-PSMutant {
         Evaluate one mutant: splice it into its SANDBOX file, run the covering tests
         under a timeout, classify, and restore the sandbox file for the next mutant.
     .OUTPUTS
-        'Killed' | 'Survived' -- Survived only if the suite still fully passes; any
-        failure OR a timeout (a runaway mutant) counts as Killed.
+        'Killed' | 'Survived' | 'TimedOut' -- Survived only if the suite still fully
+        passes. A timeout scores WITH the kills, because a mutant that hangs the suite is a
+        fault, but it is reported apart from them: "the suite proved this fault is caught"
+        and "the suite hung and we assumed so" are different claims and only the first is
+        evidence. Folded together, a suite that is merely too slow inflates the score.
     #>
     [OutputType([string])]
     [CmdletBinding()]
@@ -170,21 +188,44 @@ function Invoke-PSMutant {
     try {
         [System.IO.File]::WriteAllText($Candidate.File, $MutatedContent)
         $outcome = Invoke-PSBoundedPester -CoveringTests $CoveringTests -TimeoutSeconds $TimeoutSeconds
-        if ($outcome -eq 'Passed') { return 'Survived' } else { return 'Killed' }
+        if ($outcome -eq 'Passed') { return 'Survived' }
+        # Invoke-PSBoundedPester already distinguishes this; the verdict used to be
+        # discarded one line later, which is the whole of the bug.
+        if ($outcome -eq 'TimedOut') { return 'TimedOut' }
+        # A CLOSED vocabulary. Everything above is a value this module understands; anything
+        # else is an outcome nobody modelled, and the fall-through below scores it Killed --
+        # toward the flattering answer, silently, with no test failing.
+        #
+        # The collapse is correct for every shipping Pester, whose run-level result is
+        # two-valued. The risk is a WIDENED vocabulary rather than a renamed one: a rename
+        # fails loudly at the baseline, which compares against the literal 'Passed', but a
+        # third state that coexists with it leaves the baseline green and scores every mutant
+        # returning it as killed. That is a perfect score over tests that proved nothing --
+        # the same shape as the Pester-collision bug, reached through a door its fix left open.
+        if ($outcome -notin $script:PSMutationKnownOutcomes) {
+            throw ("The covering tests returned an outcome this version of PSMutant does not " +
+                "model: '$outcome'. Known outcomes are $($script:PSMutationKnownOutcomes -join ', '). " +
+                "Scoring it would guess, and the guess flatters the score.")
+        }
+        return 'Killed'
     }
     finally {
         [System.IO.File]::WriteAllText($Candidate.File, $original)
     }
 }
 
-function Write-PSMutationProgress {
-    # One per-mutant progress line.
+function Get-PSMutationProgressLine {
+    # One per-mutant progress line. Pure, and emitted as the loop goes rather than
+    # collected: a run of several hundred mutants takes minutes, and a progress report
+    # delivered at the end is not a progress report.
+    [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([int]$Index, [int]$Total, $Result, [string]$DisplayFile)
     $survived = $Result.Status -eq 'Survived'
     $glyph = if ($survived) { '.' } else { 'x' }
-    $col = if ($survived) { 'Yellow' } else { 'DarkGray' }
-    Write-Host ("  [{0}/{1}] {2} {3}:{4} {5}" -f $Index, $Total, $glyph, $DisplayFile, $Result.Line, $Result.Description) -ForegroundColor $col
+    $role = if ($survived) { 'Warn' } else { 'Muted' }
+    return New-PSMutationLine -Role $role -Data $Result `
+        -Text ("  [{0}/{1}] {2} {3}:{4} {5}" -f $Index, $Total, $glyph, $DisplayFile, $Result.Line, $Result.Description)
 }
 
 function Invoke-PSMutationLoop {
@@ -223,7 +264,8 @@ function Invoke-PSMutationLoop {
             Operator = $c.Operator; Description = $c.Description; Status = $status
         }
         $results.Add($row)
-        if (-not $Quiet) { Write-PSMutationProgress -Index $n -Total $Candidates.Count -Result $row -DisplayFile (Split-Path $display -Leaf) }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationProgressLine -Index $n `
+                -Total $Candidates.Count -Result $row -DisplayFile (Split-Path $display -Leaf))
     }
     return , $results.ToArray()
 }

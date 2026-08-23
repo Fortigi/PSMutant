@@ -12,6 +12,7 @@ BeforeAll {
     . (Join-Path $src 'PSMutation.Operators.ps1')
     . (Join-Path $src 'PSMutation.Sandbox.ps1')
     . (Join-Path $src 'PSMutation.Pester.ps1')     # Get-PSMutationPesterPath, mocked below
+    . (Join-Path $src 'PSMutation.Output.ps1')
     . (Join-Path $src 'PSMutation.Runner.ps1')
 
     $script:fixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-runner-$PID.ps1"
@@ -44,45 +45,62 @@ Describe 'Test-PSMutantCovered' {
 
 Describe 'Select-PSMutationCandidate' {
     It 'returns all candidates when coverage filtering is off' {
-        $c = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
-            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false -CoveredLines @{}
+        $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false -CoveredLines @{}).Candidates
         $c.Count | Should-BeGreaterThan 0
     }
+    It 'reports what filtering removed, per file' {
+        # The pre-filter count exists only here. Without it the caller cannot tell a file
+        # that contributed nothing from one that was never in `mutate`, because the file is
+        # still listed and still hashed into the report either way.
+        $full = [System.IO.Path]::GetFullPath($script:fixture)
+        $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
+        $sel.PerFile.Count | Should-Be 1
+        # Discriminating: Produced must exceed Kept here, or the fixture proves nothing about
+        # a filter that removed anything.
+        $sel.PerFile[0].Produced | Should-BeGreaterThan $sel.PerFile[0].Kept
+        $sel.PerFile[0].Kept | Should-Be $sel.Candidates.Count
+    }
+
     It 'keeps only candidates on covered lines when filtering is on' {
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
-        $c = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
-            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
+        $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered).Candidates
         ($c | ForEach-Object Line | Sort-Object -Unique) | Should-Be 3
     }
 }
 
-Describe 'Write-PSMutationProgress' {
-    BeforeEach {
-        $script:lines = [System.Collections.Generic.List[string]]::new()
-        $script:colours = [System.Collections.Generic.List[string]]::new()
-        Mock Write-Host { $script:lines.Add([string]$Object); $script:colours.Add([string]$ForegroundColor) }
-    }
-
-    It 'marks a survivor with . in yellow and a kill with x in grey' -ForEach @(
-        @{ Status = 'Survived'; Glyph = '.'; Colour = 'Yellow'   }
-        @{ Status = 'Killed';   Glyph = 'x'; Colour = 'DarkGray' }
+Describe 'Get-PSMutationProgressLine' {
+    It 'marks a survivor with . as Warn and a kill with x as Muted' -ForEach @(
+        @{ Status = 'Survived'; Glyph = '.'; Role = 'Warn' }
+        @{ Status = 'Killed'; Glyph = 'x'; Role = 'Muted' }
+        @{ Status = 'TimedOut'; Glyph = 'x'; Role = 'Muted' }
     ) {
-        # The glyph is how a long run is read at a glance; swapping them would
-        # invert the meaning of every line of output while still "printing progress".
-        Write-PSMutationProgress -Index 3 -Total 10 `
+        # The glyph is how a long run is read at a glance; swapping them would invert the
+        # meaning of every line of output while still "reporting progress".
+        $line = Get-PSMutationProgressLine -Index 3 -Total 10 `
             -Result ([pscustomobject]@{ Line = 42; Description = '-eq -> -ne'; Status = $Status }) -DisplayFile 'calc.ps1'
         # -Match with an escaped pattern, NOT -BeLike: in a wildcard, "[3/10]" is a
-        # character class matching one of 3 / 1 0, so the obvious assertion silently
-        # tests something else entirely.
-        ($script:lines -join '') | Should-MatchString ([regex]::Escape("[3/10] $Glyph "))
-        $script:colours | Should-ContainCollection $Colour
+        # character class matching one of 3 / 1 0, so the obvious assertion silently tests
+        # something else entirely.
+        $line.Text | Should-MatchString ([regex]::Escape("[3/10] $Glyph "))
+        $line.Role | Should-Be $Role
     }
 
     It 'shows the file, line and the change being tried' {
-        Write-PSMutationProgress -Index 1 -Total 2 `
+        $line = Get-PSMutationProgressLine -Index 1 -Total 2 `
             -Result ([pscustomobject]@{ Line = 42; Description = '-eq -> -ne'; Status = 'Killed' }) -DisplayFile 'calc.ps1'
-        ($script:lines -join '') | Should-BeLikeString '*calc.ps1:42*-eq -> -ne*'
+        $line.Text | Should-BeLikeString '*calc.ps1:42*-eq -> -ne*'
+    }
+
+    It 'carries the mutant row as data' {
+        # So a renderer other than the console has the values without parsing the text.
+        $row = [pscustomobject]@{ Line = 42; Description = '-eq -> -ne'; Status = 'Survived' }
+        $line = Get-PSMutationProgressLine -Index 1 -Total 2 -Result $row -DisplayFile 'calc.ps1'
+        $line.Data.Line | Should-Be 42
     }
 }
 
@@ -114,10 +132,10 @@ Describe 'Invoke-PSMutationLoop' {
         $r[0].Status | Should-Be 'Killed'
     }
 
-    It 'writes a progress line per mutant unless asked to be quiet' {
-        # Every other test here passes -Quiet, so the reporting branch never ran.
+    It 'renders a progress line naming the mutant it just finished' {
+        # Every other test here passes -Quiet, so this branch would otherwise never run.
         Mock Invoke-PSMutant { 'Killed' }
-        Mock Write-PSMutationProgress { }
+        Mock Write-PSMutationOutput { }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -126,12 +144,18 @@ Describe 'Invoke-PSMutationLoop' {
         Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) | Out-Null
 
-        Should-Invoke Write-PSMutationProgress -Exactly 1 -ParameterFilter { $Index -eq 1 -and $Total -eq 1 }
+        # [[]1/1] escapes the bracket: in a wildcard a bare [1/1] is a character class.
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Lines.Text -like '*[[]1/1]*' }
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { -not $Quiet }
     }
 
-    It 'stays silent when asked to be quiet' {
+    It 'hands -Quiet to the renderer rather than skipping the call' {
+        # The loop no longer decides whether to speak. It always renders and passes the
+        # switch on, because Write-PSMutationOutput is the single place -Quiet is honoured
+        # -- so what has to be proven here is that the switch is FORWARDED. A loop that
+        # dropped it would print for real while any "was not called" assertion stayed green.
         Mock Invoke-PSMutant { 'Killed' }
-        Mock Write-PSMutationProgress { }
+        Mock Write-PSMutationOutput { }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -140,7 +164,7 @@ Describe 'Invoke-PSMutationLoop' {
         Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet | Out-Null
 
-        Should-Invoke Write-PSMutationProgress -Exactly 0
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Quiet }
     }
 
     It 'falls back to the whole test set for a file with no per-file mapping' {
@@ -277,10 +301,31 @@ Describe 'Invoke-PSMutant' {
             -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Survived'
     }
 
+    It 'reports TimedOut apart from Killed, because a hang is not evidence' {
+        # The bounded runner has always distinguished this; the verdict was discarded one
+        # line later, so a suite that was merely too slow scored kills it never earned.
+        Mock Invoke-PSBoundedPester { 'TimedOut' }
+        Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
+            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'TimedOut'
+    }
+
+    It 'refuses an outcome it does not model rather than scoring it' {
+        # The collapse below is toward the FLATTERING answer: an unmodelled value would be
+        # scored Killed, so a Pester that grew a third run-level state would report a perfect
+        # score with no test failing and nothing to notice. A rename fails loudly at the
+        # baseline; a widening does not, which is why the set is closed here.
+        Mock Invoke-PSBoundedPester { 'Inconclusive' }
+        { Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
+                -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } |
+            Should-Throw -ExceptionMessage '*flatters the score*'
+        # Asserted on the LAST fragment of the message, not the first. Breaking a `+` between
+        # the fragments raises a conversion error that QUOTES its left operand, so a pattern
+        # taken from an earlier fragment matches the mutant's own failure and the assertion
+        # passes against a message that was never built.
+    }
+
     It 'reports Killed for any outcome that is not a clean pass' -ForEach @(
         @{ Outcome = 'Failed' }
-        @{ Outcome = 'TimedOut' }
-        @{ Outcome = 'Inconclusive' }
     ) {
         # Anything but Passed is a kill, which is why an outcome that means "we could
         # not tell" must never reach here -- see Invoke-PSBoundedPester.
@@ -388,16 +433,16 @@ Describe 'ids are assigned before the coverage filter, not after' {
         # Assigned directly, NOT wrapped in @(). Select-PSMutationCandidate comma-wraps its
         # return to preserve a single-element array, so @(...) hands back one item that IS
         # the array and every count below reads 1 (see the convention note in #38).
-        $all = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
-            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false
+        $all = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false).Candidates
         $all.Count | Should-BeGreaterThan 1
 
         # Admit only the lines of the LAST candidate, so any renumbering shows up as id 1.
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $last = $all[-1]
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@($last.Line) }
-        $filtered = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
-            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
+        $filtered = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered).Candidates
 
         $filtered.Count | Should-BeLessThan $all.Count
         # The surviving candidate keeps the id it had in the full set. Renumbering after
