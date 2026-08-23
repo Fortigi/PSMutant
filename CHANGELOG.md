@@ -7,6 +7,21 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### Fixed
 
+- **A file listed twice in `mutate` is refused instead of doubling the run.** Every mutant was
+  generated and evaluated twice, so `total`, `killed` and `survived` in the report -- a published
+  contract -- were all doubled, the run cost twice what it should, and `(File, Id)` stopped
+  identifying one mutant, which is what `-RecheckFrom` matches on. Checked on the **resolved**
+  paths, so `src/a.ps1` and `src/../src/a.ps1` are caught as the one file they are.
+
+- **A `mutate` file with no `tests` entry now says so.** The fallback runs the whole suite for
+  every one of that file's mutants -- correct, never less thorough, and measured at 74% slower on
+  a four-mutant fixture. On a several-hundred-mutant run it is the difference between minutes and
+  tens of minutes, and it was invisible: adding a file to `mutate` and forgetting its `tests`
+  entry produced no error, no warning and no symptom other than a slow run. Named on the console
+  before the loop starts, where it can still be acted on, and recorded as `filesWithoutTestMapping`
+  in the report -- because the console line is suppressed by `-Quiet`, which is how CI runs it.
+
+
 - **Config paths get a resolver, like every other config value.** Four failures shared one
   missing concept, and each used to fail in its own place with a message naming neither the key
   nor the cause. `reportPath` is documented optional and was mandatory in practice --
