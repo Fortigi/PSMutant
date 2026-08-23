@@ -7,6 +7,21 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### Fixed
 
+- **Config paths get a resolver, like every other config value.** Four failures shared one
+  missing concept, and each used to fail in its own place with a message naming neither the key
+  nor the cause. `reportPath` is documented optional and was mandatory in practice --
+  `Join-Path $root $null` returns the root, so an omitted key surfaced as "unable to clear
+  content ... because it is a directory" **after the whole run had finished**; it now has a
+  documented default of `reports/ps-mutation.json`. A `..` in `sandboxSubtrees` copied from
+  outside the source root into the sandbox and was never reclaimed by the sweep; it is refused.
+  A `[`, `]`, `*` or `?` in any config path is a wildcard to PowerShell and to Pester's
+  `Run.Path`, so `sr[c]` matched nothing and died far away; it is refused, naming the key and
+  the character. And a path that never reached the sandbox -- what a consumer-shaped layout does
+  when `sandboxSubtrees` still names this module's own -- was diagnosed as "Baseline suite is
+  not green", an affirmatively false statement about a green suite; it is now caught **before**
+  the baseline, naming the paths and the setting that decides them.
+
+
 - **A score now answers for what the coverage filter removed.** Uncovered candidates are
   dropped per file before the run, silently, and that is the **default** path. A file added to
   `mutate` before its tests exist, or one a refactor stopped exercising, contributed nothing --
