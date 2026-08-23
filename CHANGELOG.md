@@ -7,6 +7,17 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### Fixed
 
+- **A score now answers for what the coverage filter removed.** Uncovered candidates are
+  dropped per file before the run, silently, and that is the **default** path. A file added to
+  `mutate` before its tests exist, or one a refactor stopped exercising, contributed nothing --
+  and the score went **up** while the gate stayed green. In a three-file fixture, eight of ten
+  candidates were removed and the run reported `100% (2 killed / 2)`, exit 0; the only trace
+  was that `sourceHashes` listed three files while `mutants` listed one. The report now carries
+  `skippedAsUncovered` and `filesWithNoMutants`, and the console prints
+  `N mutant(s) skipped as uncovered (M file(s) contributed none: ...)` beside the score --
+  named, not just counted. `declaredEquivalent` was already reported for exactly this reason;
+  this filter removes far more.
+
 - **An outcome PSMutant does not model is refused rather than scored.** Every mutant verdict
   came from one comparison over an open string channel -- whatever Pester's run result says,
   plus `TimedOut` minted into the same namespace -- and anything unrecognised fell through to
