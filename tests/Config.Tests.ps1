@@ -602,11 +602,18 @@ Describe 'a config path answers for itself before anything uses it' {
     # and its own way -- and none of the messages named the key that caused it.
 
     It 'refuses an empty path, naming the key' -ForEach @(
-        @{ Value = $null }
         @{ Value = '' }
         @{ Value = '   ' }
     ) {
         Get-PSMutationPathFault -Value $Value -Key 'reportPath' | Should-MatchString "reportPath"
+    }
+
+    It 'refuses a null path, naming the key' {
+        # Outside the -ForEach on purpose. A $null in a Pester case hashtable does not bind
+        # the variable, so `@{ Value = $null }` runs the body with $Value unset -- which tests
+        # the empty-string arm a second time and leaves the null arm unexercised. The
+        # self-mutation gate found it: `-or` flipped to `-and` and nothing failed.
+        Get-PSMutationPathFault -Value $null -Key 'reportPath' | Should-MatchString "reportPath"
     }
 
     It 'refuses a path that is not a string' {

@@ -809,6 +809,11 @@ Traps that have bitten in this repo specifically:
   the source is not wrong; only the resolution is. File headers in `src/` are `#` line
   comments for that reason, and `tests/EndToEnd.Tests.ps1` asserts the public help resolves
   to the real thing.
+- **A `$null` in a `-ForEach` case hashtable does not bind the variable.** `@{ Value = $null }`
+  runs the body with `$Value` unset, so the case silently exercises whatever the previous case
+  left behind rather than the null it names. A null arm tested that way is not tested: the
+  self-mutation gate found one by flipping `-or` to `-and` in a guard whose null branch nothing
+  reached. Test `$null` in its own `It`, where it is passed explicitly.
 - **Pester 6 removed mock fall-through.** A call that matches none of your
   `-ParameterFilter` mocks no longer runs the real command — it throws. Any command
   mocked with a filter needs either a default mock or a filter for every shape of call
