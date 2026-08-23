@@ -7,6 +7,13 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [0.3.2] - 2026-08-21
 
+### Internal
+- `Get-PSMutationScore` is a per-set fold again. It also answered a whole-run question --
+  whether a declaration matched no mutant, or several -- which made that answer wrong for
+  any subset: scoring one file's rows accused every declaration belonging to another file of
+  being stale. The check moved to `Get-PSMutationDeclarationCoverageFault`, which takes every
+  row, and `Write-PSMutationReport` merges the two. No output changes for a whole run.
+
 ### For consumers
 
 **A per-mutant timeout that resolves too low is now refused instead of faking a perfect
