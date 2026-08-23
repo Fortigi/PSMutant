@@ -209,6 +209,29 @@ function Get-PSMutationExitCode {
     return 0
 }
 
+function Save-PSMutationReportDocument {
+    <#
+    .SYNOPSIS
+        Serialise a report document to disk, failing the run when it cannot be written.
+    #>
+    param(
+        [Parameter(Mandatory)] [object]$Document,
+        [Parameter(Mandatory)] [string]$ReportPath
+    )
+    # Both statements below are NON-TERMINATING by default, and that is the whole point of
+    # this function. A reportPath that is absolute, holds a wildcard bracket, is read-only or
+    # is locked used to print "Report: <path>" for a file nothing had written, and exit 0 --
+    # a green run with no artifact, in the one durable thing a consumer's CI reads.
+    #
+    # .NET rather than New-Item for the directory: New-Item has no -LiteralPath, so a bracket
+    # in the path is a wildcard to it, and it reports failure without stopping the run.
+    [System.IO.Directory]::CreateDirectory((Split-Path -Parent $ReportPath)) | Out-Null
+    # -LiteralPath so a bracket is a character rather than a character class, and
+    # -ErrorAction Stop so the run dies at the real error instead of carrying on to report a
+    # score for output that does not exist.
+    $Document | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ReportPath -ErrorAction Stop
+}
+
 function Write-PSMutationReport {
     # Write the JSON report; return the summary.
     [OutputType([pscustomobject])]
@@ -231,8 +254,7 @@ function Write-PSMutationReport {
     # nothing. Both of that guard's mutants survived.
     $coverage = Get-PSMutationDeclarationCoverageFault -Results $Results -Equivalents $Equivalents
     $summary.StaleEquivalents = [string[]]@(@($summary.StaleEquivalents) + @($coverage) | Where-Object { $_ })
-    New-Item -ItemType Directory -Path (Split-Path $ReportPath -Parent) -Force | Out-Null
-    [pscustomobject]@{
+    $document = [pscustomobject]@{
         generatedFrom = 'PSMutant'
         # Provenance first, so a reader opening the JSON sees what produced it before what
         # it says. Additive: nothing that read this report before reads any less of it.
@@ -257,7 +279,8 @@ function Write-PSMutationReport {
         sourceHashes = $SourceHashes
         survivors = @($Results | Where-Object Status -eq 'Survived')
         mutants = $Results
-    } | ConvertTo-Json -Depth 6 | Set-Content $ReportPath
+    }
+    Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath
     return $summary
 }
 

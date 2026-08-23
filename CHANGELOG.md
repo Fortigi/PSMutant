@@ -5,6 +5,16 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+### Fixed
+
+- **A report that cannot be written now fails the run instead of reporting success.** The
+  directory creation and the write were both non-terminating, so an ordinary `reportPath`
+  mistake -- one containing a `[`, an absolute path, a read-only directory, a file open in an
+  editor -- printed `Report: <path>` for a file nothing had written and returned
+  `Score=100, ExitCode=0`. A consumer's CI published an empty artifact over a green build. Both
+  writers now go through one function that uses a literal path and stops on failure; a
+  `reportPath` containing a bracket, which used to fail silently, now works.
+
 ### Internal
 
 - The orchestrator splats two clusters of run values rather than naming each at every call
