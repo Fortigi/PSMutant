@@ -118,11 +118,18 @@ jobs:
             Start-Sleep -Seconds 30
           }
 
+      # The tag name arrives through the ENVIRONMENT, never through ${{ }}. An expression is
+      # pasted into this script as text before pwsh parses it, so a tag name that closes the
+      # string literal runs as code -- in the one job holding the gallery API key. git permits
+      # a quote in a ref name, `v1.0";$x;"` is a legal tag, and pushing a tag needs no review
+      # while pushing to main does. An env var is read at run time and is data whatever it says.
       - name: Verify tag matches ModuleVersion
         if: startsWith(github.ref, 'refs/tags/')
         shell: pwsh
+        env:
+          TAG_NAME: ${{ github.ref_name }}
         run: |
-          $tag = "${{ github.ref_name }}".TrimStart('v')
+          $tag = $env:TAG_NAME.TrimStart('v')
           $ver = (Import-PowerShellDataFile ./PSMutant.psd1).ModuleVersion
           if ($tag -ne $ver) { throw "Tag $tag does not match ModuleVersion $ver" }
 
