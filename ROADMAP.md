@@ -8,12 +8,13 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-23, after 0.3.1 and with 0.3.2 tagged but unreleased. 42 issues open.
+Snapshot 2026-08-23, after **0.3.2 shipped**. 41 issues open.
 
 Since the last snapshot: Windows joined the CI matrix (#32), `ci.yml` dropped to
 least privilege (#94), the gates learned to see a test file that never ran (#122),
-and `Get-PSMutationScore` became a per-set fold (#56). Removed rather than ticked, per the
-rule above.
+`Get-PSMutationScore` became a per-set fold (#56), the complexity gate moved two majors to
+PSComplexity 0.3.0, and `publish.yml` stopped interpolating the tag name into a shell (#127).
+Removed rather than ticked, per the rule above.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -204,12 +205,16 @@ had happen twice with its own documentation.
   now on both sides. The one that mattered here was the OS matrix: this module's headline
   guarantee is a PATH property and it was proven on one platform, while the pure AST analyser
   next door was proven on two. Keep the tracker until the last row is closed.
-- **#116** -- nothing requires a second person for an irreversible Gallery publish. A tag is
-  not a commit, so the ruleset protecting `main` stops exactly where the consequences become
-  permanent. A repository setting rather than code, and for a single-maintainer project it is
-  a decision to record either way.
-- **#115** -- nothing fails when `main` claims a version already on the gallery. Do it with
-  #116; both are the release path, and both are cheap.
+- **#115** -- nothing fails when `main` claims a version already on the gallery. Still open,
+  still cheap, and now the only remaining item on the release path.
+
+  *#116 (a second person for an irreversible publish) is closed as decided, not done.* Tag
+  creation, update and deletion are now restricted to a one-person team, so who may publish is
+  enforced rather than assumed -- proven by a push that was refused when the bypass was removed.
+  A genuine four-eyes rule needs a smaller admin set, which is an organisation setting across
+  thirteen repositories; a separate org would buy it and was declined. Worth knowing before
+  reaching for the same idea again: a `tag_name_pattern` ruleset **looks** like it constrains
+  tag names and does not -- GitHub accepts the configuration and never evaluates the rule.
 
 ## Low-coupling, good fillers
 
