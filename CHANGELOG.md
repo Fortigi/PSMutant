@@ -5,6 +5,20 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+### Internal
+
+- **Pinned dependencies are watched instead of only written down.** A weekly job checks each
+  pinned module against the gallery and opens one tracking issue when any has moved on;
+  Dependabot watches the action SHAs, which `pins.env` structurally cannot hold because `uses:`
+  does not expand variables and a SHA cannot be read to learn whether something newer exists.
+  An unreachable gallery is reported as **unknown** rather than as current, because a watcher
+  that reads "could not look" as "nothing newer" has stopped being able to fail.
+
+  `PESTER_COMPAT_VERSION` is judged on **difference, not freshness**: it is deliberately old,
+  because the compatibility guard runs a real mutation under the Pester the suite does *not*
+  use. Bumped to the newest it would equal the estate pin and prove nothing about the
+  manifest's `>= 5.0.0` promise -- while looking more up to date than a pin that works.
+
 ### Fixed
 
 - **Config paths get a resolver, like every other config value.** Four failures shared one
