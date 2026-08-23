@@ -17,6 +17,39 @@ Describe 'ConvertTo/From-PSMutationSandboxPath' {
             -RepoRoot $script:root -SandboxRoot $sbRoot
         ConvertFrom-PSMutationSandboxPath -Path $sb -SandboxRoot $sbRoot | Should-Be 'src/x.ps1'
     }
+
+    It 'refuses a config path that lands outside the sandbox' -ForEach @(
+        @{ Rel = '../victim/Real.ps1'; What = 'one level up' }
+        @{ Rel = '../../far/Real.ps1'; What = 'two levels up, out of temp entirely' }
+    ) {
+        # The caller WRITES to whatever this returns. A leading `..` survives the re-rooting,
+        # so an escaped path is mutated where it lives -- in the directory the sandbox exists
+        # to replace -- and the promise that a hard kill cannot leave a mutant in tracked
+        # source then rests on a `finally` rather than on never touching a real file.
+        $sbRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
+        { ConvertTo-PSMutationSandboxPath -Path (Join-Path $script:root $Rel) `
+                -RepoRoot $script:root -SandboxRoot $sbRoot } |
+            Should-Throw -ExceptionMessage '*resolves outside the source root*'
+    }
+
+    It 'allows a path that contains .. but resolves back inside' {
+        # The case that separates a real check from a string search for '..'.
+        # `src/../src/x.ps1` IS `src/x.ps1`, and a config written that way was never
+        # ambiguous -- refusing it would reject something correct.
+        $sbRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
+        $sb = ConvertTo-PSMutationSandboxPath -Path (Join-Path $script:root 'src/../src/x.ps1') `
+            -RepoRoot $script:root -SandboxRoot $sbRoot
+        ConvertFrom-PSMutationSandboxPath -Path $sb -SandboxRoot $sbRoot | Should-Be 'src/x.ps1'
+    }
+
+    It 'names the offending path and where it would have landed' {
+        # The reader has to fix a config entry, so the message has to say which one -- and
+        # the resolved target is what makes "outside" concrete rather than abstract.
+        $sbRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
+        { ConvertTo-PSMutationSandboxPath -Path (Join-Path $script:root '../shared/Util.ps1') `
+                -RepoRoot $script:root -SandboxRoot $sbRoot } |
+            Should-Throw -ExceptionMessage '*Util.ps1*mutated in place*-SourceRoot*'
+    }
 }
 
 Describe 'New/Remove-PSMutationSandbox' {

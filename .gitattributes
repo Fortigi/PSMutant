@@ -1,0 +1,12 @@
+# Git rewrites line endings on checkout, and this repo has a value where that is not
+# cosmetic: the ReleaseNotes string inside PSMutant.psd1 carries newlines as CONTENT. Under
+# the default core.autocrlf on Windows, the same commit read LF on a Linux runner and CRLF on
+# a Windows one -- so the release gate passed in CI and failed on a maintainer's machine.
+#
+# eol=lf checks everything out with LF on every platform, so what a gate compares is what was
+# committed. PowerShell, Pester and PSScriptAnalyzer all read LF without complaint, and the
+# repository blobs were already LF, so this changes working copies rather than history.
+* text=auto eol=lf
+
+# Nothing binary is tracked today. Add entries here rather than relying on detection if that
+# changes: a file mis-detected as text is silently corrupted by normalisation.

@@ -1,11 +1,10 @@
-# Unit tests for config resolution -- the "what did the user ask for, and what do we
-# do when they didn't say" decisions. These lived inside Invoke-PSMutation, past the
-# nested Pester run that destroys the outer run's coverage breakpoints, so they could
-# not be measured there. Out here they are ordinary pure functions.
+# Unit tests for config resolution -- the "what did the user ask for, and what do we do
+# when they didn't say" decisions, and the validator that refuses a config asking for
+# something this module does not understand.
 #
-# Resolvers only. The baseline guard and the public result shape were tested here while
-# they lived in Config.ps1; they are now covered beside the baseline they judge
-# (Runner.Tests.ps1) and the report contract they belong to (Report.Tests.ps1) -- #45.
+# Also the covering suite for self-mutating src/PSMutation.Config.ps1 - keep it
+# self-contained: the sandbox copies only src/ and tests/, so anything reaching for a file
+# at the repo root proves nothing and leaves the file silently unmutated.
 
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
@@ -78,18 +77,20 @@ Describe 'Get-PSMutationSandboxPlan' {
     }
 }
 
+$script:root = [System.IO.Path]::GetTempPath()
+
 Describe 'Get-PSMutationSubtree' {
     It 'uses the subtrees the config names' {
-        Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('lib', 'spec') }) |
+        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ([pscustomobject]@{ sandboxSubtrees = @('lib', 'spec') }) |
             Should-BeCollection @('lib', 'spec')
     }
     It 'falls back to the module convention when the config is silent' {
         # A consuming repo whose layout is src/ + tests/ should not have to say so.
-        Get-PSMutationSubtree -Cfg ([pscustomobject]@{}) | Should-BeCollection @('src', 'tests')
+        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ([pscustomobject]@{}) | Should-BeCollection @('src', 'tests')
     }
     It 'wraps a single subtree as a list' {
         # JSON gives a bare string for a one-element array; the caller indexes it.
-        Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = 'onlysrc' }) |
+        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ([pscustomobject]@{ sandboxSubtrees = 'onlysrc' }) |
             Should-BeCollection @('onlysrc')
     }
 }
@@ -106,6 +107,56 @@ Describe 'Get-PSMutationTimeout' {
         # behaviour, and the run reports a perfect score against tests that never
         # finished. The floor is what stops a fast suite scoring 100% for free.
         Get-PSMutationTimeout -Cfg ([pscustomobject]@{}) -BaselineSeconds 0.2 | Should-Be 15
+    }
+
+    It 'refuses a budget the unmutated suite could not itself meet' {
+        # The floor above prevents this for a DEFAULT config. Nothing prevented it for a
+        # configured one: floor and factor both small resolve to 0, every mutant expires on
+        # the clock, an expiry is scored as a kill, and the run reports 100% over tests that
+        # never finished. Both configs below are taken from a run that did exactly that.
+        $cfg = [pscustomobject]@{ timeoutFactor = 0.5; timeoutFloorSeconds = 0.5 }
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.6 } |
+            Should-Throw -ExceptionMessage '*resolves to 0s*below the 0.6s*'
+    }
+
+    It 'names both keys and the consequence when it refuses' {
+        # The reader has to know which of the two numbers to change, and why a budget that
+        # looks merely small is actually fatal.
+        $cfg = [pscustomobject]@{ timeoutFactor = 0.001; timeoutFloorSeconds = 0.5 }
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.6 } |
+            Should-Throw -ExceptionMessage "*scored as a kill*'timeoutFloorSeconds' (currently 0.5)*'timeoutFactor' (currently 0.001)*"
+    }
+
+    It 'allows a budget exactly equal to the baseline' {
+        # The boundary, and the whole difference between -lt and -le. A mutant given exactly
+        # as long as the unmutated suite took is tight but not fatal; one given less is.
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFactor = 1; timeoutFloorSeconds = 1 }) `
+            -BaselineSeconds 30 | Should-Be 30
+    }
+
+    It 'allows a one-second budget when the baseline is faster than a second' {
+        # The lower arm of the same guard, and the case that fixes its constant in place.
+        # With a sub-second baseline the minimum is 1, not the baseline -- so a budget of
+        # exactly 1 is allowed. Raise that minimum to 2 and this config starts being refused
+        # for no reason, which is a mutant nothing else here can catch.
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFactor = 1; timeoutFloorSeconds = 1 }) `
+            -BaselineSeconds 0.5 | Should-Be 1
+    }
+
+    It 'reports the baseline to one decimal place' {
+        # 0.66 rounds to 0.7 at one decimal and stays 0.66 at two, so this pins the
+        # precision rather than merely the presence of a number. A message quoting
+        # 0.66000000001s would be technically true and useless to read.
+        $cfg = [pscustomobject]@{ timeoutFactor = 0.1; timeoutFloorSeconds = 0.1 }
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.66 } |
+            Should-Throw -ExceptionMessage '*below the 0.7s*'
+    }
+
+    It 'still gives at least one second when the baseline is faster than a second' {
+        # A sub-second baseline must not license a 0s budget just because it is larger than
+        # the baseline: 0 is never a budget, whatever the arithmetic says.
+        $cfg = [pscustomobject]@{ timeoutFactor = 0.1; timeoutFloorSeconds = 0.1 }
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.2 } | Should-Throw
     }
 
     It 'honours a configured factor and floor' {
@@ -318,7 +369,7 @@ Describe 'the defaults the README documents' {
     }
 
     It 'defaults sandboxSubtrees to src and tests' {
-        Get-PSMutationSubtree -Cfg ('{}' | ConvertFrom-Json) | Should-BeCollection @('src', 'tests')
+        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ('{}' | ConvertFrom-Json) | Should-BeCollection @('src', 'tests')
     }
 
     It 'defaults timeoutFactor to 4 and timeoutFloorSeconds to 15' {
@@ -378,5 +429,292 @@ Describe 'Get-PSMutationScoreBand' {
         $band = Get-PSMutationScoreBand -Cfg ('{ "thresholds": { "low": 40 } }' | ConvertFrom-Json)
         $band.High | Should-Be 85
         $band.Low | Should-Be 40
+    }
+}
+
+
+Describe 'the schema the validator reads' {
+    # Moving the config format into a data file buys one source of truth and costs a new
+    # failure mode: the file can be absent. These pin that it fails LOUDLY, because a
+    # validator that quietly skips when its schema is missing passes every config -- and the
+    # configs it would have caught are the ones that report a number nobody measured.
+    It 'looks for the schema beside src/, where the package puts it' {
+        (Get-PSMutationConfigSchemaPath) | Should-BeLikeString '*schemas*config.schema.json'
+    }
+
+    It 'reads the schema once and remembers it' {
+        # Not a performance assertion. The cache is the only thing standing between one file
+        # read and one per config key checked, and a mutant that disables it is invisible in
+        # every other test -- identical answers, quietly re-reading the file each time.
+        $script:PSMutationConfigSchema = $null
+        Mock Get-Content { '{ "type": "object" }' }
+        Get-PSMutationConfigSchema | Out-Null
+        Get-PSMutationConfigSchema | Out-Null
+        Should-Invoke Get-Content -Exactly 1
+    }
+
+    It 'throws, naming the path, when the schema is not there' {
+        $script:PSMutationConfigSchema = $null
+        Mock Test-Path { $false } -ParameterFilter { "$Path" -like '*config.schema.json' }
+        { Get-PSMutationConfigSchema } | Should-Throw -ExceptionMessage '*config schema is missing*config.schema.json*'
+    }
+
+    AfterEach {
+        # The cache is module state, so a test that emptied it must not leave it empty for
+        # the next one -- which would pass anyway, and hide that this one had any effect.
+        $script:PSMutationConfigSchema = $null
+    }
+}
+
+Describe 'a config value of the wrong type' {
+    # Both of PowerShell's coercions fail OPEN, so a wrong type does not error -- it
+    # produces a confident wrong answer in whichever direction flatters the run. These pin
+    # the refusal for the kinds where that is true, and pin the ACCEPTANCE of the correct
+    # value beside each, because a validator that refused everything would pass a
+    # refusal-only test just as happily.
+    BeforeAll {
+        $script:ok = '{ "mutate": ["src/a.ps1"], "tests": { "src/a.ps1": ["tests/a.Tests.ps1"] } }'
+        function Get-TestCfg { param([string]$Extra)
+            $body = if ($Extra) { $script:ok -replace '}$', ", $Extra }" } else { $script:ok }
+            return $body | ConvertFrom-Json
+        }
+    }
+
+    It 'refuses a string where a number belongs, naming the key and what it found' {
+        # The headline case. Get-PSMutationTimeout computes max(floor, baseline * factor);
+        # with a non-numeric factor the multiplication yields NOTHING, so the per-mutant
+        # deadline is empty -- and a timeout expiry is scored as a KILL. The run reports a
+        # number it never measured, which is the failure this project exists to prevent.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFactor": "four"') } |
+            Should-Throw -ExceptionMessage "*schema*should be `"number, null`"*'/timeoutFactor'*"
+    }
+
+    It 'accepts a real number for the same key' {
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFactor": 2.5'))
+    }
+
+    It 'refuses a non-empty string where a boolean belongs' {
+        # [bool]'yes please' is $true, so this silently means "mutate uncovered lines too"
+        # -- the opposite of what someone typing "yes please" was reaching for is not even
+        # the risk; the risk is that they get an answer and never learn it was not theirs.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"coveredLinesOnly": "yes please"') } |
+            Should-Throw -ExceptionMessage "*schema*should be `"boolean, null`"*'/coveredLinesOnly'*"
+    }
+
+    It 'refuses 1 and 0 where a boolean belongs' -ForEach @(
+        @{ Literal = '1' }
+        @{ Literal = '0' }
+    ) {
+        # Both, because they are the two a JSON writer coming from another language reaches
+        # for, and they coerce in opposite directions.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg "`"coveredLinesOnly`": $Literal") } |
+            Should-Throw -ExceptionMessage "*schema*should be `"boolean, null`"*'/coveredLinesOnly'*"
+    }
+
+    It 'accepts a real boolean for the same key' -ForEach @(
+        @{ Literal = 'true' }
+        @{ Literal = 'false' }
+    ) {
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg "`"coveredLinesOnly`": $Literal"))
+    }
+
+    It 'refuses a string where the tests map belongs' {
+        # A [string] has properties, so `"tests": "src/a.ps1"` passes the non-empty check
+        # and then maps its Length as though it were a file.
+        { Assert-PSMutationConfig -Cfg ('{ "mutate": ["a"], "tests": "src/a.ps1" }' | ConvertFrom-Json) } |
+            Should-Throw -ExceptionMessage "*schema*should be `"object, null`"*'/tests'*"
+    }
+
+    It 'refuses a string inside thresholds' {
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"thresholds": { "break": "100" }') } |
+            Should-Throw -ExceptionMessage "*schema*'/thresholds/break'*"
+    }
+
+    It 'still allows a threshold to be absent, which means report-only' {
+        # Absence is meaningful here and must not be confused with a wrong type: an unset
+        # thresholds.break is the documented way to ask for a report without a gate.
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg '"thresholds": { "high": 85 }'))
+    }
+
+    It 'still allows an explicit null, for the same reason' {
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFactor": null'))
+    }
+
+    It 'still allows a single file written without a list' {
+        # Every reader wraps with @(), so a one-file `"mutate": "src/a.ps1"` has always
+        # worked. Type checking must not break configs that were never ambiguous.
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg ('{ "mutate": "src/a.ps1", "tests": { "src/a.ps1": ["t.ps1"] } }' | ConvertFrom-Json))
+    }
+
+    It 'refuses an object where a list belongs, which no wrapping rescues' {
+        { Assert-PSMutationConfig -Cfg ('{ "mutate": { "a": 1 }, "tests": { "a": ["t"] } }' | ConvertFrom-Json) } |
+            Should-Throw -ExceptionMessage "*schema*'/mutate'*"
+    }
+
+    It 'ignores the type of an _-prefixed key' {
+        # JSON has no comments, so the shipped configs use _-prefixed keys for prose. They
+        # are exempt from the unknown-key check and must be exempt from this one too.
+        Should-BeNull -Actual (Assert-PSMutationConfig -Cfg (Get-TestCfg '"_comment": 42'))
+    }
+
+    It 'refuses a boolean where a number belongs, and says so' {
+        # $true is not an [int] in PowerShell, so the numeric test would reject this on its
+        # own -- but only by accident of type identity. The guard is explicit because a
+        # later widening of that test ("accept anything that casts to a number") would
+        # otherwise let `true` through as 1 and silently halve or double the timeout.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFactor": true') } |
+            Should-Throw -ExceptionMessage "*schema*should be `"number, null`"*'/timeoutFactor'*"
+    }
+
+    It 'refuses a list where a scalar belongs, and says so' {
+        # Named as a list rather than as System.Object[], because the reader is looking for
+        # square brackets in a file, not for a .NET type name.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"coveredLinesOnly": [true, false]') } |
+            Should-Throw -ExceptionMessage "*schema*should be `"boolean, null`"*'/coveredLinesOnly'*"
+    }
+
+    It 'still checks the operators after a thresholds block that is fine' {
+        # The two checks are separate loops, and the second only runs if the first falls
+        # through. A first loop that returned on its opening property -- valid or not --
+        # would swallow this operator, and a dropped operator is exactly how a file scores a
+        # vacuous 100%: nothing mutates it, so nothing can survive.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"thresholds": { "high": 85 }, "operators": ["Nonsense"]') } |
+            Should-Throw -ExceptionMessage "*Unknown operators key 'Nonsense'*"
+    }
+
+    It 'checks every operator in the list, not just the first' {
+        # A valid name in front of an invalid one, because a loop that stops after the first
+        # entry answers correctly for a single-operator config and silently drops the rest.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"operators": ["BinaryOperator", "Nonsense"]') } |
+            Should-Throw -ExceptionMessage "*Unknown operators key 'Nonsense'*"
+    }
+
+    It 'reports a misspelled key as a misspelling, not as a wrong type' {
+        # Order matters: an unknown key has no expected kind to be measured against, so
+        # checking types first would answer a question the reader did not ask.
+        { Assert-PSMutationConfig -Cfg (Get-TestCfg '"timeoutFacter": "four"') } |
+            Should-Throw -ExceptionMessage '*timeoutFacter*timeoutFactor*'
+    }
+}
+
+Describe 'a config path answers for itself before anything uses it' {
+    # Every other config value got a resolver; paths did not, so each failed in its own place
+    # and its own way -- and none of the messages named the key that caused it.
+
+    It 'refuses an empty path, naming the key' -ForEach @(
+        @{ Value = '' }
+        @{ Value = '   ' }
+    ) {
+        Get-PSMutationPathFault -Value $Value -Key 'reportPath' | Should-MatchString "reportPath"
+    }
+
+    It 'refuses a null path, naming the key' {
+        # Outside the -ForEach on purpose. A $null in a Pester case hashtable does not bind
+        # the variable, so `@{ Value = $null }` runs the body with $Value unset -- which tests
+        # the empty-string arm a second time and leaves the null arm unexercised. The
+        # self-mutation gate found it: `-or` flipped to `-and` and nothing failed.
+        Get-PSMutationPathFault -Value $null -Key 'reportPath' | Should-MatchString "reportPath"
+    }
+
+    It 'refuses a path that is not a string' {
+        Get-PSMutationPathFault -Value 42 -Key 'reportPath' | Should-MatchString 'must be a string'
+    }
+
+    It 'refuses a wildcard metacharacter, naming it' -ForEach @(
+        @{ Path = 'sr[c]' }
+        @{ Path = 'reports/m*.json' }
+        @{ Path = 'a?b.ps1' }
+    ) {
+        # `[a]` is a character class that matches nothing, so Pester finds no files and the
+        # run dies far away with a message naming neither the key nor the cause.
+        Get-PSMutationPathFault -Value $Path -Key 'mutate' | Should-MatchString 'wildcard'
+    }
+
+    It 'accepts an ordinary path' {
+        # The kept case. Without it a resolver that refused EVERY path would pass all of the
+        # above, and no config would run at all.
+        Should-BeNull -Actual (Get-PSMutationPathFault -Value 'src/Calc.ps1' -Key 'mutate')
+    }
+
+    It 'sees a path that escapes its root' {
+        Should-BeTrue -Actual (Test-PSMutationPathOutsideRoot -Path '../outside' -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
+    It 'sees an escape in a path that resolves to exactly the parent' {
+        # EXACTLY '..', not '../something'. The check is three clauses joined by -or, and
+        # '../outside' satisfies the StartsWith clause on its own -- so it passes even when
+        # the clauses are joined wrongly, and only a path whose relative form IS '..' can
+        # tell the difference. A config naming the directory above the root lands here.
+        Should-BeTrue -Actual (Test-PSMutationPathOutsideRoot -Path '..' -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
+    It 'does not see an escape in an absolute path that is inside the root' {
+        # The kept half of the absolute pair. Without it, a resolver that called EVERY rooted
+        # path an escape would pass the case below -- and refuse a config that names its files
+        # by full path, which is a legal thing to write.
+        $root = Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'
+        Should-BeFalse -Actual (Test-PSMutationPathOutsideRoot -Path (Join-Path $root 'src/a.ps1') -Root $root)
+    }
+
+    It 'sees an escape in an absolute path that leaves the root behind entirely' {
+        # The first clause on its own: an absolute path elsewhere is not under the root at
+        # all, so relative-ising it returns something ROOTED rather than a '..' chain.
+        # This failed on Linux and passed on Windows before the fix: the check joined an
+        # already-rooted path onto the root, so /tmp/elsewhere/x.ps1 became
+        # /tmp/anchor/tmp/elsewhere/x.ps1 and relativised to something INSIDE. An absolute
+        # path in a config is legal, so that was a real hole, not a fixture artefact.
+        $elsewhere = Join-Path ([System.IO.Path]::GetTempPath()) 'somewhere-else/x.ps1'
+        Should-BeTrue -Actual (Test-PSMutationPathOutsideRoot -Path $elsewhere -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
+    It 'does not see an escape in a path that resolves back inside' {
+        # `src/../src` is `src`. Matching on '..' as a string would reject a config that was
+        # never ambiguous, which is why this asks for the resolved position instead.
+        Should-BeFalse -Actual (Test-PSMutationPathOutsideRoot -Path 'src/../src' -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
+    It 'refuses a sandboxSubtree that escapes the source root' {
+        { Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('src', '../outside') }) -SourceRoot $script:root } |
+            Should-Throw -ExceptionMessage '*resolves outside the source root*'
+    }
+
+    It 'applies the documented default when reportPath is absent' {
+        # Documented optional and, until this resolver, mandatory in practice: Join-Path with
+        # $null returns the root itself, so the run failed at the very end trying to write a
+        # report over a directory.
+        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{}) -SourceRoot $script:root) |
+            Should-MatchString ([regex]::Escape('ps-mutation.json'))
+    }
+
+    It 'uses the configured reportPath when it is given' {
+        # Paired with the case above: a resolver that ALWAYS returned the default would pass
+        # that one and silently ignore every consumer's setting.
+        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/mine.json' }) -SourceRoot $script:root) |
+            Should-MatchString ([regex]::Escape('mine.json'))
+    }
+
+    It 'throws through the reportPath resolver, not just the primitive' {
+        # Through the resolver, because a fault function can be correct in both arms while
+        # the caller ignores what it returns -- the caller is one line that deletes clean.
+        { Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/m[1].json' }) -SourceRoot $script:root } |
+            Should-Throw -ExceptionMessage '*wildcards*'
+    }
+
+    It 'throws through the subtree resolver for a bracketed subtree' {
+        { Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('sr[c]') }) -SourceRoot $script:root } |
+            Should-Throw -ExceptionMessage '*wildcards*'
+    }
+
+    It 'names the paths that did not survive into the sandbox, and what decides that' {
+        $gone = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-absent-$([guid]::NewGuid())/Public/Get-Grade.ps1"
+        $why = Get-PSMutationMissingSandboxPath -Paths @($gone) -Subtrees @('src', 'tests')
+        $why | Should-MatchString ([regex]::Escape('Get-Grade.ps1'))
+        # The cause, not just the symptom: sandboxSubtrees is what decides, and a repo laid
+        # out any other way copies nothing the config points at.
+        $why | Should-MatchString 'sandboxSubtrees'
+    }
+
+    It 'says nothing when every path is present' {
+        Should-BeNull -Actual (Get-PSMutationMissingSandboxPath -Paths @($PSCommandPath) -Subtrees @('src'))
     }
 }

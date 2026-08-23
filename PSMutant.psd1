@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.3.0'
+    ModuleVersion     = '0.3.2'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -40,7 +40,21 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = 'Adds three OPT-IN mutation operators that reach decisions no expression operator can touch. Code whose logic lives in structure rather than in an expression - a phase guard like if ($SyncUsers) { ... }, or a chain of if ($Ref.Value) { return ... } fallbacks - contains no comparison, literal or negation, so the default set produced ZERO mutants for it and the file scored a vacuous 100%. ConditionForcing forces an if/elseif condition to $true and to $false; ConditionalBoundary shifts a boundary (-gt <-> -ge, -lt <-> -le), the off-by-one that the existing -gt -> -le swap cannot produce; ReturnValue replaces a returned value with $null. All three are opt-in: enabling one roughly doubles the mutant count and lowers the score, so a repo gating on thresholds.break would go red purely from upgrading, and mutants are renumbered so existing reports can no longer seed a -RecheckFrom run. PSMutant runs all three against itself: 100% over 303 mutants, coverage 100%.'
+            ReleaseNotes = '**A per-mutant timeout that resolves too low is now refused instead of faking a perfect
+score.** The budget is `max(timeoutFloorSeconds, baseline x timeoutFactor)`, and with a small
+enough floor *and* factor it could resolve to zero. A zero-second budget expires immediately,
+an expired mutant counts as a kill, and so every mutant was killed on the clock rather than on
+behaviour -- 100%, exit 0, over tests that never ran. The budget must now be at least as long
+as your unmutated suite took, and a config that asks for less fails with a message saying so.
+
+If this affects you, your reported score was wrong in the flattering direction, and the run
+that fails after upgrading is the honest one.
+
+**A config path that escapes the source root is now refused.** Every path in a config is
+copied into a temp sandbox and mutated there; a leading `..` survived that mapping, so a path
+like `../shared/Util.ps1` was mutated **where it lives**, in your working tree. Interrupt such
+a run and the mutated file stays on disk. Paths that merely contain `..` and still resolve
+inside -- `src/../src/a.ps1` -- keep working.'
         }
     }
 }

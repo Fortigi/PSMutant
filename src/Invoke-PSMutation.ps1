@@ -110,21 +110,31 @@ function Invoke-PSMutation {
     Assert-PSMutationPester
     Clear-PSMutationStaleSandbox
 
-    $subtrees = Get-PSMutationSubtree -Cfg $cfg
+    $subtrees = Get-PSMutationSubtree -Cfg $cfg -SourceRoot $root
     $sandbox = New-PSMutationSandbox -RepoRoot $root -Subtrees $subtrees
     try {
         $t = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox
 
-        if (-not $Quiet) { Write-Host "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite..." -ForegroundColor Cyan }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Banner' `
+                -Text "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite...")
+        # Before the baseline, because after it the answer is a false statement about the
+        # tests rather than a true one about the config.
+        $missing = Get-PSMutationMissingSandboxPath -Paths (@($t.Mutate) + @($t.AllTests)) -Subtrees $subtrees
+        if ($missing) { throw $missing }
         $baseline = Invoke-PSMutationBaseline -TestPath $t.AllTests -MutateFiles $t.Mutate
         Assert-PSMutationBaselineGreen -Baseline $baseline
         $timeout = Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds $baseline.DurationSeconds
-        if (-not $Quiet) { Write-Host ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout) -ForegroundColor Green }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Good' `
+                -Text ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout))
 
         $ops = Get-PSMutationOperatorList -Cfg $cfg
-        $cands = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly (Get-PSMutationCoveredLinesOnly -Cfg $cfg) -CoveredLines $baseline.CoveredLines
+        $selection = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly (Get-PSMutationCoveredLinesOnly -Cfg $cfg) -CoveredLines $baseline.CoveredLines
+        $cands = $selection.Candidates
+        # Derived here in the wiring and carried, because the pre-filter counts exist only
+        # inside the selection; recomputing them later means parsing every file again.
+        $exclusion = Get-PSMutationCoverageExclusion -PerFile $selection.PerFile
         $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $sandbox
-        $reportPath = Join-Path $root $cfg.reportPath
+        $reportPath = Get-PSMutationReportPath -Cfg $cfg -SourceRoot $root
 
         # Gathered here, in the wiring, because the two impure inputs -- the clock and the
         # loaded module -- are what would make New-PSMutationProvenance untestable. It stays
@@ -135,21 +145,29 @@ function Invoke-PSMutation {
                 -TotalSeconds $runClock.Elapsed.TotalSeconds
         }
 
+        # Two clusters, each shared by two of the three callees below: what a run EXECUTES
+        # with, and what the report DOCUMENTS itself with. A value is spelled once here, so
+        # adding one is an edit at its source rather than at every call site forwarding it.
+        # Provenance stays explicit because the two callees want different things from it --
+        # the recheck takes the scriptblock and invokes it after its own loop, the report
+        # takes the already-invoked result.
+        $exec = @{ Candidates = $cands; TimeoutSeconds = $timeout; SandboxRoot = $sandbox; Quiet = $Quiet }
+        $doc = @{ SourceHashes = $hashes; Operators = $ops; Equivalents = $cfg.equivalents; ReportPath = $reportPath }
+
         if ($RecheckFrom) {
-            return Invoke-PSMutationRecheckRun -RecheckFrom $RecheckFrom -Candidates $cands -Plan $t `
-                -SourceHashes $hashes -Operators $ops -TimeoutSeconds $timeout -SandboxRoot $sandbox `
-                -ReportPath $reportPath -Equivalents $cfg.equivalents -Provenance $provenance -Quiet:$Quiet
+            return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance
         }
 
-        if (-not $Quiet) { Write-Host "  Mutants to evaluate: $($cands.Count)`n" -ForegroundColor Gray }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Detail' `
+                -Text "  Mutants to evaluate: $($cands.Count)`n")
 
-        $results = Invoke-PSMutationLoop -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests -TimeoutSeconds $timeout -SandboxRoot $sandbox -Quiet:$Quiet
+        $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
         # totalSeconds records how long the run took to start rather than to finish.
-        $summary = Write-PSMutationReport -Results $results -ReportPath $reportPath -Thresholds $cfg.thresholds `
-            -SourceHashes $hashes -Operators $ops -Equivalents $cfg.equivalents -Provenance (& $provenance)
+        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion
         $band = Get-PSMutationScoreBand -Cfg $cfg
-        if (-not $Quiet) { Show-PSMutationSummary -Summary $summary -Results $results -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents }
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationSummaryLine -Summary $summary -Results $results `
+                -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents -Exclusion $exclusion)
 
         $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds
         return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit

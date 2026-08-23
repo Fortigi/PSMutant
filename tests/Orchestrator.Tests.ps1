@@ -14,7 +14,7 @@
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
-        'PSMutation.Config.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
+        'PSMutation.Config.ps1', 'PSMutation.Output.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
         'PSMutation.Recheck.ps1', 'Invoke-PSMutation.ps1') {
         . (Join-Path $src $f)
     }
@@ -37,11 +37,32 @@ Describe 'Invoke-PSMutation' {
         # What is left executing is the orchestration this file is responsible for.
         Mock Assert-PSMutationPester { }
         Mock Clear-PSMutationStaleSandbox { }
-        Mock New-PSMutationSandbox { Join-Path $script:root 'sandbox' }
+        # Creates the files it claims to have copied. A mocked sandbox that returns a path
+        # and leaves it empty is lying about what a sandbox is, and the orchestrator now
+        # checks -- before the baseline -- that the config's paths actually arrived. Mocking
+        # that check away instead would leave its application untested, which is the gap
+        # where a predicate is covered and its caller can be deleted with the suite green.
+        Mock New-PSMutationSandbox {
+            $sb = Join-Path $script:root 'sandbox'
+            foreach ($rel in 'src/a.ps1', 'tests/a.Tests.ps1') {
+                $dest = Join-Path $sb $rel
+                New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+                Set-Content -LiteralPath $dest -Value '# copied by the sandbox'
+            }
+            $sb
+        }
         Mock Remove-PSMutationSandbox { }
         Mock Invoke-PSMutationBaseline { @{ Passed = $true; DurationSeconds = 2.0; CoveredLines = @{} } }
         Mock Get-PSMutationSourceHashMap { @{ 'src/a.ps1' = 'hash' } }
-        Mock Select-PSMutationCandidate { , @('cand-1', 'cand-2') }
+        # Returns candidates AND the per-file tally the coverage filter produced. A bare
+        # array here binds $null to -PerFile downstream, which is the shape the real function
+        # no longer has.
+        Mock Select-PSMutationCandidate {
+            [pscustomobject]@{
+                Candidates = @('cand-1', 'cand-2')
+                PerFile    = @([pscustomobject]@{ File = 'src/a.ps1'; Produced = 2; Kept = 2 })
+            }
+        }
         Mock Invoke-PSMutationLoop {
             , @(
                 [pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 1; Operator = 'BinaryOperator'; Description = 'eq to ne'; Status = 'Killed' }
@@ -129,6 +150,23 @@ Describe 'Invoke-PSMutation' {
         Mock Invoke-PSMutationBaseline { @{ Passed = $false; DurationSeconds = 1.0; CoveredLines = @{} } }
         { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } |
             Should-Throw -ExceptionMessage '*Baseline suite is not green*'
+    }
+
+    It 'refuses a config path that never reached the sandbox, BEFORE running the baseline' {
+        # An empty sandbox: the subtrees copied nothing the config points at, which is what a
+        # consumer-shaped layout does when sandboxSubtrees still names this module's own.
+        # Pester then cannot resolve the coverage paths, the baseline comes back not-green,
+        # and the run used to say "Baseline suite is not green - fix the tests before
+        # mutating." The suite is green. That message sends the reader to debug the wrong
+        # files, and it is the config that is wrong.
+        Mock New-PSMutationSandbox { Join-Path $script:root 'emptysandbox' }
+        # A baseline that WOULD pass, so a failure here cannot be blamed on the suite: this
+        # asserts the check runs first, not merely that something threw.
+        Mock Invoke-PSMutationBaseline { @{ Passed = $true; DurationSeconds = 2.0; CoveredLines = @{} } }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } |
+            Should-Throw -ExceptionMessage '*sandboxSubtrees*'
+        # And it never got as far as the baseline.
+        Should-NotInvoke Invoke-PSMutationBaseline
     }
 
     It 'passes the resolved operator list and timeout down to the mutation loop' {

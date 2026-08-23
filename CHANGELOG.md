@@ -4,6 +4,189 @@ All notable changes to PSMutant are documented here. Format follows
 [Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
 
 ## [Unreleased]
+
+### Fixed
+
+- **Config paths get a resolver, like every other config value.** Four failures shared one
+  missing concept, and each used to fail in its own place with a message naming neither the key
+  nor the cause. `reportPath` is documented optional and was mandatory in practice --
+  `Join-Path $root $null` returns the root, so an omitted key surfaced as "unable to clear
+  content ... because it is a directory" **after the whole run had finished**; it now has a
+  documented default of `reports/ps-mutation.json`. A `..` in `sandboxSubtrees` copied from
+  outside the source root into the sandbox and was never reclaimed by the sweep; it is refused.
+  A `[`, `]`, `*` or `?` in any config path is a wildcard to PowerShell and to Pester's
+  `Run.Path`, so `sr[c]` matched nothing and died far away; it is refused, naming the key and
+  the character. And a path that never reached the sandbox -- what a consumer-shaped layout does
+  when `sandboxSubtrees` still names this module's own -- was diagnosed as "Baseline suite is
+  not green", an affirmatively false statement about a green suite; it is now caught **before**
+  the baseline, naming the paths and the setting that decides them.
+
+
+- **A score now answers for what the coverage filter removed.** Uncovered candidates are
+  dropped per file before the run, silently, and that is the **default** path. A file added to
+  `mutate` before its tests exist, or one a refactor stopped exercising, contributed nothing --
+  and the score went **up** while the gate stayed green. In a three-file fixture, eight of ten
+  candidates were removed and the run reported `100% (2 killed / 2)`, exit 0; the only trace
+  was that `sourceHashes` listed three files while `mutants` listed one. The report now carries
+  `skippedAsUncovered` and `filesWithNoMutants`, and the console prints
+  `N mutant(s) skipped as uncovered (M file(s) contributed none: ...)` beside the score --
+  named, not just counted. `declaredEquivalent` was already reported for exactly this reason;
+  this filter removes far more.
+
+- **An outcome PSMutant does not model is refused rather than scored.** Every mutant verdict
+  came from one comparison over an open string channel -- whatever Pester's run result says,
+  plus `TimedOut` minted into the same namespace -- and anything unrecognised fell through to
+  `Killed`, toward the flattering answer, with no test failing. The collapse is correct for
+  every shipping Pester, whose run-level result is two-valued; what was unguarded is a
+  **widened** vocabulary rather than a renamed one. A rename fails loudly at the baseline,
+  which compares against the literal `Passed` before any mutant runs; a third state coexisting
+  with it would leave the baseline green while every mutant returning it scored as killed.
+
+
+- **A report that cannot be written now fails the run instead of reporting success.** The
+  directory creation and the write were both non-terminating, so an ordinary `reportPath`
+  mistake -- one containing a `[`, an absolute path, a read-only directory, a file open in an
+  editor -- printed `Report: <path>` for a file nothing had written and returned
+  `Score=100, ExitCode=0`. A consumer's CI published an empty artifact over a green build. Both
+  writers now go through one function that uses a literal path and stops on failure; a
+  `reportPath` containing a bracket, which used to fail silently, now works.
+
+### Internal
+
+- The orchestrator splats two clusters of run values rather than naming each at every call
+  site: what a run **executes** with (candidates, timeout, sandbox, quiet) and what a report
+  **documents** itself with (source hashes, operators, equivalents, report path). Three calls
+  that needed line continuations now fit on one line each. `Provenance` stays explicit at both
+  sites, because the recheck takes the scriptblock and the report takes its invoked result --
+  a difference a shared key would hide.
+
+### Fixed
+
+- **A timed-out mutant is no longer counted as a plain kill.** `Invoke-PSBoundedPester` has
+  always distinguished a timeout; the verdict was discarded one line later, so "the suite
+  proved this fault is caught" and "the suite hung and we assumed so" became the same number.
+  A covering suite that is merely too slow therefore inflated the score, and a genuinely
+  non-terminating mutant -- often a loop whose termination nothing asserts -- disappeared into
+  the kill count. Timeouts still score **with** the kills, so your number does not move, but
+  they are now reported apart from them: `timedOut` in the JSON report, and
+  `[N killed on the clock, not by a failing test]` on the summary line. A rising count means
+  the timeout is too tight or a suite too slow, not that the tests got better.
+
+### Security
+
+- `publish.yml` no longer interpolates the tag name into a PowerShell script. An Actions
+  expression is pasted into the script as text before pwsh parses it, so a tag name
+  containing a quote closed the string literal and ran as code -- in the one job holding
+  the gallery API key. git accepts `v1.0";$x;"` as a ref name, and pushing a tag requires
+  no review while pushing to main does. The name now arrives through an environment
+  variable, which is read at run time and stays data whatever it contains.
+
+## [0.3.2] - 2026-08-21
+
+### Internal
+- The complexity gate moves from PSComplexity 0.1.0 to **0.3.0**, two majors on. That release
+  scores the flow constructs PowerShell actually has -- `ForEach-Object`, `Where-Object`, `&&`,
+  `||`, `??` -- which previously counted as straight-line code, so 16 of this module's 78 units
+  score higher than they did. Nothing breaches: the worst unit is cognitive 13 against a
+  ceiling of 15.
+- `Get-PSMutationScore` is a per-set fold again. It also answered a whole-run question --
+  whether a declaration matched no mutant, or several -- which made that answer wrong for
+  any subset: scoring one file's rows accused every declaration belonging to another file of
+  being stale. The check moved to `Get-PSMutationDeclarationCoverageFault`, which takes every
+  row, and `Write-PSMutationReport` merges the two. No output changes for a whole run.
+
+### For consumers
+
+**A per-mutant timeout that resolves too low is now refused instead of faking a perfect
+score.** The budget is `max(timeoutFloorSeconds, baseline x timeoutFactor)`, and with a small
+enough floor *and* factor it could resolve to zero. A zero-second budget expires immediately,
+an expired mutant counts as a kill, and so every mutant was killed on the clock rather than on
+behaviour -- 100%, exit 0, over tests that never ran. The budget must now be at least as long
+as your unmutated suite took, and a config that asks for less fails with a message saying so.
+
+If this affects you, your reported score was wrong in the flattering direction, and the run
+that fails after upgrading is the honest one.
+
+**A config path that escapes the source root is now refused.** Every path in a config is
+copied into a temp sandbox and mutated there; a leading `..` survived that mapping, so a path
+like `../shared/Util.ps1` was mutated **where it lives**, in your working tree. Interrupt such
+a run and the mutated file stays on disk. Paths that merely contain `..` and still resolve
+inside -- `src/../src/a.ps1` -- keep working.
+
+### Fixed
+
+- `Get-PSMutationTimeout` bounds the resolved budget below by the baseline duration rather
+  than by zero, because a budget shorter than the suite times out every mutant by construction
+  whatever the number is.
+- `ConvertTo-PSMutationSandboxPath` checks where a mapped path landed, not whether the input
+  contained `..`.
+
+## [0.3.1] - 2026-08-21
+
+### For consumers
+
+**Breaking: the module now exports one function.** `Invoke-PSMutation` is the whole surface.
+If you called `Get-PSMutationCandidate` or `Set-PSMutationText`, they are gone -- they were
+never documented, and the object they returned was never a declared contract. What you should
+depend on instead is the report JSON, which now has a published schema.
+
+**Your config is checked more strictly, and mistakes are errors rather than silence.** A
+misspelled key used to be ignored, which quietly weakened the run: `thresholds.brake` left the
+break gate unable to fail at all, and a misspelled operator was dropped and then reported as
+though it had run. A value of the wrong type did the same -- `"timeoutFactor": "four"` left the
+per-mutant timeout empty, and an expired timeout counts as a kill, so the score was higher than
+the tests earned. Both are refused now, and the message names the key and suggests the nearest
+valid one.
+
+If you have been running with a typo, this release will fail your config where it previously
+ran. That is the point: the run it was giving you was not measuring what you thought.
+
+**Both formats are published as JSON Schemas**, in `schemas/v1/`. Point your config at
+`config.schema.json` with a `$schema` key and it can be checked before a run instead of minutes
+into one. Validate a report against `report.schema.json` if you build anything on top of it --
+a dashboard, a ratchet, a merge tool. Extra fields are allowed on purpose, so a validating
+reader keeps working when a later release records more.
+
+**Reports say how they were produced**: a schema version, the module version, a timestamp, and
+how long the baseline, the whole run and the per-mutant timeout took.
+
+**`-RecheckFrom` does less work.** It skips mutants your config already declared unkillable,
+and a recheck report can now seed another recheck, so the loop narrows as you write assertions.
+
+**`Get-Help Invoke-PSMutation` returns the real documentation** -- every parameter described,
+with worked examples. It was previously serving an internal note by accident.
+
+**Score colours are correct.** A config without colour bands used to print every score green,
+including 0%.
+
+### Fixed
+- **The gallery page for a release was the maintainer changelog entry.** It opened mid-document
+  at `### Changed`, ran to 9646 characters, and carried ten `[#nn]` references that are
+  undefined in the notes and so rendered as literal text pointing at nothing. Its reader has no
+  access to this repo's issue tracker, and the prose was an argument addressed to whoever wrote
+  the code rather than to someone deciding whether to upgrade.
+
+  Each version section now carries a `### For consumers` block, and that block is what the
+  gallery gets. The rest of the entry stays as it is -- issue numbers, the argument behind a
+  decision, and what a stated reason used to claim are all worth keeping for a maintainer, and
+  none of them survive the trip to a package page.
+
+  **A missing block fails the release.** Falling back to the full section is what published
+  0.3.0, and a gallery page cannot be edited or withdrawn -- only unlisted, which is what
+  happened to it. Refusing costs one paragraph before a release; the fallback cost a permanent
+  page.
+
+- **The release-notes limit is 10600, not the 35000 the first error reports.** The gallery
+  enforces two: 35000 for a generic NuGet package, and 10600 when the notes are extracted from
+  a PowerShell manifest. Only the first is mentioned when you exceed it, so bounding at 35000
+  looks correct, publishes, and then fails on the second. Both numbers cost a release before
+  the smaller one was believed.
+
+## [0.3.0] - 2026-08-21
+
+**Unlisted.** The code is identical to 0.3.1; the gallery page was the maintainer changelog
+entry rather than notes written for a consumer. Use 0.3.1.
+
 ### Changed
 - **The module exports one function.** `Get-PSMutationCandidate` and `Set-PSMutationText` are no
   longer public ([#48]). Between them they trafficked a nine-field `[pscustomobject]` that
@@ -152,6 +335,43 @@ All notable changes to PSMutant are documented here. Format follows
   had -- and corrected when [#45] moved that constant.
 
 ### Added
+- **The config format and the report format are published as JSON Schemas** ([#84]).
+  `schemas/v1/config.schema.json` defines every key `-ConfigFile` understands, what it means and
+  what it must hold -- the definition a PSMutant config is written against. Name it with a
+  `"$schema"` key and the config becomes self-describing, so a mistake surfaces while it is
+  being written rather than several minutes into a run.
+
+  `schemas/v1/report.schema.json` defines the report format, covering both shapes: a full run,
+  and the partial run `-RecheckFrom` writes. Anything reading a report -- a dashboard, a
+  ratchet, a merge tool -- can now validate one without reading this repo's tests, which
+  were the only description of the format that existed, and were three hand-maintained lists
+  inside Pester assertions.
+
+  Both ship with the module, and the package smoke test fails if they do not arrive.
+
+  A recheck report **may not carry `mutationScore` at all**. Worth encoding in the format
+  rather than leaving to the printed caveat: a partial number quoted as a real one is the
+  failure this project is organised around, and a reader who ignores prose cannot ignore a
+  validation error.
+
+  Two findings from building it. `ConvertFrom-Json` re-types the ISO-8601 `generatedAt` into
+  a `[datetime]`, so the schema has to be applied to the **file** -- the string it describes
+  is already gone once PowerShell hands back an object. And `Test-Json` silently **ignores
+  the `not` keyword**, so the obvious way to spell "a recheck carries no score" is a rule
+  that can never fail; it is written as a boolean-`false` property schema instead, which is
+  honoured. Every keyword relied on was checked that way, because a schema rule that cannot
+  fire is indistinguishable from one that passes.
+
+  Extra properties are permitted deliberately: `schemaVersion` changes when a field changes
+  meaning or disappears, never when one is added, so a validating reader survives a release
+  that records more. The exact field lists stay pinned in the tests, because that is a
+  different claim -- the schema states the guaranteed minimum for consumers, the lists keep
+  *widening* deliberate on our side.
+
+  Two enforcements of one format invite drift, so the agreement is asserted rather than
+  maintained by hand: the schema's keys, threshold keys, operator vocabulary and required
+  keys are all compared against the code. That test earned its keep immediately -- the first
+  config schema refused `"break": null`, which the module has always accepted.
 - **Every report records how it was produced** ([#34]): `schemaVersion`, `producedBy`
   (module and version), `generatedAt` in UTC, and `durations` covering the baseline, the whole
   run, and the per-mutant timeout. Both report shapes carry the same block, so a consumer reads
@@ -178,6 +398,28 @@ All notable changes to PSMutant are documented here. Format follows
   the file itself. The file is the contract, and that is what the tests assert against.
 
 ### Fixed
+- **A config value of the wrong type is now refused, instead of quietly breaking the run**
+  ([#83]). `Assert-PSMutationConfig` checked key *names* and never types, so
+  `"timeoutFactor": "four"` validated -- and then the timeout arithmetic yielded **nothing**,
+  leaving an empty per-mutant deadline. A timeout expiry is scored as a **kill**, so the run
+  reported a number it had not measured: the exact failure this tool exists to find in other
+  people's code. `"coveredLinesOnly": "yes please"` was milder and the same absence of
+  checking -- any non-empty string is `$true`.
+
+  **The schema does the checking**, rather than a second table of types written in
+  PowerShell. The module reads `schemas/v1/config.schema.json` at run time -- key names,
+  threshold sub-keys and every type come out of it -- so adding a config key means editing
+  one file, not four. An explicit `null` is never a fault, because absence is meaningful:
+  `thresholds.break` unset means report-only.
+
+  What stays in code is what a schema cannot say, and each gives a better answer than the
+  schema would: the nearest valid name for a misspelled key, what `mutate` and `tests` are
+  *for* when one is missing, and the operator names, which come from the operator map
+  itself. The order those run in is the message quality.
+
+  One new failure mode, handled: the schema can be absent from a partially copied
+  installation, and a validator that skipped in that case would accept every config. It
+  throws, naming the path, and the package smoke test asserts both schemas ship.
 - **`Get-Help Invoke-PSMutation` served the wrong documentation.** PowerShell treats a `<# #>`
   block sitting immediately before the `function` keyword as that function's comment-based
   help, so this file's header shadowed the help written inside the body. Anyone running
@@ -306,6 +548,68 @@ All notable changes to PSMutant are documented here. Format follows
   would have quietly substituted the default for it.
 
 ### Internal
+- **Output has a seam: deciding what to say is separated from saying it** ([#47], [#60], [#61]).
+  Twenty `Write-Host` calls were spread across four files, each picking its own
+  `-ForegroundColor`. There is **one** now, in `Write-PSMutationOutput`, and
+  `tests/Layering.Tests.ps1` asserts that count -- a second one anywhere in `src/` fails a
+  test naming the renderer it should have gone through. PSScriptAnalyzer cannot do that job,
+  since `PSAvoidUsingWriteHost` is excluded repo-wide for the gate scripts in `tools/`.
+
+  Everything above the seam returns **lines**, each carrying a *role* rather than a colour --
+  `Banner`, `Good`, `Warn`, `Bad`, `Detail`, `Muted`, `Rule`. CI annotations and markdown
+  become a second renderer instead of a conditional at twenty call sites. A survivor line
+  also carries the mutant row in `-Data`, so a renderer has the file and line as values
+  rather than parsing them back out of formatted text.
+
+  Nothing a consumer sees changes: same text, same colours.
+
+  **This is why the output tests were the way they were.** Every one either mocked
+  `Write-Host` or captured the information stream and pattern-matched prose, so rewording a
+  line broke tests. They now assert on roles and text returned by a function. One file still
+  mocks `Write-Host` -- `tests/Output.Tests.ps1`, where the emitting *is* the subject.
+
+  **`-Quiet` has one implementation** ([#61]). It was enforced two ways: as a switch some
+  functions honoured, and as an `if (-not $Quiet)` wrapper the caller had to remember --
+  including around the two functions holding most of the output, which had no `-Quiet`
+  parameter at all. There are zero caller-side guards now; callers always render and pass
+  the switch to `Write-PSMutationOutput`, the only place it is honoured. A new emitter
+  inherits the contract by signature instead of by copying whichever pattern it read first.
+
+  **Two files no longer claim to be pure while printing** ([#60]). `Report.ps1` and
+  `Recheck.ps1` were labelled Pure in the layout table while holding 15 `Write-Host` calls
+  and 4 file writes between them. The console half is gone; the JSON write is not, and the
+  table now says so rather than being edited to match a compromise.
+- **The dependency direction between `src/` files is enforced** ([#52]). Every other gate is
+  blind to it: a shortcut call from `Operators.ps1` into `Report.ps1` still reaches full
+  coverage and still survives self-mutation. `tests/Layering.Tests.ps1` holds an allowlist of
+  file-to-file relationships -- one entry per pair, not per call site -- and fails in both
+  directions, since an allowlist describing edges the code dropped silently readmits them
+  later. It also asserts the graph is acyclic, which the allowlist alone cannot give: two
+  edges each reasonable on their own review make a cycle between them.
+
+  Written now rather than earlier because this change adds four edges, and an allowlist is
+  worth most written just beside the code that would violate it. Its two blind spots are
+  stated in the file: the child-runspace script is a here-string, and the operator map is
+  dispatched through `& $fn`.
+
+  It found one thing already: there are **no** cross-file `$script:` reads left, so the
+  locality rule now holds mechanically rather than by convention.
+- **A scoped self-mutation config for the development loop.**
+  `tools/New-PSMutantScopedConfig.ps1` narrows the real config to the files the current
+  change touched: one file is about 80 mutants and half a minute, against 400-odd and
+  several minutes for the whole set. Maintainer tooling -- nothing shipped changes.
+
+  It is built so a scoped run cannot be mistaken for the gate, because that is the only way
+  it could do harm: its score describes the files it mutated and can be a confident 100%
+  over a change that broke something two files away. So the generated config is untracked,
+  writes to its own `reportPath` rather than the artifact CI reads, prints the files it left
+  out **by name**, and carries the warning in a `_comment` key.
+
+  Two narrowing decisions earn their tests. A changed *test* file pulls in the source it
+  covers, since writing the assertion that kills a survivor is the edit whose effect you
+  most want to see. And declarations are subset with the files -- carrying the full set into
+  a narrowed run leaves every out-of-scope declaration matching no mutant, which fails the
+  run for a reason unrelated to the change.
 - The rules that closed issues were supposed to leave behind are now actually written down,
   and two workflows gained the guard [#42] only ever applied to one of them. An audit of the
   nine issues closed so far found four gaps:

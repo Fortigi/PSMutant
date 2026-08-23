@@ -133,7 +133,12 @@ a 100% resting on a dozen declarations can never be mistaken for one that killed
 3. **Evaluate** — copies the source subtrees into a temp **sandbox**, splices each mutant
    into the copy, runs the covering tests in-process, and restores the copy. Tracked source
    is never touched.
-4. **Score** — `killed / total`, written to the JSON report.
+4. **Score** — `killed / total`, written to the JSON report. A mutant that hits the
+   per-mutant timeout counts toward `killed`, because a mutant that hangs your suite is a
+   fault -- but it is also reported on its own as `timedOut`, in the JSON and on the
+   summary line. "The suite proved this fault is caught" and "the suite hung and we
+   assumed so" are different claims, and a rising `timedOut` means your timeout is too
+   tight or a covering suite too slow, not that your tests got better.
 
 A **loop-condition guard** drops any candidate inside a `while`/`for`/`do` condition, so a
 flipped comparison can never spin an infinite loop — which is what makes in-process
@@ -167,6 +172,31 @@ Adding an operator also renumbers mutants, so any existing report can no longer 
 refused rather than guessed at.
 
 ## Config reference
+
+The format is defined by **[`schemas/v1/config.schema.json`](schemas/v1/config.schema.json)**, which
+ships with the module. Naming it in the config makes the file self-describing -- a mistake
+surfaces while you are writing the config, rather than several minutes into a run:
+
+```json
+{
+  "$schema": "https://raw.githubusercontent.com/Fortigi/PSMutant/main/schemas/v1/config.schema.json",
+  "mutate": ["src/MyModule.ps1"],
+  "tests": { "src/MyModule.ps1": ["tests/MyModule.Tests.ps1"] }
+}
+```
+
+**The module validates against this same file when it runs**, so nothing depends on the
+config having been checked first — the schema is the format, not a description of it. It
+refuses rather than warns: a warning in a CI log is indistinguishable from silence, and every
+mistake in this class makes the gate *weaker* while the build stays green.
+
+That matters because both of PowerShell's coercions fail **open**. `"timeoutFactor": "four"`
+would otherwise leave the per-mutant timeout empty, and a timeout expiry counts as a *kill* —
+a run reporting a number it never measured. `"coveredLinesOnly": "no"` would mean yes.
+
+An unknown key is still answered with the nearest valid name (`Did you mean 'break'?`), and a
+missing `mutate` or `tests` with what the key is for, because those are the two answers a
+schema cannot give.
 
 | Key | Meaning |
 |---|---|
@@ -205,6 +235,25 @@ crosses.
 
 Reports also record `operators` and a `sourceHashes` map (SHA256 per mutated file). Those
 exist so `-RecheckFrom` can prove the mutant ids in a report still refer to the same code.
+
+The report format is defined by **[`schemas/v1/report.schema.json`](schemas/v1/report.schema.json)**,
+which ships with the module, so a dashboard or a ratchet can validate a report without
+reading this repo's tests:
+
+```powershell
+Test-Json -Json (Get-Content ./reports/ps-mutation.json -Raw) `
+          -Schema (Get-Content ./schemas/v1/report.schema.json -Raw)
+```
+
+It covers both shapes — a full run, and the partial run `-RecheckFrom` writes, identified by
+`"mode": "Recheck"`. A recheck may not carry `mutationScore` at all, so a partial number
+cannot be mistaken for a real one even by a reader who ignores the `note`.
+
+Validate the **file**, not a parsed object: PowerShell's `ConvertFrom-Json` recognises the
+ISO-8601 `generatedAt` and hands back a `[datetime]`, so the string the schema describes is
+already gone. Extra properties are permitted deliberately — `schemaVersion` changes when a
+field changes meaning or disappears, never when one is added, so a validating reader keeps
+working across releases that record more.
 
 ## What to point it at
 

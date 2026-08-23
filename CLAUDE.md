@@ -34,7 +34,7 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 |---|---|
 | Import smoke | module loads, `Invoke-PSMutation` is exported |
 | Lint | `tools/Invoke-PSMutantAnalyzer.ps1` — PSScriptAnalyzer over `PSSA_PATHS`, **every severity**. The same script code scanning runs |
-| Unit tests | whole `tests/` directory, must be 0 failures |
+| Unit tests | whole `tests/` directory, must be 0 failures. Two gates live only here: `Layering.Tests.ps1` (file-to-file edges, acyclicity, the one `Write-Host`) and the public-help and schema assertions in `EndToEnd.Tests.ps1` |
 | Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
 | Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
 | Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100. Several hundred mutants and a handful of minutes -- deliberately not a figure to keep in step, because a hand-maintained count is how the numbers here became folklore before |
@@ -108,6 +108,75 @@ test **must** leave survivors, and fails if everything comes back killed.
 
 ---
 
+## Running the self-mutation gate while developing
+
+The gate is several hundred mutants and a handful of minutes, nearly all of it re-proving
+files nobody edited. `tools/New-PSMutantScopedConfig.ps1` narrows the real config to the
+files in the current change and writes an untracked `psmutant.scoped.config.json`:
+
+```powershell
+./tools/New-PSMutantScopedConfig.ps1 -Run          # vs main, committed and uncommitted
+./tools/New-PSMutantScopedConfig.ps1 -Since HEAD   # uncommitted only, the tightest loop
+```
+
+One file scopes to about 80 mutants and half a minute, against 400-odd and several minutes
+for the whole set.
+
+**Run the full set only when you are about to push.** During development there are two
+cheaper answers and they are not interchangeable:
+
+| Situation | Use | Cost |
+|---|---|---|
+| changed a file, want to know if it is still clean | `New-PSMutantScopedConfig.ps1 -Since HEAD` | ~80 mutants, ~30s |
+| just fixed a survivor, want to know if it is dead | `-RecheckFrom <report>` | the survivors only, seconds |
+| about to push, or opening a PR | the real config | 500-odd mutants, ~9 min |
+
+The middle row is the one that gets forgotten, and it is the one this module exists to
+provide. A recheck seeded from the last report evaluates **only** what survived, skips
+declared equivalents -- no test can kill those, so re-evaluating them is guaranteed-wasted
+work -- and answers in seconds. Measured on this repo: 4 survivors in the report, 1 actually
+re-evaluated, **19.2s**, against **~9 minutes** for the full sweep that answers the same
+question.
+
+Verifying one mutant does not need the whole suite either. The config maps each source file
+to one covering suite, so `Config.Tests.ps1` is 101 tests in 4.6s where the whole `tests/`
+directory is 546 in 49s. Apply the mutant by hand, run that one file, restore.
+
+**CI is the LAST gate, not the first.** It exists to catch what local checking cannot see --
+the other operating system, the pinned dependency set, and the interaction between gates. A
+Linux-only defect shipped green from a Windows machine this way: a hard-coded backslash in a
+path normaliser, which is a no-op on Linux and therefore invisible to the very gate that would
+have caught it. None of that is reproducible here.
+
+So do not push in order to find out whether something works. A red CI should be a surprise
+worth investigating, not a step in the loop -- `publish.yml` requires CI green for the exact
+commit, and a signal that fires routinely stops being a signal. Run the cheap local checks
+always, the full local gate when the change is broad, and expect CI green.
+
+The corollary is a gap worth knowing: when CI's mutation gate does fail, it prints
+`Self mutation score: 99.8% (532/533)` and nothing else. `-Quiet` is all-or-nothing and the
+run result carries no survivor list, so the one number a backstop produces cannot say what
+failed. That is #54's subject, and until it is fixed the answer is a local `-RecheckFrom`.
+
+**A scoped run is never the gate, and every part of this is built to keep that true.** Its
+score describes the files it mutated, not this project, so it can be a confident 100% over
+a change that broke something two files away. The output is untracked, it writes to its own
+`reportPath` so it cannot overwrite the artifact CI reads, it prints the files it left out
+by name, and the generated config says so in a `_comment`. Before a PR, run the real config.
+
+Two narrowing decisions are worth knowing. A changed **test** file pulls in the source it
+covers, because writing the assertion that kills a survivor is exactly the edit whose effect
+you want to see. And declarations are subset with the files -- carrying the full set into a
+narrowed run means every declaration for an out-of-scope file matches no mutant, which fails
+the run for a reason that has nothing to do with the change.
+
+The narrowing itself is a pure function in `tools/ScopedConfig.ps1` with tests, for the same
+reason the gate decisions are: `tools/` is outside `sandboxSubtrees` and is never mutated, so
+tests are the only thing standing between a scoping bug and a fast green run that measured
+less than it claimed.
+
+---
+
 ## Measuring coverage
 
 One invocation, the whole directory, no exclusions and no exempt files:
@@ -146,6 +215,7 @@ self-mutating on their own terms. Keep new decisions there rather than in the bo
 | `PSMutation.Recheck.ps1` | 100% | yes |
 | `PSMutation.Pester.ps1` | 100% | yes |
 | `PSMutation.Config.ps1` | 100% | yes |
+| `PSMutation.Output.ps1` | 100% | yes |
 | `PSMutation.Runner.ps1` | 100% | yes |
 | `Invoke-PSMutation.ps1` | 100% | yes |
 | `PSMutation.Sandbox.ps1` | 100% | **no** — see below |
@@ -159,6 +229,111 @@ the live run's sandbox mid-baseline and turns the run red before a single mutant
 Its behaviour is pinned by the normal suite at 100% coverage instead.
 
 ---
+
+## Output: deciding what to say, and saying it
+
+Every file that produces output returns **lines**; `src/PSMutation.Output.ps1` emits them and
+holds the module's only `Write-Host`. `tests/Layering.Tests.ps1` asserts that count, so a
+second one anywhere in `src/` fails a test naming the renderer it should have gone through.
+PSScriptAnalyzer cannot do that job: `PSAvoidUsingWriteHost` is excluded repo-wide because
+the gate scripts in `tools/` print for a living.
+
+A line carries a **role**, never a colour: `Banner`, `Good`, `Warn`, `Bad`, `Detail`,
+`Muted`, `Rule`. The console renderer maps role to colour; a renderer for CI annotations or
+markdown maps the same roles to its own vocabulary. An unknown role **throws** -- a silently
+uncoloured line reads as a styling slip, when what it signals is a renderer that will not
+know what to do with the line at all.
+
+`Rule` and `Muted` both print DarkGray and are still distinct, which is the point of roles
+rather than colours: a renderer that is not a console drops separators, and must not take
+the recheck caveats with them.
+
+A survivor line carries the mutant row in **`-Data`**. Annotations need the file and line as
+values, and recovering them by parsing the formatted text back apart is exactly the coupling
+this seam removes.
+
+**`-Quiet` is honoured in one place**: `Write-PSMutationOutput`. Callers always render and
+pass the switch down; they never guard. Guarding at the call site means each new emitter has
+to remember, and one that forgets prints in quiet mode while every existing test stays green,
+because those tests assert on the output the *current* callers produce.
+
+## The two published schemas
+
+`schemas/` holds the formats this module exchanges with the outside world, and both ship in
+the package -- the staging `Copy-Item` in `publish.yml` is the single place that decides
+whether they travel, and `tools/Test-PSMutantPackage.ps1` fails if they do not arrive.
+
+- **`config.schema.json` is the config format** -- and not a description of it. The module
+  READS it: `Get-PSMutationConfigKey` takes the key names and the threshold sub-keys from
+  it, and `Get-PSMutationConfigTypeFault` validates against it with `Test-Json`. There is no
+  second copy in PowerShell to fall out of step, because there is no second copy.
+- **`report.schema.json` is the report format**, covering both shapes.
+
+**What stays in code is only what a schema cannot say**, and each earns its place by giving
+a better answer than the schema would:
+
+| In code | Because the schema would say |
+|---|---|
+| nearest-name suggestion for an unknown key | "property not allowed" -- which does not say `break` when you wrote `brake` |
+| `mutate` / `tests` missing or empty | "required properties are not present" -- true, and it teaches nothing |
+| operator names, checked against the operator map | it would need the vocabulary copied out of the map, which is the drift this move removed |
+
+**The ORDER those run in is the message quality**, so do not reshuffle
+`Assert-PSMutationConfig` casually: name, then missing-or-empty, then the schema. Absence
+and emptiness come before the type check because they are about the *value*, not its kind;
+an object in `mutate` falls through to the schema and is named as a type error, which is the
+better answer for that one.
+
+**The module now depends on a data file at run time**, which nothing in `src/` did before.
+Two consequences, both handled and both easy to undo by accident:
+
+- `Get-PSMutationConfigSchema` **throws, naming the path**, when the schema is absent. A
+  validator that skips when it cannot find its schema accepts every config, including the
+  ones this exists to catch. The package smoke test asserts both schemas ship.
+- `psmutant.self.config.json` copies `schemas` into the sandbox. A sandboxed `src/` that
+  cannot find the schema refuses every config and turns the baseline red before a mutant is
+  tried.
+
+Three things about the schemas worth knowing before editing either:
+
+- **Validate the FILE, not a parsed object**, for reports. `ConvertFrom-Json` re-types the
+  ISO-8601 `generatedAt` into a `[datetime]`, so the string the schema describes is gone by
+  the time PowerShell hands you an object. The config path re-serialises instead, because
+  the caller holds an object and a config has no field that survives the round trip badly.
+- **`Test-Json` silently ignores `not`.** The obvious spelling of "a recheck must not carry
+  a mutationScore" is a clause that can never fire. It is written as
+  `"properties": { "mutationScore": false }`, which NJsonSchema does honour. Verify any new
+  keyword the same way -- a schema rule that cannot fire looks exactly like one that passes.
+- **Prefer a type union to `oneOf`.** `oneOf` reports a failure in every branch as a
+  sub-error, so an unrelated mistake elsewhere in the file drags a bogus complaint about
+  this key along with it and points the reader at a line that is fine. `"type": ["array",
+  "string", "null"]` with `items` says the same thing with one accurate error.
+
+Additional properties are permitted in the **report** schema on purpose: `schemaVersion`
+changes when a field changes meaning or disappears, never when one is added, so a consumer
+validating against it survives a release that records more. That is also why the exact field
+lists stay pinned in the tests -- the schema states the guaranteed **minimum** for
+consumers, and the literal lists keep *widening* a deliberate act on our side. The **config**
+schema is the opposite: `additionalProperties: false`, because an unrecognised key there is
+a typo that would otherwise weaken the run in silence.
+
+Two things about the report schema worth knowing before editing it:
+
+- **Validate the FILE, not a parsed object.** `ConvertFrom-Json` re-types the ISO-8601
+  `generatedAt` into a `[datetime]`, so the string the schema describes no longer exists by
+  the time PowerShell hands you an object.
+- **`Test-Json` silently ignores `not`.** The obvious spelling of "a recheck must not carry
+  a mutationScore" is a clause that can never fail. It is written as
+  `"properties": { "mutationScore": false }` instead, which NJsonSchema does honour --
+  verified, because a schema rule that cannot fire is exactly the kind of quiet
+  non-enforcement this repo exists to distrust. Check any new keyword the same way.
+
+Additional properties are permitted in the report schema on purpose. `schemaVersion` changes
+when a field changes meaning or disappears, never when one is added, so a consumer
+validating against it survives a release that records more. That is also why the exact
+field lists stay pinned in the tests: the schema states the guaranteed **minimum** for
+consumers, and the literal lists keep *widening* a deliberate act on our side. Two
+assertions, two different claims.
 
 ## Operators, and the vacuous 100%
 
@@ -200,10 +375,14 @@ src/PSMutation.Operators.ps1   AST walk -> mutation candidates; the operator set
 src/PSMutation.Sandbox.ps1     temp sandbox: create, path-map, sweep. Side-effects.
 src/PSMutation.Pester.ps1      the boundary with Pester: which one, its path, the child's contract.
 src/PSMutation.Config.ps1      config resolution: subtrees, timeout, the sandbox plan. Pure.
-src/PSMutation.Report.ps1      scoring, thresholds, equivalents, report JSON, run result. Pure.
+src/PSMutation.Output.ps1      the console seam: what a line is, and the ONE Write-Host.
+src/PSMutation.Report.ps1      scoring, thresholds, equivalents, the report document, the
+                               summary lines, run result. Pure except for writing the JSON.
 src/PSMutation.Recheck.ps1     -RecheckFrom, whole: compatibility, selection, the run.
 src/PSMutation.Runner.ps1      baseline + its green guard, per-mutant execution, the loop.
 src/Invoke-PSMutation.ps1      public entry point. Wiring, and nothing else.
+schemas/                       the two published formats. config.schema.json is READ at run
+                               time -- it is the config format, not a copy of it.
 tools/                         the committed coverage, analyzer and compatibility gates.
 ```
 
@@ -411,7 +590,16 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   exists to prevent. `_`-prefixed keys are exempt, because JSON has no comments and the
   shipped configs use them.
 
-  Adding a key means adding it to that list and to the README table in the same commit. (#24)
+  **The type is checked too, and the schema is what checks it.** A wrong type does not
+  error in PowerShell, it produces a confident wrong answer: a non-numeric `timeoutFactor`
+  makes the timeout arithmetic yield *nothing*, and a timeout expiry is scored as a
+  **kill**. `coveredLinesOnly` is milder and the same shape of bug -- any non-empty string
+  is `$true`.
+
+  **Adding a key means editing `schemas/v1/config.schema.json`, and that is the whole list.**
+  The key names, the threshold sub-keys and every type are read back out of the schema at
+  run time, so there is no PowerShell copy to keep in step. Update the README table in the
+  same commit; that one is still on you. (#24, #83, #84)
 - **Never compare a raw config value; compare a resolved one.** Both of PowerShell's
   null coercions fail *open* -- `$anyNumber -ge $null` is `$true`, and `[bool]$null` is
   `$false` -- so an unresolved config value does not produce an error, it produces a
@@ -506,11 +694,76 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   that does not in the same call. Two items, because a single-outcome fixture passes just as
   well against a stage that was deleted. This is the strongest routine check in the repo and
   it has exactly this blind spot; nothing else will catch it for you. (#31)
+- **A new file-to-file edge in `src/` is a decision, and `tests/Layering.Tests.ps1` makes you
+  make it.** Every other gate is blind to DIRECTION: a shortcut call from `Operators.ps1`
+  into `Report.ps1` still reaches full coverage and still survives self-mutation. The test
+  holds an allowlist of file-to-file *relationships* -- one entry per pair, not per call
+  site -- so adding a call between files that already have an edge is free and adding the
+  first one is deliberate.
+
+  It fails in **both** directions. An undeclared edge fails, and so does a declared edge the
+  code no longer has: an allowlist describing relationships that were dropped is a document
+  nobody can trust, and it silently readmits an edge later. Same argument as a stale
+  equivalence declaration.
+
+  It also asserts the graph is **acyclic**, which the allowlist alone cannot give you -- two
+  edges each reasonable on their own review make a cycle between them, and nobody reviewing
+  the second is looking at the first.
+
+  Two blind spots are stated in the file rather than left to be rediscovered: the child
+  runspace script is a here-string, so the parser never sees inside it, and the operator map
+  is dispatched through `& $fn`, whose callee is a variable. Both are within-file today.
+
+  The ordered list in `PSMutant.psm1` is not enforcement and never was -- every cross-file
+  reference resolves at call time, so reverse-loading behaves identically.
 - **A test's title names what the test calls.** The test titled "does NOT sweep the sandbox
   of a concurrently running process" never called the sweep. It was not wrong about anything
   -- it asserted a true fact about the predicate -- but its title claimed coverage of the
   behaviour above it, which is what let the gap sit unnoticed. When a title says a *verb*,
   the body invokes that verb.
+
+- **A resolved number gets a floor that means something, and the floor refuses rather than
+  clamps.** The per-mutant budget is `max(floor, baseline x factor)`, and it must be at least as
+  long as the unmutated suite took -- not merely non-zero. A 1-second budget against a 3-second
+  baseline times out every mutant by construction, exactly as a 0-second one does, so a minimum
+  of 1 would only move the boundary. It throws instead of substituting a working value, because
+  the substituted number would then be written into the report as though the config had asked
+  for it -- a silent substitution in the same place a silent substitution caused the bug.
+
+  This is the project's own headline failure turned inward: every mutant dying on the clock is
+  scored Killed, so the run reports a perfect score over tests that never ran.
+
+- **Every path in a config is mapped into the sandbox, and the mapper checks where the path
+  landed.** Not whether it contains `..` -- `src/../src/a.ps1` is `src/a.ps1` and was never
+  ambiguous -- but whether the mapped result is still inside. The caller writes to whatever the
+  mapper returns, so a path that escapes is mutated in the directory the sandbox exists to
+  replace, and the promise that a hard kill cannot leave a mutant in tracked source then rests
+  on a `finally` rather than on the real files never being opened for write.
+
+  The check lives in the mapper because that is the single choke point both `mutate` and `tests`
+  pass through, and because it runs before the baseline, so a bad path fails immediately instead
+  of surfacing later as a red baseline.
+
+- **Record what you could not break, and check the negative for vacuity before believing it.**
+  A confirmed negative is worth as much as a finding and costs as much to establish, and without
+  it the same ground gets re-dug. The sandbox sweep deletes the *name* and not the target, so a
+  planted symlink does not redirect it; a hard kill leaves tracked source byte-identical **by
+  construction** rather than by cleanup, since the real files are never opened for write; no
+  config value reaches an eval sink; zero mutants scores 0% and exits 1, not a vacuous 100%; two
+  concurrent runs never sweep each other's live sandbox. The full list is in `ROADMAP.md` on
+  the long-lived `docs/sequencing` branch, deliberately **not** on `main`: the roadmap is a
+  working artefact rather than a description of the repo, and two copies of a plan drift.
+  Confirming a negative belongs there whether or not it is convenient to reach.
+
+  The vacuity check is the part that is easy to skip. "I changed X and nothing broke" means
+  nothing until you have also confirmed that a change which *should* break it does -- a fixture
+  that cannot fail proves the same thing about every hypothesis.
+
+- **Review by lens, not by file.** A pass over the same files with the same question finds what
+  the last one found. Pointing an unused question at the project -- what does a hostile local
+  user get, what does this cost per mutant, what does a monorepo layout do to it -- returned
+  seventeen issues at once, two of them outranking everything already in the backlog. Both were
+  in code that had been read many times and was at 100% coverage and 100% self-mutation.
 
 ## Practices to adopt
 
@@ -518,9 +771,57 @@ Gaps in how the repo is maintained, as rules rather than as a backlog. Each has 
 issue; the rule is what stops the next instance, and it moves up to "Practices to preserve"
 in the PR that closes its issue.
 
-**This section is empty again.** That is a state to notice rather than a milestone: it means
-the last findings have all landed, not that there is nothing left to find.
+- **A config path gets a resolver, exactly like every other config value** (#100, #103, #104,
+  #109, #110). This is one missing concept, not five bugs. Every other config value got a
+  resolver with a documented default; paths did not, so `..` copies outside the sandbox and is
+  never cleaned up, a `[` fails with a message naming neither the file nor the cause,
+  `reportPath` is documented optional and is in practice mandatory, and a path that does not
+  survive into the sandbox is diagnosed as a red baseline. Fixing them separately produces five
+  guards in five places.
 
+- **A number in the report answers for what it excluded** (#96, #7, #59). The coverage filter can
+  remove a whole `mutate` file from the score with nothing recording that it did, and a
+  timed-out mutant is counted as Killed. Both make the score go **up**. Anything that drops a
+  mutant, or classifies one without observing a test fail, has to be visible in the report next
+  to the number it changed.
+
+- **A failure that leaves the run green is worse than one that fails** (#98, #55). The report
+  write fails non-terminatingly and the run still returns `Score=100, ExitCode=0`; nothing
+  asserts that Pester's result is two-valued, though the mutant classifier depends on it. Every
+  fake-perfect-score bug in this project's history is this shape.
+
+- **The unit of isolation is the run, not the process** (#53, #22, #95, #105). Fusing ownership
+  and liveness into `$PID` is why the sandbox file cannot be self-mutated, why a planted symlink
+  at a predictable path is reachable at all, and why `psmut-coverage-$PID.xml` accumulates in
+  temp forever with a sweep that structurally cannot match it. Four issues, one identity.
+
+- **A guarantee proven on one OS is proven on one OS** (#32, #35). CI runs Linux only, and the
+  path layer carries the headline guarantee. Every fixture is also PSMutant's own flat
+  `src/`+`tests/`, so the consumer-shaped layout the module promises to support is never
+  executed.
+
+- **Assert the exact answer when the fixture has one** (#36, #43). End-to-end counts are asserted
+  as open inequalities over a fixture whose answer is exact, which passes against a run that
+  produced twice what it should. Test files sharing `$script:` state across blocks means a
+  filtered run fails on tests that are fine -- and a suite that cannot be run in part cannot be
+  bisected.
+
+- **A per-mutant cost is paid once per mutant** (#101, #102, #107, #108, #62). Each mutant reads
+  and writes the whole file twice, re-imports Pester into a fresh runspace, and -- with no
+  `tests` entry -- runs the entire suite. None of it is wrong; all of it multiplies. Measure
+  before choosing a mechanism, and note that the timeout is derived from a *serial* baseline, so
+  parallel evaluation (#1) would manufacture false kills on top of whatever it saved.
+
+- **A pin nobody watches has already drifted** (#89, #94). `.github/pins.env` and the `uses:` SHAs
+  go stale silently, and `ci.yml` declares no `permissions` block, so it executes third-party
+  code with a write-scoped token.
+
+- **A run needs a context object before it needs another mode** (#63, #54, #56). Each mode
+  currently adds another long parameter list threaded through the orchestrator; the run result
+  carries a verdict without its reason and has no field common to both modes; and
+  `Get-PSMutationScore` validates the whole config while scoring a subset, so per-file scores
+  (#6) cannot reuse it. Three of the queued features push through this seam, and it is cheaper
+  to widen once than three times.
 
 ## Writing tests here
 
@@ -544,6 +845,11 @@ Traps that have bitten in this repo specifically:
   the source is not wrong; only the resolution is. File headers in `src/` are `#` line
   comments for that reason, and `tests/EndToEnd.Tests.ps1` asserts the public help resolves
   to the real thing.
+- **A `$null` in a `-ForEach` case hashtable does not bind the variable.** `@{ Value = $null }`
+  runs the body with `$Value` unset, so the case silently exercises whatever the previous case
+  left behind rather than the null it names. A null arm tested that way is not tested: the
+  self-mutation gate found one by flipping `-or` to `-and` in a guard whose null branch nothing
+  reached. Test `$null` in its own `It`, where it is passed explicitly.
 - **Pester 6 removed mock fall-through.** A call that matches none of your
   `-ParameterFilter` mocks no longer runs the real command — it throws. Any command
   mocked with a filter needs either a default mock or a filter for every shape of call

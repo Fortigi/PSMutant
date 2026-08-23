@@ -14,6 +14,7 @@ BeforeAll {
     . (Join-Path $src 'PSMutation.Sandbox.ps1')    # ConvertFrom-PSMutationSandboxPath
     . (Join-Path $src 'PSMutation.Runner.ps1')     # Invoke-PSMutationLoop, mocked below
     . (Join-Path $src 'PSMutation.Report.ps1')     # the equivalence key, to skip declared ones
+    . (Join-Path $src 'PSMutation.Output.ps1')
     . (Join-Path $src 'PSMutation.Recheck.ps1')
 
     function Get-FakeReport {
@@ -246,65 +247,65 @@ Describe 'Write-PSMutationRecheckReport' {
     }
 }
 
-Describe 'Show-PSMutationRecheckSummary' {
+Describe 'Get-PSMutationRecheckSummaryLine' {
     BeforeEach {
-        $script:lines = [System.Collections.Generic.List[string]]::new()
-        $script:colours = [System.Collections.Generic.List[string]]::new()
-        Mock Write-Host { $script:lines.Add([string]$Object); $script:colours.Add([string]$ForegroundColor) }
         $script:results = @(
             [pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 10; Description = 'x'; Status = 'Killed' }
             [pscustomobject]@{ Id = 2; File = 'src/a.ps1'; Line = 20; Description = 'y'; Status = 'Survived' }
         )
+        $script:summary = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 1; StillSurviving = 1 }
     }
 
-    It 'always prints the caveat that this is not a mutation score' {
-        # This line is the whole safety argument for the feature. Without it the
-        # output reads like a measurement, and "6 of 10 killed" gets quoted as a
-        # score -- so it is pinned rather than left to reviewer discipline.
-        $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 1; StillSurviving = 1 }
-        Show-PSMutationRecheckSummary -Summary $s -Results $script:results -ReportPath 'r.recheck.json'
-        ($script:lines -join "`n") | Should-BeLikeString '*Not a mutation score*'
-        ($script:lines -join "`n") | Should-BeLikeString '*full set*'
+    It 'always says that this is not a mutation score' {
+        # This line is the whole safety argument for the feature. Without it the output
+        # reads like a measurement, and "6 of 10 killed" gets quoted as a score -- so it is
+        # pinned rather than left to reviewer discipline.
+        $lines = Get-PSMutationRecheckSummaryLine -Summary $script:summary -Results $script:results -ReportPath 'r.recheck.json'
+        ($lines.Text -join "`n") | Should-BeLikeString '*Not a mutation score*'
+        ($lines.Text -join "`n") | Should-BeLikeString '*full set*'
     }
 
-    It 'prints counts, never a percentage' {
-        $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 1; StillSurviving = 1 }
-        Show-PSMutationRecheckSummary -Summary $s -Results $script:results -ReportPath 'r.recheck.json'
-        ($script:lines -join "`n") | Should-BeLikeString '*1 of 2 previous survivor(s) now killed*'
-        ($script:lines -join "`n") | Should-NotMatchString '\d+([.,]\d+)?\s*%'
+    It 'gives the caveats a role a non-console renderer keeps' {
+        # Muted, not Rule. Both are DarkGray on a console, so a console-only assertion
+        # cannot tell them apart -- but a renderer that drops separators would silently
+        # drop the caveat above with them, which is the one line that must never go.
+        $lines = Get-PSMutationRecheckSummaryLine -Summary $script:summary -Results $script:results -ReportPath 'r.recheck.json'
+        $caveat = @($lines | Where-Object { $_.Text -like '*Not a mutation score*' })
+        $caveat[0].Role | Should-Be 'Muted'
+    }
+
+    It 'reports counts, never a percentage' {
+        $lines = Get-PSMutationRecheckSummaryLine -Summary $script:summary -Results $script:results -ReportPath 'r.recheck.json'
+        ($lines.Text -join "`n") | Should-BeLikeString '*1 of 2 previous survivor(s) now killed*'
+        ($lines.Text -join "`n") | Should-NotMatchString '\d+([.,]\d+)?\s*%'
     }
 
     It 'lists the mutants that are still surviving' {
-        $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 1; StillSurviving = 1 }
-        Show-PSMutationRecheckSummary -Summary $s -Results $script:results -ReportPath 'r.recheck.json'
-        ($script:lines -join "`n") | Should-BeLikeString '*src/a.ps1:20*y*'
-        ($script:lines -join "`n") | Should-NotBeLikeString '*src/a.ps1:10*'   # killed: not still surviving
+        $lines = Get-PSMutationRecheckSummaryLine -Summary $script:summary -Results $script:results -ReportPath 'r.recheck.json'
+        ($lines.Text -join "`n") | Should-BeLikeString '*src/a.ps1:20*y*'
+        ($lines.Text -join "`n") | Should-NotBeLikeString '*src/a.ps1:10*'   # killed: not still surviving
     }
 
-    It 'goes green only when nothing is left surviving' -ForEach @(
-        @{ Still = 0; Expected = 'Green'  }
-        @{ Still = 1; Expected = 'Yellow' }
+    It 'marks the headline Good only when nothing is left surviving' -ForEach @(
+        @{ Still = 0; Expected = 'Good' }
+        @{ Still = 1; Expected = 'Warn' }
     ) {
-        # The colour of the HEADLINE line specifically. Asserting over the whole colour
-        # list cannot discriminate: the still-surviving block is Yellow as well, so a
-        # headline wrongly painted Green still leaves a Yellow in the list and passes.
+        # The role of the HEADLINE line specifically. Asserting over the whole role list
+        # cannot discriminate: the still-surviving block is Warn as well, so a headline
+        # wrongly marked Good still leaves a Warn in the list and passes.
         $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 2 - $Still; StillSurviving = $Still }
-        Show-PSMutationRecheckSummary -Summary $s -Results @() -ReportPath 'r.recheck.json'
-
-        $headline = -1
-        for ($i = 0; $i -lt $script:lines.Count; $i++) {
-            if ($script:lines[$i] -like '*now killed*') { $headline = $i }
-        }
-        $headline | Should-BeGreaterThan -1
-        $script:colours[$headline] | Should-Be $Expected
+        $lines = Get-PSMutationRecheckSummaryLine -Summary $s -Results @() -ReportPath 'r.recheck.json'
+        $headline = @($lines | Where-Object { $_.Text -like '*now killed*' })
+        $headline.Count | Should-Be 1
+        $headline[0].Role | Should-Be $Expected
     }
 
     It 'omits the still-surviving block entirely when nothing survives' {
-        # -gt 0, not -ge 0: printing an empty "Still surviving:" header after a clean
-        # recheck reads as though something were still alive.
+        # -gt 0, not -ge 0: an empty "Still surviving:" header after a clean recheck reads
+        # as though something were still alive.
         $s = [pscustomobject]@{ Mode = 'Recheck'; PriorSurvivors = 10; Rechecked = 2; NowKilled = 2; StillSurviving = 0 }
-        Show-PSMutationRecheckSummary -Summary $s -Results @() -ReportPath 'r.recheck.json'
-        ($script:lines -join "`n") | Should-NotBeLikeString '*Still surviving*'
+        $lines = Get-PSMutationRecheckSummaryLine -Summary $s -Results @() -ReportPath 'r.recheck.json'
+        ($lines.Text -join "`n") | Should-NotBeLikeString '*Still surviving*'
     }
 }
 
@@ -345,14 +346,12 @@ Describe 'Invoke-PSMutationRecheckRun' {
     }
 
     It 'evaluates only the prior survivors and returns the recheck summary' {
-        $script:quiet = [System.Collections.Generic.List[string]]::new()
-        Mock Write-Host { $script:quiet.Add([string]$Object) }
+        Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
         Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Killed' }) }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 1; StillSurviving = 1 } }
-        Mock Show-PSMutationRecheckSummary { }
 
         $s = Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a', 'b', 'c') -Plan $script:plan `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
@@ -364,27 +363,28 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { @($Candidates).Count -eq 2 }
         # The prior survivor COUNT comes from the report, not from the loop results.
         Should-Invoke Write-PSMutationRecheckReport -Exactly 1 -ParameterFilter { $PriorSurvivorCount -eq 2 }
-        Should-Invoke Show-PSMutationRecheckSummary -Exactly 0
-        # -Quiet has to silence the progress line too, not merely the closing summary.
-        ($script:quiet -join "`n") | Should-NotBeLikeString '*Rechecking*'
+        # -Quiet reaches BOTH emitters -- the progress line and the closing summary -- and
+        # is forwarded rather than used to skip the call, since the renderer is what
+        # honours it. An unforwarded switch prints for real.
+        Should-Invoke Write-PSMutationOutput -Exactly 2 -ParameterFilter { $Quiet }
     }
 
     It 'reports progress and a summary when not quiet' {
-        $script:said = [System.Collections.Generic.List[string]]::new()
-        Mock Write-Host { $script:said.Add([string]$Object) }
+        Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
         Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Status = 'Survived' }) }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0 } }
-        Mock Show-PSMutationRecheckSummary { }
 
         Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
             -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') | Out-Null
 
-        ($script:said -join "`n") | Should-MatchString 'Rechecking 2 previous survivor'
-        Should-Invoke Show-PSMutationRecheckSummary -Exactly 1
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Lines.Text -match 'Rechecking 2 previous survivor' }
+        # The closing summary is the second call, and it carries the caveat that stops a
+        # partial number being read as a score.
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Lines.Text -like '*Not a mutation score*' }
     }
 }
 
