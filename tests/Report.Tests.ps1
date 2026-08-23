@@ -11,6 +11,15 @@ BeforeAll {
         [pscustomobject]@{ File = 'a.ps1'; Line = 2; Operator = 'BinaryOperator'; Description = 'y'; Status = 'Killed' }
         [pscustomobject]@{ File = 'a.ps1'; Line = 3; Operator = 'BooleanLiteral'; Description = 'z'; Status = 'Survived' }
     )
+
+    # Same shape with the middle row timed out. File-level rather than per-Describe: two
+    # Describes read it, and $script: state set in one block and read in another makes a
+    # FILTERED run fail on tests that are fine.
+    $script:withTimeout = @(
+        [pscustomobject]@{ File = 'a.ps1'; Line = 1; Operator = 'BinaryOperator'; Description = 'x'; Status = 'Killed' }
+        [pscustomobject]@{ File = 'a.ps1'; Line = 2; Operator = 'BinaryOperator'; Description = 'y'; Status = 'TimedOut' }
+        [pscustomobject]@{ File = 'a.ps1'; Line = 3; Operator = 'BooleanLiteral'; Description = 'z'; Status = 'Survived' }
+    )
 }
 
 Describe 'Get-PSMutationScore' {
@@ -347,13 +356,64 @@ Describe 'the contract a consumer actually depends on' {
             (Get-Content $out -Raw | ConvertFrom-Json).PSObject.Properties.Name |
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
-                    'mutationScore', 'total', 'killed', 'survived',
+                    'mutationScore', 'total', 'killed', 'survived', 'timedOut',
                     'declaredEquivalent', 'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
         }
         finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+}
+
+Describe 'a timeout scores with the kills but is counted apart from them' {
+    # "The suite proved this fault is caught" and "the suite hung and we assumed so" are
+    # different claims. Folded together, a suite that is merely slow inflates the score and
+    # nothing shows it happening.
+    It 'counts a timed-out mutant toward killed, so the headline score does not move' {
+        $s = Get-PSMutationScore -Results $script:withTimeout
+        $s.Killed | Should-Be 2
+        $s.Survived | Should-Be 1
+        $s.Score | Should-Be 66.7
+    }
+
+    It 'also counts it on its own, so a rising number is visible' {
+        (Get-PSMutationScore -Results $script:withTimeout).TimedOut | Should-Be 1
+        # The discriminating half: a run with no timeouts must report zero, not absent.
+        (Get-PSMutationScore -Results $script:mixed).TimedOut | Should-Be 0
+    }
+
+    It 'records timedOut in the report document' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-to-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:withTimeout -ReportPath $out -Thresholds $null | Out-Null
+            $doc = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+            $doc.timedOut | Should-Be 1
+            # killed INCLUDES the timeout, so a consumer reconciling killed + survived
+            # against total still balances.
+            $doc.killed | Should-Be 2
+            $doc.total | Should-Be 3
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'Get-PSMutationTimeoutNote' {
+    It 'says nothing when no mutant timed out' {
+        Get-PSMutationTimeoutNote -TimedOut 0 | Should-Be ''
+    }
+
+    It 'qualifies the score when mutants died on the clock' {
+        # Paired with the case above: a note that always fires and a note that never fires
+        # both pass a single-outcome fixture.
+        Get-PSMutationTimeoutNote -TimedOut 3 | Should-MatchString ([regex]::Escape('3 killed on the clock'))
+    }
+
+    It 'reaches the summary line' {
+        $summary = Get-PSMutationScore -Results $script:withTimeout
+        $lines = Get-PSMutationSummaryLine -Summary $summary -Results $script:withTimeout -High 85 -Low 70
+        ($lines.Text -join "`n") | Should-MatchString ([regex]::Escape('1 killed on the clock'))
+    }
 }
 
 Describe 'an equivalence declaration must identify exactly one mutant' {
