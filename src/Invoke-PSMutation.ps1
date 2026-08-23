@@ -124,7 +124,11 @@ function Invoke-PSMutation {
                 -Text ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout))
 
         $ops = Get-PSMutationOperatorList -Cfg $cfg
-        $cands = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly (Get-PSMutationCoveredLinesOnly -Cfg $cfg) -CoveredLines $baseline.CoveredLines
+        $selection = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly (Get-PSMutationCoveredLinesOnly -Cfg $cfg) -CoveredLines $baseline.CoveredLines
+        $cands = $selection.Candidates
+        # Derived here in the wiring and carried, because the pre-filter counts exist only
+        # inside the selection; recomputing them later means parsing every file again.
+        $exclusion = Get-PSMutationCoverageExclusion -PerFile $selection.PerFile
         $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $sandbox
         $reportPath = Join-Path $root $cfg.reportPath
 
@@ -156,10 +160,10 @@ function Invoke-PSMutation {
         $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
         # totalSeconds records how long the run took to start rather than to finish.
-        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance)
+        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion
         $band = Get-PSMutationScoreBand -Cfg $cfg
         Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationSummaryLine -Summary $summary -Results $results `
-                -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents)
+                -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents -Exclusion $exclusion)
 
         $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds
         return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit

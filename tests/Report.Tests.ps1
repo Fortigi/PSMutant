@@ -348,7 +348,8 @@ Describe 'the contract a consumer actually depends on' {
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
                     'mutationScore', 'total', 'killed', 'survived',
-                    'declaredEquivalent', 'staleEquivalents', 'thresholds', 'operators',
+                    'declaredEquivalent', 'skippedAsUncovered', 'filesWithNoMutants',
+                    'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
         }
         finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
@@ -394,6 +395,73 @@ Describe 'a report that cannot be written must fail the run' {
             # otherwise pass the existence check.
             $doc = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
             $doc.total | Should-Be 3
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'a score answers for what the coverage filter removed' {
+    # The filter drops uncovered candidates per file, silently, and it is the DEFAULT path.
+    # A file added to `mutate` before its tests exist, or one a refactor stopped exercising,
+    # contributes nothing and the score goes UP. Nothing in the console, the run result or
+    # the report said so; the only trace was that sourceHashes listed more files than
+    # mutants did, a reconciliation the reader had to do by hand.
+
+    It 'counts every candidate the filter removed' {
+        $perFile = @(
+            [pscustomobject]@{ File = 'src/Calc.ps1';    Produced = 2; Kept = 2 }
+            [pscustomobject]@{ File = 'src/Billing.ps1'; Produced = 5; Kept = 0 }
+            [pscustomobject]@{ File = 'src/Payroll.ps1'; Produced = 3; Kept = 1 }
+        )
+        (Get-PSMutationCoverageExclusion -PerFile $perFile).Skipped | Should-Be 7
+    }
+
+    It 'names the files that produced candidates and contributed none' {
+        $perFile = @(
+            [pscustomobject]@{ File = 'src/Calc.ps1';    Produced = 2; Kept = 2 }
+            [pscustomobject]@{ File = 'src/Billing.ps1'; Produced = 5; Kept = 0 }
+            [pscustomobject]@{ File = 'src/Payroll.ps1'; Produced = 3; Kept = 1 }
+        )
+        # Billing only. Payroll kept one, so it is visible in the score already; Calc kept
+        # everything. A fixture where every file is excluded would pass against code that
+        # names all of them.
+        (Get-PSMutationCoverageExclusion -PerFile $perFile).FilesWithNoMutants |
+            Should-Be 'src/Billing.ps1'
+    }
+
+    It 'does not name a file that produced nothing to begin with' {
+        # A file with no mutable construct is the vacuous-100% problem, not this one, and
+        # calling it "excluded by coverage" would send the reader to write a test that
+        # cannot help.
+        $perFile = @([pscustomobject]@{ File = 'src/Empty.ps1'; Produced = 0; Kept = 0 })
+        $x = Get-PSMutationCoverageExclusion -PerFile $perFile
+        $x.Skipped | Should-Be 0
+        $x.FilesWithNoMutants.Count | Should-Be 0
+    }
+
+    It 'says nothing when the filter removed nothing' {
+        $none = [pscustomobject]@{ Skipped = 0; FilesWithNoMutants = @() }
+        Get-PSMutationExclusionLine -Exclusion $none | Should-Be ''
+    }
+
+    It 'qualifies the score, naming the files, when it removed something' {
+        $some = [pscustomobject]@{ Skipped = 8; FilesWithNoMutants = @('src/Billing.ps1', 'src/Payroll.ps1') }
+        $line = Get-PSMutationExclusionLine -Exclusion $some
+        $line | Should-MatchString ([regex]::Escape('8 mutant(s) skipped as uncovered'))
+        # The names, not just the count: a number sends the reader looking, a name is
+        # something they can act on.
+        $line | Should-MatchString ([regex]::Escape('src/Billing.ps1, src/Payroll.ps1'))
+    }
+
+    It 'records both numbers in the report document' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-excl-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            $excl = [pscustomobject]@{ Skipped = 8; FilesWithNoMutants = @('src/Billing.ps1') }
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Exclusion $excl | Out-Null
+            $doc = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+            $doc.skippedAsUncovered | Should-Be 8
+            $doc.filesWithNoMutants | Should-Be 'src/Billing.ps1'
         }
         finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }

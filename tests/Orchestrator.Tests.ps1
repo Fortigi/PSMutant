@@ -41,7 +41,15 @@ Describe 'Invoke-PSMutation' {
         Mock Remove-PSMutationSandbox { }
         Mock Invoke-PSMutationBaseline { @{ Passed = $true; DurationSeconds = 2.0; CoveredLines = @{} } }
         Mock Get-PSMutationSourceHashMap { @{ 'src/a.ps1' = 'hash' } }
-        Mock Select-PSMutationCandidate { , @('cand-1', 'cand-2') }
+        # Returns candidates AND the per-file tally the coverage filter produced. A bare
+        # array here binds $null to -PerFile downstream, which is the shape the real function
+        # no longer has.
+        Mock Select-PSMutationCandidate {
+            [pscustomobject]@{
+                Candidates = @('cand-1', 'cand-2')
+                PerFile    = @([pscustomobject]@{ File = 'src/a.ps1'; Produced = 2; Kept = 2 })
+            }
+        }
         Mock Invoke-PSMutationLoop {
             , @(
                 [pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 1; Operator = 'BinaryOperator'; Description = 'eq to ne'; Status = 'Killed' }
