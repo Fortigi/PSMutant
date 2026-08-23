@@ -165,8 +165,11 @@ function Invoke-PSMutant {
         Evaluate one mutant: splice it into its SANDBOX file, run the covering tests
         under a timeout, classify, and restore the sandbox file for the next mutant.
     .OUTPUTS
-        'Killed' | 'Survived' -- Survived only if the suite still fully passes; any
-        failure OR a timeout (a runaway mutant) counts as Killed.
+        'Killed' | 'Survived' | 'TimedOut' -- Survived only if the suite still fully
+        passes. A timeout scores WITH the kills, because a mutant that hangs the suite is a
+        fault, but it is reported apart from them: "the suite proved this fault is caught"
+        and "the suite hung and we assumed so" are different claims and only the first is
+        evidence. Folded together, a suite that is merely too slow inflates the score.
     #>
     [OutputType([string])]
     [CmdletBinding()]
@@ -180,7 +183,11 @@ function Invoke-PSMutant {
     try {
         [System.IO.File]::WriteAllText($Candidate.File, $MutatedContent)
         $outcome = Invoke-PSBoundedPester -CoveringTests $CoveringTests -TimeoutSeconds $TimeoutSeconds
-        if ($outcome -eq 'Passed') { return 'Survived' } else { return 'Killed' }
+        if ($outcome -eq 'Passed') { return 'Survived' }
+        # Invoke-PSBoundedPester already distinguishes this; the verdict used to be
+        # discarded one line later, which is the whole of the bug.
+        if ($outcome -eq 'TimedOut') { return 'TimedOut' }
+        return 'Killed'
     }
     finally {
         [System.IO.File]::WriteAllText($Candidate.File, $original)
