@@ -356,6 +356,49 @@ Describe 'the contract a consumer actually depends on' {
 
 }
 
+Describe 'a report that cannot be written must fail the run' {
+    # The write used to be non-terminating, so a bad reportPath printed "Report: <path>" for
+    # a file nothing had written and the run returned Score=100, ExitCode=0. Both cases below
+    # are ordinary config mistakes, not exotic ones.
+
+    It 'throws when the report directory cannot be created' {
+        # A FILE sits where the parent directory has to go, so creating it is impossible.
+        # Portable: this fails the same way on Windows and Linux, unlike a permissions or
+        # path-length fixture.
+        #
+        # Honest about what this pins: it passes against the PRE-FIX code too, because that
+        # particular failure was already terminating. It holds the contract -- a write that
+        # cannot happen stops the run -- but the test that actually discriminates this fix is
+        # the bracket one below. -ErrorAction Stop covers the causes that are not portably
+        # reproducible: a locked file, a read-only directory, a path over the length limit.
+        $blocker = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-block-$([guid]::NewGuid())"
+        Set-Content -LiteralPath $blocker -Value 'not a directory'
+        try {
+            $doomed = Join-Path $blocker 'sub/report.json'
+            { Write-PSMutationReport -Results $script:mixed -ReportPath $doomed -Thresholds $null } |
+                Should-Throw
+        }
+        finally { Remove-Item -LiteralPath $blocker -Force }
+    }
+
+    It 'writes a report whose path contains a bracket' {
+        # The kept half of the pair. Without it the test above passes against a writer that
+        # refuses EVERY path, which is not the fix. A bracket is a wildcard to Set-Content
+        # without -LiteralPath, so this path used to fail while looking perfectly ordinary.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-rep[1]-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'report.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+            Should-BeTrue -Actual (Test-Path -LiteralPath $out)
+            # Read it back literally: a report that exists but holds nothing readable would
+            # otherwise pass the existence check.
+            $doc = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+            $doc.total | Should-Be 3
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 Describe 'an equivalence declaration must identify exactly one mutant' {
     BeforeAll {
         # Two mutants that legitimately share File:Line:Description. This is not contrived:
