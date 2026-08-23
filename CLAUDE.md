@@ -714,7 +714,10 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   planted symlink does not redirect it; a hard kill leaves tracked source byte-identical **by
   construction** rather than by cleanup, since the real files are never opened for write; no
   config value reaches an eval sink; zero mutants scores 0% and exits 1, not a vacuous 100%; two
-  concurrent runs never sweep each other's live sandbox. `ROADMAP.md` carries the full list.
+  concurrent runs never sweep each other's live sandbox. The full list is in `ROADMAP.md` on
+  the long-lived `docs/sequencing` branch, deliberately **not** on `main`: the roadmap is a
+  working artefact rather than a description of the repo, and two copies of a plan drift.
+  Confirming a negative belongs there whether or not it is convenient to reach.
 
   The vacuity check is the part that is easy to skip. "I changed X and nothing broke" means
   nothing until you have also confirmed that a change which *should* break it does -- a fixture
