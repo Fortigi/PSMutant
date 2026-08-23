@@ -59,13 +59,17 @@ Describe 'Invoke-PSMutant isolation' {
 }
 
 Describe 'Timeout safety (the loop-body hang the loop guard cannot catch)' {
-    It 'cuts off a non-terminating mutant and reports Killed without hanging' {
+    It 'cuts off a non-terminating mutant and reports TimedOut without hanging' {
         # Mutating the loop BODY increment defeats the guarded `while ($i -lt 3)` loop.
+        # This is the ONE place the timeout path is proven against a real runspace rather
+        # than a mocked outcome, so it is also where the verdict has to be the honest one:
+        # the suite never finished, so it never showed this fault being caught. TimedOut
+        # still scores with the kills; it is reported apart from them.
         $infinite = $script:original -replace '\$i = \$i \+ 1', '$i = $i - 1'
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $status = Invoke-PSMutant -Candidate $script:cand -MutatedContent $infinite -CoveringTests @($script:countTest) -TimeoutSeconds 3
         $sw.Stop()
-        $status | Should-Be 'Killed'
+        $status | Should-Be 'TimedOut'
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 20   # bounded, not hung
     }
 }
