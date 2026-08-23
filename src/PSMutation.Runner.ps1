@@ -98,6 +98,11 @@ function Select-PSMutationCandidate {
     return , $out.ToArray()
 }
 
+# The outcomes this module understands from a covering-test run. Pester's run-level result
+# supplies 'Passed' and 'Failed'; 'TimedOut' is minted here by Invoke-PSBoundedPester. Anything
+# outside this set is refused rather than scored -- see Invoke-PSMutant.
+$script:PSMutationKnownOutcomes = @('Passed', 'Failed', 'TimedOut')
+
 function Invoke-PSBoundedPester {
     <#
     .SYNOPSIS
@@ -177,6 +182,21 @@ function Invoke-PSMutant {
         # Invoke-PSBoundedPester already distinguishes this; the verdict used to be
         # discarded one line later, which is the whole of the bug.
         if ($outcome -eq 'TimedOut') { return 'TimedOut' }
+        # A CLOSED vocabulary. Everything above is a value this module understands; anything
+        # else is an outcome nobody modelled, and the fall-through below scores it Killed --
+        # toward the flattering answer, silently, with no test failing.
+        #
+        # The collapse is correct for every shipping Pester, whose run-level result is
+        # two-valued. The risk is a WIDENED vocabulary rather than a renamed one: a rename
+        # fails loudly at the baseline, which compares against the literal 'Passed', but a
+        # third state that coexists with it leaves the baseline green and scores every mutant
+        # returning it as killed. That is a perfect score over tests that proved nothing --
+        # the same shape as the Pester-collision bug, reached through a door its fix left open.
+        if ($outcome -notin $script:PSMutationKnownOutcomes) {
+            throw ("The covering tests returned an outcome this version of PSMutant does not " +
+                "model: '$outcome'. Known outcomes are $($script:PSMutationKnownOutcomes -join ', '). " +
+                "Scoring it would guess, and the guess flatters the score.")
+        }
         return 'Killed'
     }
     finally {
