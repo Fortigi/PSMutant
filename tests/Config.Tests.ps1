@@ -640,6 +640,21 @@ Describe 'a config path answers for itself before anything uses it' {
         Should-BeTrue -Actual (Test-PSMutationPathEscapes -Path '../outside' -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
     }
 
+    It 'sees an escape in a path that resolves to exactly the parent' {
+        # EXACTLY '..', not '../something'. The check is three clauses joined by -or, and
+        # '../outside' satisfies the StartsWith clause on its own -- so it passes even when
+        # the clauses are joined wrongly, and only a path whose relative form IS '..' can
+        # tell the difference. A config naming the directory above the root lands here.
+        Should-BeTrue -Actual (Test-PSMutationPathEscapes -Path '..' -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
+    It 'sees an escape in an absolute path that leaves the root behind entirely' {
+        # The first clause on its own: an absolute path elsewhere is not under the root at
+        # all, so relative-ising it returns something ROOTED rather than a '..' chain.
+        $elsewhere = Join-Path ([System.IO.Path]::GetTempPath()) 'somewhere-else/x.ps1'
+        Should-BeTrue -Actual (Test-PSMutationPathEscapes -Path $elsewhere -Root (Join-Path ([System.IO.Path]::GetTempPath()) 'anchor'))
+    }
+
     It 'does not see an escape in a path that resolves back inside' {
         # `src/../src` is `src`. Matching on '..' as a string would reject a config that was
         # never ambiguous, which is why this asks for the resolved position instead.
