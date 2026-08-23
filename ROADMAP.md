@@ -8,7 +8,12 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-21, after 0.3.1. 42 issues open.
+Snapshot 2026-08-23, after 0.3.1 and with 0.3.2 tagged but unreleased. 42 issues open.
+
+Since the last snapshot: Windows joined the CI matrix (#32), `ci.yml` dropped to
+least privilege (#94), the gates learned to see a test file that never ran (#122),
+and `Get-PSMutationScore` became a per-set fold (#56). Removed rather than ticked, per the
+rule above.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -77,9 +82,19 @@ work rather than here.
 predictable `/tmp/psmut-sandbox-<pid>` path leaks the mutated source to another local user. CI
 runners are single-tenant and Windows temp is per-user, so this reaches shared Linux build
 hosts and nothing else. It wants the same change as **#53**, which already proposes moving
-isolation off `$PID` -- do them together. **#94** is a missing `permissions` block on `ci.yml`
-against a `write` default, which matters because that job installs four modules from the
-gallery and then executes them.
+isolation off `$PID` -- do them together. (**#94**, the missing `permissions` block on
+`ci.yml`, shipped: every workflow now runs `contents: read` against a repository default that
+is write-scoped.)
+
+**Two more found by running the gates rather than by auditing them.** **#124**: a run
+suspended overnight and never finished -- 333 seconds of CPU across 875 minutes. Each MUTANT is
+bounded; the RUN is not, and there is no output until it completes, so a hung run and a slow
+one are the same observation. CI is covered by `timeout-minutes`; a developer running it by
+hand is not, and the stranded sandbox survives every subsequent sweep because its owning
+process is still alive. **#123 was filed and closed the same day**: the self-mutation gate
+appeared to generate a different mutant set on Windows, and did not -- 447 generated on both
+platforms, same score. It is closed with the counter-measurement rather than deleted, because
+it records how a real divergence would present if `coveredLinesOnly` ever does bite.
 
 **What the audit could NOT break is worth as much as what it could**, and is recorded so it is
 not re-tested: the sweep cannot be redirected through a junction or symlink -- it deletes the
@@ -181,6 +196,20 @@ had happen twice with its own documentation.
 5. **#8** diff-scoped runs.
 
 ---
+
+## The sibling repo, and the release path
+
+- **#117** -- the parity tracker. The two Fortigi modules gate each other, so it is easy to
+  assume their CI is comparable; it was not, and nothing compared them. Most rows are closed
+  now on both sides. The one that mattered here was the OS matrix: this module's headline
+  guarantee is a PATH property and it was proven on one platform, while the pure AST analyser
+  next door was proven on two. Keep the tracker until the last row is closed.
+- **#116** -- nothing requires a second person for an irreversible Gallery publish. A tag is
+  not a commit, so the ruleset protecting `main` stops exactly where the consequences become
+  permanent. A repository setting rather than code, and for a single-maintainer project it is
+  a decision to record either way.
+- **#115** -- nothing fails when `main` claims a version already on the gallery. Do it with
+  #116; both are the release path, and both are cheap.
 
 ## Low-coupling, good fillers
 
