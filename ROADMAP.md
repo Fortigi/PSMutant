@@ -13,7 +13,8 @@ Snapshot 2026-08-24, after **0.3.2 shipped**, with six more fixes unreleased. 30
 Since the last snapshot: Windows joined the CI matrix (#32), `ci.yml` dropped to
 least privilege (#94), the gates learned to see a test file that never ran (#122),
 `Get-PSMutationScore` became a per-set fold (#56), the complexity gate moved two majors to
-PSComplexity 0.3.0, and `publish.yml` stopped interpolating the tag name into a shell (#127).
+PSComplexity 0.3.0 -- with 0.4.0 now prepared next door, so that pin is due again -- and
+`publish.yml` stopped interpolating the tag name into a shell (#127).
 Removed rather than ticked, per the rule above.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
@@ -22,6 +23,12 @@ exception, because it is one-way and cannot drift out of date the way a checklis
 letters keep their original letters even as earlier ones disappear, so "Wave A" in an existing
 commit or PR still resolves.
 
+**So the gap in the letters is deliberate, and this is what filled it.** A, B and C are gone
+because they shipped -- the sandbox and scoring foundations, the equivalence-declaration work,
+and the operator set. D through H remain, out of order on the page because H arrived last and
+outranks most of what was already queued. If you are looking for a wave that is not here, it
+was finished; the issues are the record of what was in it.
+
 An entry leaves when the **work** is done, which can be slightly before its issue closes -- so
 the count above may briefly exceed what is listed here. Ordering is the only thing this file
 claims; the issues remain the record of what is open.
@@ -29,8 +36,12 @@ claims; the issues remain the record of what is open.
 **0.3.0 is out**, which changes one thing about sequencing rather than many: the public surface
 is now written down and published -- `Invoke-PSMutation`, the report JSON, and the two schemas in
 `schemas/v1/`. Anything that changes those shapes is a **breaking** change with a version cost
-attached, where before 0.3.0 it was free. #54 and #4 are the two queued items that do, and both
-are better early in a cycle than late.
+attached, where before 0.3.0 it was free. **#54** is the queued item that does, and it is better
+early in a cycle than late.
+
+*(This paragraph used to name "#54 and #4". There is no #4 in this repo -- that was the sibling's
+numbering leaking in. Corrected rather than quietly dropped, because a roadmap that cites an
+issue nobody can find is worse than one that cites none.)*
 
 ---
 
