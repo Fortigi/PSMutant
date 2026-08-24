@@ -158,13 +158,21 @@ function Invoke-PSMutation {
             return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance
         }
 
+        # Said before the loop, because that is when it can still be acted on -- the cost it
+        # names is paid on every mutant that follows.
+        $unmapped = Get-PSMutationUnmappedMutateFile -MutateFiles $t.Mutate -TestsByFile $t.TestsByFile
+        if ($unmapped.Count -gt 0) {
+            Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Muted' `
+                    -Text ("  {0} mutate file(s) have no tests entry, so every one of their mutants runs the WHOLE suite: {1}" -f `
+                            $unmapped.Count, (($unmapped | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')))
+        }
         Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Detail' `
                 -Text "  Mutants to evaluate: $($cands.Count)`n")
 
         $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
         # totalSeconds records how long the run took to start rather than to finish.
-        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion
+        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion -UnmappedFiles $unmapped
         $band = Get-PSMutationScoreBand -Cfg $cfg
         Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationSummaryLine -Summary $summary -Results $results `
                 -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents -Exclusion $exclusion)

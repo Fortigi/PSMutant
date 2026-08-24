@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-23, after **0.3.2 shipped**, with four more fixes unreleased. 36 issues open.
+Snapshot 2026-08-24, after **0.3.2 shipped**, with six more fixes unreleased. 30 issues open.
 
 Since the last snapshot: Windows joined the CI matrix (#32), `ci.yml` dropped to
 least privilege (#94), the gates learned to see a test file that never ran (#122),
@@ -51,8 +51,10 @@ self-mutation.
 files out of the score in silence), #98 (the report write failed non-terminatingly and the run
 still returned `Score=100, ExitCode=0`) and #7 (a timeout scored as a plain kill) are all fixed
 and unreleased. Each made the score go **up**, which is the direction that never announces
-itself. What is left of the class: **#106** (a file listed twice doubles the denominator) and
-**#108** (a missing `tests` entry silently runs the whole suite for every mutant).
+itself. **The class is closed.** #106 and #108 went last: a file listed twice doubled every
+published count and made `(File, Id)` stop identifying one mutant, and a `mutate` file with no
+`tests` entry ran the whole suite for every one of its mutants -- correct, never less thorough,
+and invisible until it was disclosed on the console and in the report.
 
 **The config-path cluster is closed, as one concept rather than four guards.** #100, #103,
 #104 and #109 are fixed: two primitives that answer for a raw path before anything uses it, and
@@ -244,11 +246,17 @@ Pick these up between waves; none blocks anything.
   What remains is the topic the help still points at and which does not exist.
 - **#36** end-to-end exact counts, **#43** cross-Context `$script:` coupling, **#35** consumer-shaped layout.
 - **#22** sandbox self-mutation, **#9** killed-by map.
-- **#89** nothing watches the pinned dependencies. Split unevenly: the `github-actions` half
-  is a ten-line `dependabot.yml` and could go in beside anything, while `.github/pins.env`
-  has no tool that reads it and needs a decision rather than a config file. Worth doing the
-  cheap half early -- a frozen PSScriptAnalyzer does not weaken the lint gate visibly, it
-  just stops finding things, which is this project's own failure mode pointed inward.
+*#89 is gone.* Both halves shipped, and the split was real: Dependabot for the action SHAs,
+  because `uses:` does not expand variables and looking at a SHA tells you nothing about
+  whether something newer exists; a weekly job over `.github/pins.env` for the modules. It
+  earned itself on day one, finding two stale action SHAs per repo.
+
+  One thing came out of running it that reading could not have found: the first version asked
+  "is there a newer version" of every pin and reported `PESTER_COMPAT_VERSION` 5.8.0 as stale
+  against 6.1.0. Acting on that would have been exactly wrong -- that pin is deliberately old
+  so the compatibility guard runs under the Pester the suite does NOT use, and at 6.1.0 it
+  would equal the estate pin and prove nothing, while looking more up to date than a pin that
+  works. Its invariant is difference, not freshness.
 
 ---
 

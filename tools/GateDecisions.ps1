@@ -119,6 +119,68 @@ function Get-PSMutantUnloadedFile {
     return $unloaded
 }
 
+function Get-PSMutantCompatPinFault {
+    <#
+    .SYNOPSIS
+        The fault, if any, in the deliberately-old compatibility pin.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$EstateVersion,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$CompatVersion
+    )
+    # "Is there a newer version" is the WRONG QUESTION for this pin, and asking it was a real
+    # mistake caught by running the watcher: it reported 5.8.0 as stale against 6.1.0. The
+    # compatibility guard exists to run a real mutation under the Pester the suite does NOT
+    # use, proving the manifest's >= 5.0.0 promise. Bumped to the newest, it would equal the
+    # estate pin and prove nothing -- while looking more up to date.
+    #
+    # So the invariant is difference, not freshness.
+    if ([string]::IsNullOrWhiteSpace($EstateVersion) -or [string]::IsNullOrWhiteSpace($CompatVersion)) {
+        return 'PESTER_VERSION and PESTER_COMPAT_VERSION must both be set: the compatibility guard runs under the one the suite does not.'
+    }
+    if ([version]$CompatVersion -eq [version]$EstateVersion) {
+        return ("PESTER_COMPAT_VERSION ($CompatVersion) equals PESTER_VERSION. The compatibility " +
+            'guard would then run under the same Pester as the suite and prove nothing about the ' +
+            "manifest's >= 5.0.0 promise -- while looking more up to date than a pin that works.")
+    }
+    if ([version]$CompatVersion -gt [version]$EstateVersion) {
+        return ("PESTER_COMPAT_VERSION ($CompatVersion) is newer than PESTER_VERSION ($EstateVersion). " +
+            'The guard is meant to prove the module works under an OLDER Pester than the estate uses.')
+    }
+    return $null
+}
+
+function Get-PSMutantStalePinFault {
+    <#
+    .SYNOPSIS
+        The fault, if any, when a pinned module has a newer release available.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$Name,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Pinned,
+        [Parameter(Mandatory)] [AllowEmptyString()] [AllowNull()] [string]$Latest
+    )
+    # A pin is a decision that was correct on the day it was made. Without a watcher it decays
+    # into a decision nobody is making, and the failure is asymmetric: a stale pin never breaks
+    # the build, it just quietly stops protecting you. The sibling repo's pin on THIS module sat
+    # at 0.1.0 across two majors -- one of which fixed a bug that scored every mutant killed --
+    # and its CI was green throughout.
+    if ([string]::IsNullOrWhiteSpace($Pinned)) { return "$Name has no pinned version in .github/pins.env." }
+    # "Could not look" is not "nothing newer". Reported as its own fault, because a checker
+    # that reads an unreachable gallery as good news has stopped being able to fail at all.
+    if ([string]::IsNullOrWhiteSpace($Latest)) {
+        return "$Name is pinned at $Pinned and the gallery did not answer, so freshness is unknown."
+    }
+    # Compared as versions, not strings: 6.1.0 sorts after 10.0.0 as text, so a pin AHEAD of
+    # the gallery -- which a prerelease or a yanked version leaves behind -- would read stale.
+    if ([version]$Latest -le [version]$Pinned) { return $null }
+    return "$Name is pinned at $Pinned; $Latest is available."
+}
+
 function Get-PSMutantPinValue {
     <#
     .SYNOPSIS

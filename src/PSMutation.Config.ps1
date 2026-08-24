@@ -393,6 +393,51 @@ function Get-PSMutationMissingSandboxPath {
         "'sandboxSubtrees', or point -SourceRoot at the directory that contains them all.")
 }
 
+function Get-PSMutationDuplicateMutateFault {
+    <#
+    .SYNOPSIS
+        The fault, if any, when the same file reaches the mutate list more than once.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Resolved)
+    # Asked on the RESOLVED paths, not the raw config strings: `src/a.ps1` and
+    # `src/../src/a.ps1` are the same file and double the run just as surely, and a validator
+    # comparing strings would pass the second one. Case-insensitively, because Windows would
+    # otherwise let `SRC/a.ps1` through and Linux would not -- a config that fails on one
+    # platform and not the other is worse than one that fails on both.
+    $seen = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    $dupes = [System.Collections.Generic.List[string]]::new()
+    foreach ($r in $Resolved) { if (-not $seen.Add($r)) { $dupes.Add($r) } }
+    if ($dupes.Count -eq 0) { return $null }
+    # Every mutant is generated twice, so `total`, `killed` and `survived` in the report -- a
+    # published contract -- are all doubled, the run costs twice what it should, and (File, Id)
+    # stops identifying one mutant, which is what a recheck dedupes on.
+    return ("The 'mutate' list names the same file more than once: " +
+        "$(($dupes | Sort-Object -Unique) -join ', '). Every mutant in it would be generated " +
+        'and evaluated twice, doubling the run and the counts the report publishes, and ' +
+        '(File, Id) would no longer identify one mutant -- which is what -RecheckFrom matches on.')
+}
+
+function Get-PSMutationUnmappedMutateFile {
+    <#
+    .SYNOPSIS
+        Mutate files with no tests entry, which fall back to running the whole suite.
+    #>
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$MutateFiles,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [hashtable]$TestsByFile
+    )
+    # The fallback is correct -- the whole suite is slower and never less thorough, so the
+    # score cannot be wrong because of it. What it is not, is visible. Adding a file to
+    # `mutate` and forgetting its `tests` entry is a config change with no error, no warning
+    # and a per-mutant cost measured at 74% on a four-mutant fixture; on a several-hundred
+    # mutant run it is the difference between minutes and tens of minutes.
+    return [string[]]@($MutateFiles | Where-Object { -not $TestsByFile.ContainsKey($_) })
+}
+
 function Get-PSMutationSandboxPlan {
     # Translate the config's source-relative mutate/tests into sandbox absolute paths.
     #
@@ -411,8 +456,13 @@ function Get-PSMutationSandboxPlan {
         $byFile[(& $toSb $prop.Name)] = $vals
         $vals | ForEach-Object { $all.Add($_) }
     }
+    $mutate = @($Cfg.mutate | ForEach-Object { & $toSb $_ })
+    # Here rather than in Assert-PSMutationConfig, which sees config STRINGS: two spellings of
+    # one path are only equal once resolved, and this is the first place that is true.
+    $dupe = Get-PSMutationDuplicateMutateFault -Resolved $mutate
+    if ($dupe) { throw $dupe }
     return @{
-        Mutate      = @($Cfg.mutate | ForEach-Object { & $toSb $_ })
+        Mutate      = $mutate
         TestsByFile = $byFile
         AllTests    = $all.ToArray()
     }

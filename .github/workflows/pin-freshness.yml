@@ -1,0 +1,65 @@
+# Watches the module pins. Action SHAs are Dependabot's half -- see .github/dependabot.yml.
+#
+# A pin is a decision that was correct on the day it was made. Nothing watched them, and the
+# failure is asymmetric: a stale pin never breaks the build, it just quietly stops protecting
+# you. The sibling repo's pin on THIS module sat at 0.1.0 across two majors -- one of which
+# fixed a bug that scored every mutant killed -- and its CI was green throughout.
+name: Pin freshness
+
+on:
+  schedule:
+    # Weekly, and deliberately not on push: a pin does not go stale because someone committed.
+    - cron: '0 3 * * 1'
+  workflow_dispatch:
+
+concurrency:
+  group: pin-freshness
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+  issues: write
+
+jobs:
+  check:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+
+      - name: Check pinned modules against the gallery
+        id: check
+        shell: pwsh
+        run: |
+          # The script REPORTS; it does not throw. A stale pin is a decision to make rather
+          # than a build to break, so the finding becomes an issue below.
+          $faults = @(./tools/Test-PSMutantPinFreshness.ps1)
+          if ($faults.Count -eq 0) { Write-Host 'Every pinned module is current.'; return }
+          $faults | ForEach-Object { Write-Host "PIN: $_" }
+          $body = "The scheduled pin check found dependencies that have moved on.`n`n" +
+                  (($faults | ForEach-Object { "- $_" }) -join "`n") +
+                  "`n`nA pin is a decision that was correct on the day it was made. Bump it or " +
+                  "record why it stays, but do not leave it undecided -- a stale pin never breaks " +
+                  "the build, it just stops protecting you.`n`nNote PESTER_COMPAT_VERSION is " +
+                  "deliberately OLD: the compatibility guard runs under the Pester the suite does " +
+                  "not use. It is checked for being different from the estate pin, not for being newest."
+          "body<<EOF"  >> $env:GITHUB_OUTPUT
+          $body        >> $env:GITHUB_OUTPUT
+          "EOF"        >> $env:GITHUB_OUTPUT
+
+      - name: Open or update the tracking issue
+        if: steps.check.outputs.body != ''
+        env:
+          GH_TOKEN: ${{ github.token }}
+          BODY: ${{ steps.check.outputs.body }}
+        shell: pwsh
+        run: |
+          # One issue, reopened and rewritten, rather than a new one every week -- a watcher
+          # that files duplicates gets muted, which is the same outcome as not watching.
+          $title = 'Pinned dependencies have moved on'
+          $existing = gh issue list --state all --search "$title in:title" --json number,state --limit 1 | ConvertFrom-Json
+          if ($existing) {
+            gh issue edit $existing[0].number --body $env:BODY
+            if ($existing[0].state -eq 'CLOSED') { gh issue reopen $existing[0].number }
+          }
+          else { gh issue create --title $title --body $env:BODY }

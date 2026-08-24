@@ -169,6 +169,28 @@ Describe 'Invoke-PSMutation' {
         Should-NotInvoke Invoke-PSMutationBaseline
     }
 
+    It 'says which mutate files will run the whole suite, before the loop starts' {
+        # Through the real entry point, and BEFORE the loop, because the cost it names is paid
+        # on every mutant that follows -- afterwards it is an explanation, not a warning.
+        Mock Get-PSMutationSandboxPlan {
+            $sb = Join-Path $script:root 'sandbox'
+            @{
+                Mutate      = @((Join-Path $sb 'src/a.ps1'))
+                TestsByFile = @{}      # no entry for a.ps1 -- the fallback fires
+                AllTests    = @((Join-Path $sb 'tests/a.Tests.ps1'))
+            }
+        }
+        $out = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root 6>&1
+        ($out -join "`n") | Should-MatchString 'no tests entry'
+    }
+
+    It 'says nothing about the fallback when every mutate file is mapped' {
+        # The kept half. Without it, a line printed unconditionally would pass the test above
+        # and put a warning on every correct config.
+        $out = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root 6>&1
+        ($out -join "`n") | Should-NotMatchString 'no tests entry'
+    }
+
     It 'passes the resolved operator list and timeout down to the mutation loop' {
         # The orchestrator is wiring, so what can break here is a crossed wire: the
         # right values computed and then handed to the wrong parameter.

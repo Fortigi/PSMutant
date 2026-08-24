@@ -297,7 +297,10 @@ function Write-PSMutationReport {
         [hashtable]$Provenance = @{},
         # What the coverage filter removed. A score that cannot say what it excluded is the
         # same failure as one that cannot say what it declared equivalent.
-        $Exclusion = $null
+        $Exclusion = $null,
+        # Mutate files with no tests entry. Not a correctness problem -- the whole suite is
+        # never less thorough -- but a cost paid per mutant, and invisible until now.
+        [AllowEmptyCollection()] [string[]]$UnmappedFiles = @()
     )
     # The only place holding EVERY row, so the only place that can ask whether a
     # declaration matched nothing. The per-set fold no longer answers it.
@@ -328,6 +331,9 @@ function Write-PSMutationReport {
         # the config asked for is NOT behind this number. This one removes far more.
         skippedAsUncovered = [int]$Exclusion.Skipped
         filesWithNoMutants = @($Exclusion.FilesWithNoMutants)
+        # Recorded beside the other disclosures: a run that took twice as long for a reason
+        # nobody chose should say so somewhere a CI job can read afterwards.
+        filesWithoutTestMapping = @($UnmappedFiles)
         staleEquivalents = @($summary.StaleEquivalents)
         thresholds = $Thresholds
         # Recorded so a later -RecheckFrom can prove the mutant numbering in this
