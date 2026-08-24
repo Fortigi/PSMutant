@@ -5,7 +5,36 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+### Internal
+
+- **Pinned dependencies are watched instead of only written down.** A weekly job checks each
+  pinned module against the gallery and opens one tracking issue when any has moved on;
+  Dependabot watches the action SHAs, which `pins.env` structurally cannot hold because `uses:`
+  does not expand variables and a SHA cannot be read to learn whether something newer exists.
+  An unreachable gallery is reported as **unknown** rather than as current, because a watcher
+  that reads "could not look" as "nothing newer" has stopped being able to fail.
+
+  `PESTER_COMPAT_VERSION` is judged on **difference, not freshness**: it is deliberately old,
+  because the compatibility guard runs a real mutation under the Pester the suite does *not*
+  use. Bumped to the newest it would equal the estate pin and prove nothing about the
+  manifest's `>= 5.0.0` promise -- while looking more up to date than a pin that works.
+
 ### Fixed
+
+- **A file listed twice in `mutate` is refused instead of doubling the run.** Every mutant was
+  generated and evaluated twice, so `total`, `killed` and `survived` in the report -- a published
+  contract -- were all doubled, the run cost twice what it should, and `(File, Id)` stopped
+  identifying one mutant, which is what `-RecheckFrom` matches on. Checked on the **resolved**
+  paths, so `src/a.ps1` and `src/../src/a.ps1` are caught as the one file they are.
+
+- **A `mutate` file with no `tests` entry now says so.** The fallback runs the whole suite for
+  every one of that file's mutants -- correct, never less thorough, and measured at 74% slower on
+  a four-mutant fixture. On a several-hundred-mutant run it is the difference between minutes and
+  tens of minutes, and it was invisible: adding a file to `mutate` and forgetting its `tests`
+  entry produced no error, no warning and no symptom other than a slow run. Named on the console
+  before the loop starts, where it can still be acted on, and recorded as `filesWithoutTestMapping`
+  in the report -- because the console line is suppressed by `-Quiet`, which is how CI runs it.
+
 
 - **Config paths get a resolver, like every other config value.** Four failures shared one
   missing concept, and each used to fail in its own place with a message naming neither the key

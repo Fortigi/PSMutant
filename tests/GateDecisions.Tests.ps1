@@ -207,3 +207,63 @@ Describe 'Get-PSMutantTestRunFault' {
     }
 }
 
+Describe 'a pin is watched, not just written down' {
+    # A pin is a decision that was correct on the day it was made. Nothing watched them, and
+    # the failure is asymmetric: a stale pin never breaks the build, it just quietly stops
+    # protecting you. The sibling repo's pin on THIS module sat at 0.1.0 across two majors --
+    # one of which fixed a bug that scored every mutant killed -- and its CI stayed green.
+
+    It 'reports a pin the gallery has moved past' {
+        Get-PSMutantStalePinFault -Name 'Pester' -Pinned '5.0.0' -Latest '6.1.0' |
+            Should-MatchString ([regex]::Escape('6.1.0 is available'))
+    }
+
+    It 'says nothing when the pin is the newest release' {
+        # First kept case: a checker that faulted on every pin would pass the test above and
+        # file an issue every week about nothing.
+        Should-BeNull -Actual (Get-PSMutantStalePinFault -Name 'Pester' -Pinned '6.1.0' -Latest '6.1.0')
+    }
+
+    It 'says nothing when the pin is ahead of the gallery' {
+        # Compared as versions, not strings: as text, 6.1.0 sorts after 10.0.0. A prerelease
+        # or a yanked version leaves a pin ahead, and calling that stale would send someone to
+        # downgrade.
+        Should-BeNull -Actual (Get-PSMutantStalePinFault -Name 'Pester' -Pinned '10.0.0' -Latest '6.1.0')
+    }
+
+    It 'reports an unreachable gallery as unknown, not as current' {
+        # The case that decides whether this is worth having. Find-Module returns nothing both
+        # when a module is current and when the gallery cannot be reached, so treating them
+        # alike would make every run report all-clear -- a watcher that has silently stopped
+        # being able to fail, which is the very shape it was built to catch.
+        Get-PSMutantStalePinFault -Name 'Pester' -Pinned '6.1.0' -Latest '' |
+            Should-MatchString 'freshness is unknown'
+    }
+}
+
+Describe 'the compatibility pin is judged on difference, not freshness' {
+    # "Is there a newer version" is the WRONG QUESTION here, and asking it was a real mistake:
+    # the first version of the watcher reported 5.8.0 as stale against 6.1.0. Taking that
+    # advice would have made the compatibility guard run under the same Pester as the suite --
+    # proving nothing about the manifest's >= 5.0.0 promise, while looking more up to date.
+
+    It 'refuses a compat pin equal to the estate pin' {
+        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion '6.1.0' |
+            Should-MatchString 'prove nothing'
+    }
+
+    It 'refuses a compat pin NEWER than the estate pin' {
+        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion '7.0.0' |
+            Should-MatchString ([regex]::Escape('is newer than'))
+    }
+
+    It 'accepts a compat pin that is deliberately older' {
+        # The kept case, and the configuration this repo actually ships: 5.8.0 against 6.1.0.
+        Should-BeNull -Actual (Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion '5.8.0')
+    }
+
+    It 'refuses either pin being absent' {
+        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion '' |
+            Should-MatchString 'must both be set'
+    }
+}

@@ -718,3 +718,63 @@ Describe 'a config path answers for itself before anything uses it' {
         Should-BeNull -Actual (Get-PSMutationMissingSandboxPath -Paths @($PSCommandPath) -Subtrees @('src'))
     }
 }
+
+Describe 'the mutate list answers for itself' {
+    # Two config mistakes with no symptom. One doubles every published count and the run; the
+    # other silently runs the entire suite for every mutant of the file it affects.
+
+    It 'refuses the same file listed twice, naming it' {
+        $why = Get-PSMutationDuplicateMutateFault -Resolved @('/r/src/a.ps1', '/r/src/b.ps1', '/r/src/a.ps1')
+        $why | Should-MatchString ([regex]::Escape('a.ps1'))
+        # The consequence, not just the fact: (File, Id) is what -RecheckFrom matches on.
+        $why | Should-MatchString 'RecheckFrom'
+    }
+
+    It 'refuses two spellings that resolve to one file' {
+        # The reason this asks the RESOLVED list rather than the config strings. A validator
+        # comparing raw text would pass this, and the run would still be doubled.
+        $same = [System.IO.Path]::GetFullPath('/r/src/a.ps1')
+        Should-NotBeNull -Actual (Get-PSMutationDuplicateMutateFault -Resolved @($same, $same))
+    }
+
+    It 'says nothing when every file appears once' {
+        # The kept half: a check that fired on any list would refuse every valid config.
+        Should-BeNull -Actual (Get-PSMutationDuplicateMutateFault -Resolved @('/r/src/a.ps1', '/r/src/b.ps1'))
+    }
+
+    It 'throws through the plan, not just the predicate' {
+        # The predicate can be right in both arms while the caller ignores what it returns --
+        # and the caller is one line that deletes clean with every other test still green.
+        $cfg = [pscustomobject]@{
+            mutate = @('src/a.ps1', 'src/a.ps1')
+            tests  = [pscustomobject]@{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
+        }
+        { Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $script:root -SandboxRoot (Join-Path $script:root 'sb') } |
+            Should-Throw -ExceptionMessage '*more than once*'
+    }
+
+    It 'builds a plan when every mutate file appears once' {
+        # Paired: a plan that threw on any list would refuse every valid config, and the test
+        # above would still pass.
+        $cfg = [pscustomobject]@{
+            mutate = @('src/a.ps1', 'src/b.ps1')
+            tests  = [pscustomobject]@{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
+        }
+        $plan = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $script:root -SandboxRoot (Join-Path $script:root 'sb')
+        $plan.Mutate.Count | Should-Be 2
+    }
+
+    It 'names a mutate file with no tests entry' {
+        $unmapped = Get-PSMutationUnmappedMutateFile -MutateFiles @('/r/src/a.ps1', '/r/src/b.ps1') `
+            -TestsByFile @{ '/r/src/a.ps1' = @('/r/tests/a.Tests.ps1') }
+        $unmapped | Should-Be '/r/src/b.ps1'
+    }
+
+    It 'names nothing when every mutate file is mapped' {
+        # Paired: a check that named every file would put a warning on every correct config,
+        # which is the fastest way to make people stop reading warnings.
+        $unmapped = Get-PSMutationUnmappedMutateFile -MutateFiles @('/r/src/a.ps1') `
+            -TestsByFile @{ '/r/src/a.ps1' = @('/r/tests/a.Tests.ps1') }
+        $unmapped.Count | Should-Be 0
+    }
+}

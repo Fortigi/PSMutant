@@ -358,6 +358,7 @@ Describe 'the contract a consumer actually depends on' {
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
                     'mutationScore', 'total', 'killed', 'survived', 'timedOut',
                     'declaredEquivalent', 'skippedAsUncovered', 'filesWithNoMutants',
+                    'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
         }
@@ -581,6 +582,20 @@ Describe 'a score answers for what the coverage filter removed' {
         $one = [pscustomobject]@{ Skipped = 3; FilesWithNoMutants = @('src/Billing.ps1') }
         $line = Get-PSMutationExclusionLine -Exclusion $one
         $line | Should-MatchString ([regex]::Escape('1 file(s) contributed none: src/Billing.ps1'))
+    }
+
+    It 'records the mutate files that fell back to the whole suite' {
+        # Through the writer, because a CI job reads the report and not the console -- and the
+        # console line is suppressed by -Quiet, which is exactly how CI runs it.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-unmapped-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null `
+                -UnmappedFiles @('src/Billing.ps1') | Out-Null
+            (Get-Content -LiteralPath $out -Raw | ConvertFrom-Json).filesWithoutTestMapping |
+                Should-Be 'src/Billing.ps1'
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
     It 'records both numbers in the report document' {
