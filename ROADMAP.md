@@ -36,12 +36,9 @@ claims; the issues remain the record of what is open.
 **0.3.0 is out**, which changes one thing about sequencing rather than many: the public surface
 is now written down and published -- `Invoke-PSMutation`, the report JSON, and the two schemas in
 `schemas/v1/`. Anything that changes those shapes is a **breaking** change with a version cost
-attached, where before 0.3.0 it was free. **#54** is the queued item that does, and it is better
-early in a cycle than late.
-
-*(This paragraph used to name "#54 and #4". There is no #4 in this repo -- that was the sibling's
-numbering leaking in. Corrected rather than quietly dropped, because a roadmap that cites an
-issue nobody can find is worse than one that cites none.)*
+attached, where before 0.3.0 it was free. **#54** and **#4** are the two queued items that do --
+#54 changes the run result, #4 folds recheck results into the baseline report -- and both are
+better early in a cycle than late.
 
 ---
 
