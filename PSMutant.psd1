@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.3.2'
+    ModuleVersion     = '0.3.3'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -40,21 +40,32 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**A per-mutant timeout that resolves too low is now refused instead of faking a perfect
-score.** The budget is `max(timeoutFloorSeconds, baseline x timeoutFactor)`, and with a small
-enough floor *and* factor it could resolve to zero. A zero-second budget expires immediately,
-an expired mutant counts as a kill, and so every mutant was killed on the clock rather than on
-behaviour -- 100%, exit 0, over tests that never ran. The budget must now be at least as long
-as your unmutated suite took, and a config that asks for less fails with a message saying so.
+            ReleaseNotes = '**Two of these make a run that used to pass fail, and one makes a score go down. In every case
+the new answer is the honest one.**
 
-If this affects you, your reported score was wrong in the flattering direction, and the run
-that fails after upgrading is the honest one.
+**A mutant that ran out of time is no longer counted as a kill.** A timeout was scored exactly
+like a test noticing the change, so a suite too slow for its budget reported mutants as caught
+that nothing had caught. Timeouts are now their own outcome and are reported separately. If your
+score drops after upgrading, it did not get worse -- it stopped counting the clock as a test.
 
-**A config path that escapes the source root is now refused.** Every path in a config is
-copied into a temp sandbox and mutated there; a leading `..` survived that mapping, so a path
-like `../shared/Util.ps1` was mutated **where it lives**, in your working tree. Interrupt such
-a run and the mutated file stays on disk. Paths that merely contain `..` and still resolve
-inside -- `src/../src/a.ps1` -- keep working.'
+**A report that cannot be written now fails the run.** Writing the JSON failed
+non-terminatingly, so an unwritable path left the run reporting success with no artefact behind
+it. That is the shape of failure this tool exists to find, and it was in the tool.
+
+**A number now answers for what was left out of it.** Candidates dropped by the covered-lines
+filter are recorded in the report beside the score, so a figure computed over less code than you
+asked for says so rather than reading as a clean sweep.
+
+**Three config mistakes are refused instead of quietly changing what runs.** A file listed twice
+in `mutate` doubled that file''s mutants and its weight in the score. A `mutate` file with no
+`tests` entry silently ran your whole suite for every one of its mutants. And a path that escapes
+the source root was mutated where it lives rather than in the sandbox -- interrupt such a run and
+the mutated file stayed on disk. Paths that merely contain `..` and still resolve inside, like
+`src/../src/a.ps1`, keep working.
+
+**Under GitHub Actions, survivors now appear on the pull request diff.** One warning per survivor,
+against the file and line it is in, so a failing gate says what survived instead of only what it
+scored. Nothing is emitted outside a recognised CI.'
         }
     }
 }
