@@ -21,6 +21,16 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### Fixed
 
+- **Running the analyzer by hand is now the same as passing it.**
+  `tools/Invoke-PSMutantAnalyzer.ps1` returned its findings and exited 0 whether or not it found
+  any, so `$?` was not a verdict and the gate was the `if` around it in `ci.yml`. A branch was
+  reported analyzer-clean three times before CI failed it on both legs. It throws now, like
+  `Measure-PSMutantCoverage.ps1` and `Test-PSMutantRelease.ps1` beside it -- two of the three
+  committed gate scripts failed loudly and this one did not, which is the inconsistency that made
+  the trap invisible. `-PassThru` returns the findings without failing, for `code-scanning.yml`,
+  which uploads them rather than gating on them; the decision itself is `Get-PSMutantLintFault`
+  in `GateDecisions.ps1`, with tests, like every other gate decision.
+
 - **A file listed twice in `mutate` is refused instead of doubling the run.** Every mutant was
   generated and evaluated twice, so `total`, `killed` and `survived` in the report -- a published
   contract -- were all doubled, the run cost twice what it should, and `(File, Id)` stopped
