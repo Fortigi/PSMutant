@@ -82,10 +82,15 @@ jobs:
             }
           }
           Import-Module ConvertToSARIF -RequiredVersion $env:CONVERTTOSARIF_VERSION
-          # Literally the same invocation ci.yml runs -- one committed script, so the two
-          # gates cannot analyse different paths, different settings or, as they did until
-          # #76, different severities. It imports the pinned analyzer itself.
-          @(./tools/Invoke-PSMutantAnalyzer.ps1) | ConvertTo-SARIF -FilePath results.sarif
+          # The same committed script ci.yml runs, so the two gates cannot analyse different
+          # paths, different settings or, as they did until #76, different severities. It
+          # imports the pinned analyzer itself.
+          #
+          # The ONE difference is deliberate and is this switch. This job uploads findings
+          # rather than failing on them, and an empty set is a meaningful upload that clears
+          # alerts for rules already fixed -- so it asks for data where ci.yml asks for a
+          # verdict. Everything that decides WHAT is analysed is still shared.
+          @(./tools/Invoke-PSMutantAnalyzer.ps1 -PassThru) | ConvertTo-SARIF -FilePath results.sarif
 
       - name: Upload SARIF to code scanning
         uses: github/codeql-action/upload-sarif@db488ddef3bf6cb639b32c2e9a7c0a7ea8271d28 # v4
