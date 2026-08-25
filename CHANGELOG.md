@@ -5,6 +5,18 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+### Added
+
+- **Survivors land on the pull request diff instead of in job-log scrollback.** Under GitHub
+  Actions the run now emits a `::warning file=...,line=...` per survivor, so the finding appears
+  next to the code that needs the assertion. Both the full run and `-RecheckFrom` do it.
+
+  They are emitted even under `-Quiet`, which is the point rather than an oversight: `-Quiet`
+  exists so a CI log is not several hundred progress lines long, and CI is exactly where a
+  survivor most needs to be visible -- suppressing both left a failed gate printing a score and
+  nothing else. The annotations are built from the mutant row the line already carries, not by
+  parsing the console text, and nothing is emitted outside a recognised CI.
+
 ### Internal
 
 - **Pinned dependencies are watched instead of only written down.** A weekly job checks each

@@ -280,7 +280,16 @@ function Invoke-PSMutationRecheckRun {
     $summary = Write-PSMutationRecheckReport -Results $results -ReportPath $recheckPath `
         -PriorSurvivorCount @($prior.survivors).Count -SourceReportPath $RecheckFrom `
         -SourceHashes $SourceHashes -Operators $Operators -Provenance (& $Provenance)
-    Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationRecheckSummaryLine -Summary $summary `
-            -Results $results -ReportPath $recheckPath)
+    $recheckLines = Get-PSMutationRecheckSummaryLine -Summary $summary `
+        -Results $results -ReportPath $recheckPath
+    Write-PSMutationOutput -Quiet:$Quiet -Lines $recheckLines
+    # Same reasoning as the full run: the switch silences the log, not the findings. A recheck
+    # that still leaves survivors is the one result somebody has to act on.
+    if (Test-PSMutationAnnotationHost) {
+        # @() because a run with NOTHING to annotate yields no lines at all, and -Lines
+        # accepts an empty collection but not $null. Without it a clean run under Actions
+        # throws on binding -- so the green path would be the one that crashed.
+        Write-PSMutationOutput -Lines @(Get-PSMutationAnnotationLine -Lines $recheckLines)
+    }
     return $summary
 }

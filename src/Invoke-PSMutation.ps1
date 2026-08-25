@@ -174,8 +174,20 @@ function Invoke-PSMutation {
         # totalSeconds records how long the run took to start rather than to finish.
         $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion -UnmappedFiles $unmapped
         $band = Get-PSMutationScoreBand -Cfg $cfg
-        Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationSummaryLine -Summary $summary -Results $results `
-                -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents -Exclusion $exclusion)
+        $summaryLines = Get-PSMutationSummaryLine -Summary $summary -Results $results `
+            -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents -Exclusion $exclusion
+        Write-PSMutationOutput -Quiet:$Quiet -Lines $summaryLines
+        # Annotations are NOT passed -Quiet, and that is the point rather than an oversight.
+        # -Quiet exists so a CI log is not filled with several hundred progress lines, and CI is
+        # exactly where a survivor most needs to be visible: suppressing both leaves a failed
+        # gate printing a score and nothing else, which is a backstop that cannot say what
+        # failed. The switch silences the LOG; a finding is not log.
+        if (Test-PSMutationAnnotationHost) {
+            # @() because a run with NOTHING to annotate yields no lines at all, and -Lines
+            # accepts an empty collection but not $null. Without it a clean run under Actions
+            # throws on binding -- so the green path would be the one that crashed.
+            Write-PSMutationOutput -Lines @(Get-PSMutationAnnotationLine -Lines $summaryLines)
+        }
 
         $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds
         return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit

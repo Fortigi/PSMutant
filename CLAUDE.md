@@ -239,18 +239,39 @@ PSScriptAnalyzer cannot do that job: `PSAvoidUsingWriteHost` is excluded repo-wi
 the gate scripts in `tools/` print for a living.
 
 A line carries a **role**, never a colour: `Banner`, `Good`, `Warn`, `Bad`, `Detail`,
-`Muted`, `Rule`. The console renderer maps role to colour; a renderer for CI annotations or
-markdown maps the same roles to its own vocabulary. An unknown role **throws** -- a silently
-uncoloured line reads as a styling slip, when what it signals is a renderer that will not
-know what to do with the line at all.
+`Muted`, `Rule`, `Annotation`. The console renderer maps role to colour; the second renderer
+predicted here now exists, and maps the same lines to GitHub workflow commands. An unknown role
+**throws** -- a silently uncoloured line reads as a styling slip, when what it signals is a
+renderer that will not know what to do with the line at all.
+
+`Annotation` is the one role with **no colour**, and that is load-bearing rather than
+cosmetic: a workflow command is parsed from the START of a line, so an ANSI escape written
+ahead of the `::` turns a finding into a line of log nobody reads -- and it looks perfectly
+fine on a console. `Write-PSMutationOutput` therefore splats, because an `if`/`else` with a
+`Write-Host` in each arm would make **two**, and `tests/Layering.Tests.ps1` asserts the count.
+
+The role list is pinned literally by a test, so growing the vocabulary fails there first. That
+is the intent: a role is a promise to every renderer.
 
 `Rule` and `Muted` both print DarkGray and are still distinct, which is the point of roles
 rather than colours: a renderer that is not a console drops separators, and must not take
 the recheck caveats with them.
 
-A survivor line carries the mutant row in **`-Data`**. Annotations need the file and line as
-values, and recovering them by parsing the formatted text back apart is exactly the coupling
-this seam removes.
+A survivor line carries the mutant row in **`-Data`**, and `Get-PSMutationAnnotationLine` reads
+only that -- never `Text`. Recovering a file and line by parsing the formatted string back apart
+is exactly the coupling this seam removes, and it would break the first time the console format
+is tuned. A line whose `Data` has no `File` is skipped: an annotation with no location renders
+against the workflow file, sending the reviewer to YAML that has nothing to do with the finding.
+
+**Annotations are deliberately NOT passed `-Quiet`**, and that is the one place a caller does
+not forward the switch. `-Quiet` exists so a CI log is not several hundred progress lines; CI is
+also where a survivor most needs to be seen, and suppressing both leaves a failed gate printing
+a score and nothing else -- a backstop that cannot say what failed. The switch silences the
+**log**; a finding is not log.
+
+The empty case is the one to be careful with: with nothing to annotate the mapper yields no
+lines at all, and `-Lines` accepts an empty collection but not `$null`. Without an `@()` wrap
+the **green** run is the one that throws, under Actions only.
 
 **`-Quiet` is honoured in one place**: `Write-PSMutationOutput`. Callers always render and
 pass the switch down; they never guard. Guarding at the call site means each new emitter has

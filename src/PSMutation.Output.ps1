@@ -19,6 +19,11 @@ $script:PSMutationRoleColour = [ordered]@{
     # renderer that is not a console -- an annotation stream, a markdown table -- drops it
     # while still wanting the caveats Muted carries.
     Rule   = 'DarkGray'
+    # Deliberately empty, and the only role with no colour. A CI workflow command is parsed
+    # from the START of a line, so an ANSI escape written ahead of the '::' stops it being a
+    # command and turns it into a line of noise nobody sees -- the exact failure the whole
+    # annotation path exists to avoid, and invisible from a console where it looks fine.
+    Annotation = ''
 }
 
 function Get-PSMutationKnownRole {
@@ -82,6 +87,45 @@ function Get-PSMutationRoleColour {
     return [string]$script:PSMutationRoleColour[$Role]
 }
 
+function Test-PSMutationAnnotationHost {
+    # Whether the host running us renders CI annotations. GitHub Actions sets GITHUB_ACTIONS
+    # to 'true' for every step.
+    #
+    # A positive test rather than "not a console": a developer piping output to a file is not
+    # a CI, and emitting workflow commands there would put '::warning' noise in front of a
+    # human for no reason.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param()
+    return $env:GITHUB_ACTIONS -eq 'true'
+}
+
+function Get-PSMutationAnnotationLine {
+    # Survivor lines rendered as GitHub workflow commands, so a finding lands on the diff the
+    # reviewer is already looking at instead of in job-log scrollback.
+    #
+    # Built from -Data, never from Text. The mutant row carries the file and the line as
+    # VALUES; recovering them by parsing a formatted string back apart is the coupling the Data
+    # field exists to remove, and it would break the first time the console format is tuned.
+    #
+    # Only lines that carry a row become annotations. Headings, rules and the score line have
+    # no file to point at, and an annotation without a location renders against the workflow
+    # file itself -- pointing the reviewer at YAML that has nothing to do with the finding.
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Lines)
+    foreach ($line in $Lines) {
+        if (-not $line.Data) { continue }
+        if (-not $line.Data.File) { continue }
+        # Commas and colons in the description would otherwise end the property list early;
+        # GitHub reads the message only after the '::'. Newlines are the other terminator, and
+        # a description is already whitespace-collapsed when the candidate is built.
+        $message = "Mutant survived: $($line.Data.Description)"
+        New-PSMutationLine -Role 'Annotation' -Data $line.Data `
+            -Text ("::warning file={0},line={1}::{2}" -f $line.Data.File, $line.Data.Line, $message)
+    }
+}
+
 function Write-PSMutationOutput {
     <#
     .SYNOPSIS
@@ -109,6 +153,16 @@ function Write-PSMutationOutput {
     )
     if ($Quiet) { return }
     foreach ($line in $Lines) {
-        Write-Host $line.Text -ForegroundColor (Get-PSMutationRoleColour -Role $line.Role)
+        # Splatted so there is still exactly ONE Write-Host in src/, which Layering.Tests.ps1
+        # asserts by count: an if/else with a call in each arm reads fine and quietly makes it
+        # two, which is the guard working rather than a nuisance.
+        #
+        # A role with no colour is written plain, and -ForegroundColor '' is not the same
+        # thing -- it throws -- so the empty case has to omit the parameter, not pass an empty
+        # value through.
+        $colour = Get-PSMutationRoleColour -Role $line.Role
+        $write = @{ Object = $line.Text }
+        if ($colour) { $write.ForegroundColor = $colour }
+        Write-Host @write
     }
 }
