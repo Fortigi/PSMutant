@@ -81,7 +81,14 @@ Describe 'Get-PSMutationKnownRole' {
 }
 
 Describe 'Test-PSMutationAnnotationHost' {
-    AfterEach { $env:GITHUB_ACTIONS = $null }
+    # The one place that touches the real variable, because it is the thing under test. The
+    # ORIGINAL value is restored rather than cleared: $env: is process state, this suite runs
+    # inside CI where the variable is genuinely set, and a test that resets it to $null quietly
+    # changes what every later test file sees. That is not hypothetical -- it is why the whole
+    # suite passed locally and the gate failed.
+    BeforeAll { $script:priorActions = $env:GITHUB_ACTIONS }
+    AfterEach { $env:GITHUB_ACTIONS = $script:priorActions }
+    AfterAll { $env:GITHUB_ACTIONS = $script:priorActions }
 
     It 'recognises a GitHub Actions step' {
         $env:GITHUB_ACTIONS = 'true'

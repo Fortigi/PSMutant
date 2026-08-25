@@ -3,6 +3,21 @@
 # and -- the headline guarantee -- that the tracked source is byte-identical afterwards.
 
 BeforeAll {
+    # This file starts REAL mutation runs, and a run under a CI annotates. Its fixtures are
+    # throwaway files in a temp directory, so those annotations point at paths that do not
+    # exist in this repository -- GitHub resolves them against the checkout and decorates the
+    # pull request with warnings a reviewer cannot open, sitting beside the real ones the gate
+    # produces. Seventeen of them, before this.
+    #
+    # Cleared for the file and RESTORED afterwards, never left as $null: $env: is process
+    # state, this suite runs inside CI where the variable is genuinely set, and a file that
+    # resets it silently decides what every later file sees.
+    #
+    # The annotation path itself is tested by MOCKING Test-PSMutationAnnotationHost, which is
+    # hermetic and does not care which file ran first.
+    $script:priorActions = $env:GITHUB_ACTIONS
+    $env:GITHUB_ACTIONS = $null
+
     $module = Join-Path (Split-Path -Parent $PSScriptRoot) 'PSMutant.psd1'
     Import-Module $module -Force
 
@@ -47,7 +62,10 @@ Describe 'Test-Flag' {
     $script:result = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj -Quiet
 }
 
-AfterAll { Remove-Item $script:proj -Recurse -Force -ErrorAction SilentlyContinue }
+AfterAll {
+    Remove-Item $script:proj -Recurse -Force -ErrorAction SilentlyContinue
+    $env:GITHUB_ACTIONS = $script:priorActions
+}
 
 Describe 'Invoke-PSMutation end-to-end' {
     It 'evaluates at least one mutant' {
