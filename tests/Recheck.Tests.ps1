@@ -331,17 +331,11 @@ Describe 'Invoke-PSMutationRecheckRun' {
         '{ "survivors": [ { "Id": 1, "File": "src/a.ps1" }, { "Id": 2, "File": "src/a.ps1" } ] }' |
             Set-Content $script:reportFile -Encoding utf8
         $script:plan = @{ TestsByFile = @{}; AllTests = @('tests/a.Tests.ps1') }
-        # CI-neutral by default. These tests count render calls, and under a real CI the
-        # annotation path adds one -- so without this the suite passes locally and fails inside
-        # the gate, which is exactly what happened. Mocked rather than cleared from $env:, which
-        # is process state shared with every other test file: whichever runs first would decide
-        # what the rest see, and the mapped baseline runs them in a different order than a plain
-        # `Invoke-Pester ./tests` does.
-        #
-        # Folded into the existing BeforeEach rather than added beside it: Pester allows only
-        # ONE per block, and a second makes the whole FILE fail to build while reporting zero
-        # failed tests -- green-looking, with thirty tests that never ran.
-        Mock Test-PSMutationAnnotationHost { $false }
+        # Deliberately NOT mocking Test-PSMutationAnnotationHost here. Every test below that
+        # reaches the render path states its own answer, because a mock in BeforeEach plus a
+        # different one in the It is a bet on which wins -- and that bet paid differently on
+        # the runner (pwsh 7.4) than it did locally (7.6). A test whose result depends on mock
+        # precedence is not a test, it is a coin toss with good intentions.
     }
 
     It 'refuses, naming the reason, when the report no longer matches the source' {
@@ -357,6 +351,8 @@ Describe 'Invoke-PSMutationRecheckRun' {
     }
 
     It 'evaluates only the prior survivors and returns the recheck summary' {
+        # Not a CI: this counts render calls, and the annotation path adds one.
+        Mock Test-PSMutationAnnotationHost { $false }
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
@@ -425,8 +421,6 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Survived' }) }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
-        # The BeforeEach already mocks this to $false; named again here so the pairing with the
-        # test above is readable rather than inherited.
         Mock Test-PSMutationAnnotationHost { $false }
         Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
@@ -435,6 +429,8 @@ Describe 'Invoke-PSMutationRecheckRun' {
     }
 
     It 'reports progress and a summary when not quiet' {
+        # Not a CI: annotations would add a render call this test does not expect.
+        Mock Test-PSMutationAnnotationHost { $false }
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
