@@ -8,14 +8,21 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-25, with **0.3.3 prepared and unreleased**. 31 issues open.
+Snapshot 2026-08-25, with **0.3.3 prepared and unreleased**. 29 issues open.
 
 Since the last snapshot: survivors now land on the pull request diff (#11), a red baseline names
 the tests that failed and why (#144), the suite stopped inheriting the ambient CI in both
 directions (#145), the analyzer script became a verdict rather than a return value (#136), and
 ten entries that had accumulated under `[Unreleased]` were prepared as 0.3.3 (#148) -- which also
 retired a release-check warning that had been printing on every run long enough to become
-scenery. Removed rather than ticked, per the rule above.
+scenery.
+
+**The Guards section closed entirely.** Every renderer call now binds `-Quiet`, so no mock filter
+can be ambiguous about which calls it selected (#146), and the suite has to give the same answer
+reversed and leave the environment as it found it (#147). Both were properties that had already
+cost CI rounds while being true only by habit. Removed rather than ticked, per the rule above --
+what is worth keeping from either is in `CLAUDE.md`, where somebody about to write a mock or a
+test file will actually meet it.
 
 Completed waves are **removed rather than ticked**. A plan that lists finished work is a worse
 plan, and this file holds no status by design -- that lives in the issues. Removal is the one
@@ -195,20 +202,6 @@ ones before it.
   the code every mutant runs.
 - **#41** -- the help points at an about_PSMutant topic that does not exist.
 - **#117** -- the parity tracker. Keep it until the last row closes.
-
-## Guards -- things that are true only by luck
-
-Not features and not cost. Each is a property nothing currently enforces, and each has already
-cost a CI round somewhere.
-
-- **#147** -- nothing checks the suite is order-independent, and the two orders this project uses
-  disagree: `Invoke-Pester ./tests` is alphabetical, the mutation baseline runs the mapped suites
-  in config order. That difference is not hypothetical -- it is why #145's environment leak was
-  green locally and red in the gate, and why three CI rounds went into finding it. The sibling has
-  the same two orders and the same absence of a check.
-- **#146** -- filters that identify a call by a switch which may be unbound on it. An unbound
-  switch inside a `ParameterFilter` is a scope-resolution question, and the two answers differ by
-  PowerShell version: green on 7.6 here, red on the runner's 7.4.
 
 ## Decisions to record, not work
 
