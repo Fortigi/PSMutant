@@ -369,6 +369,64 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Should-Invoke Write-PSMutationOutput -Exactly 2 -ParameterFilter { $Quiet }
     }
 
+    It 'annotates what is still surviving when it runs under a CI, even quietly' {
+        # -Quiet exists so a CI log is not several hundred progress lines long, and CI is
+        # exactly where a survivor most needs to be seen. Suppressing both leaves a failed gate
+        # printing a number and nothing else. So the annotation call deliberately does NOT
+        # forward -Quiet, and this is the assertion that keeps it that way: three render calls
+        # under Actions against the two that -Quiet alone produces.
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Survived' }) }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
+        $env:GITHUB_ACTIONS = 'true'
+        try {
+            Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+                -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+                -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
+            Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { -not $Quiet }
+        }
+        finally { $env:GITHUB_ACTIONS = $null }
+    }
+
+    It 'survives a CI run that has nothing to annotate' {
+        # The green path. Get-PSMutationAnnotationLine yields NO lines when nothing survived,
+        # and -Lines accepts an empty collection but not $null -- so without an @() wrap the
+        # run that passed is the one that throws, in CI only, where it is hardest to reproduce.
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Killed' }) }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 1; StillSurviving = 0 } }
+        $env:GITHUB_ACTIONS = 'true'
+        try {
+            $s = Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+                -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+                -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet
+            $s.NowKilled | Should-Be 1
+        }
+        finally { $env:GITHUB_ACTIONS = $null }
+    }
+
+    It 'annotates nothing when it is not running under a CI' {
+        # The paired half. Without it the test above passes against a run that annotates
+        # unconditionally, which would put workflow-command noise in front of every developer.
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Survived' }) }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
+        $env:GITHUB_ACTIONS = $null
+        Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+            -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
+        Should-NotInvoke Write-PSMutationOutput -ParameterFilter { -not $Quiet }
+    }
+
     It 'reports progress and a summary when not quiet' {
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }

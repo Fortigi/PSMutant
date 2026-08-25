@@ -126,6 +126,33 @@ Describe 'Invoke-PSMutation' {
         $out | Should-BeLikeString '*Mutation score*'
     }
 
+    It 'annotates a survivor onto the diff under a CI, even with -Quiet' {
+        # The whole point of the feature, and the reason it does not forward -Quiet. CI runs
+        # quiet so the log is not several hundred progress lines; suppressing the findings too
+        # leaves a failed gate printing a score and nothing else, which is a backstop that
+        # cannot say what failed.
+        #
+        # The file and line come from the mutant row, so this also proves the annotation is
+        # built from Data rather than from the console text.
+        $env:GITHUB_ACTIONS = 'true'
+        try {
+            $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String
+            $out | Should-BeLikeString '*::warning file=src/a.ps1,line=2::*'
+            # And only the survivor. The killed mutant has a file and a line too, so a renderer
+            # that annotated every row would pass the assertion above and bury the one finding.
+            $out | Should-NotBeLikeString '*line=1*'
+        }
+        finally { $env:GITHUB_ACTIONS = $null }
+    }
+
+    It 'annotates nothing when it is not running under a CI' {
+        # The paired half. Without it the test above passes against a run that annotates
+        # unconditionally, putting workflow-command noise in front of every developer.
+        $env:GITHUB_ACTIONS = $null
+        $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root } 6>&1 | Out-String
+        $out | Should-NotBeLikeString '*::warning*'
+    }
+
     It 'prints nothing at all with -Quiet' {
         # Every one of the four guards is named, not just the banner and the summary:
         # a guard that stopped honouring -Quiet would otherwise ship unnoticed.
