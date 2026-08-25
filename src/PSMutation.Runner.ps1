@@ -59,7 +59,13 @@ function Invoke-PSMutationBaseline {
         # runs -Quiet, where the whole run prints one line -- and "not green" without a test
         # name sends the reader to reproduce a failure that, by definition, is not happening on
         # the machine they are standing on.
-        FailedTest      = @($result.Failed | ForEach-Object { $_.ExpandedPath })
+        # Name AND message. The name alone says which assertion broke, not why -- and the
+        # reader is looking at a failure that, by definition, is not reproducing on their
+        # machine. Two rounds of this branch were spent guessing from a name.
+        FailedTest      = @($result.Failed | ForEach-Object {
+                $why = @($_.ErrorRecord.Exception.Message -split "`n")[0]
+                "$($_.ExpandedPath) -- $why"
+            })
     }
 }
 
