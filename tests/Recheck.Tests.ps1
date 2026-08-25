@@ -331,6 +331,17 @@ Describe 'Invoke-PSMutationRecheckRun' {
         '{ "survivors": [ { "Id": 1, "File": "src/a.ps1" }, { "Id": 2, "File": "src/a.ps1" } ] }' |
             Set-Content $script:reportFile -Encoding utf8
         $script:plan = @{ TestsByFile = @{}; AllTests = @('tests/a.Tests.ps1') }
+        # CI-neutral by default. These tests count render calls, and under a real CI the
+        # annotation path adds one -- so without this the suite passes locally and fails inside
+        # the gate, which is exactly what happened. Mocked rather than cleared from $env:, which
+        # is process state shared with every other test file: whichever runs first would decide
+        # what the rest see, and the mapped baseline runs them in a different order than a plain
+        # `Invoke-Pester ./tests` does.
+        #
+        # Folded into the existing BeforeEach rather than added beside it: Pester allows only
+        # ONE per block, and a second makes the whole FILE fail to build while reporting zero
+        # failed tests -- green-looking, with thirty tests that never ran.
+        Mock Test-PSMutationAnnotationHost { $false }
     }
 
     It 'refuses, naming the reason, when the report no longer matches the source' {
@@ -381,14 +392,11 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Survived' }) }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
-        $env:GITHUB_ACTIONS = 'true'
-        try {
-            Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
-                -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
-                -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
-            Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { -not $Quiet }
-        }
-        finally { $env:GITHUB_ACTIONS = $null }
+        Mock Test-PSMutationAnnotationHost { $true }
+        Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+            -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { -not $Quiet }
     }
 
     It 'survives a CI run that has nothing to annotate' {
@@ -401,14 +409,11 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Killed' }) }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 1; StillSurviving = 0 } }
-        $env:GITHUB_ACTIONS = 'true'
-        try {
-            $s = Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
-                -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
-                -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet
-            $s.NowKilled | Should-Be 1
-        }
-        finally { $env:GITHUB_ACTIONS = $null }
+        Mock Test-PSMutationAnnotationHost { $true }
+        $s = Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+            -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet
+        $s.NowKilled | Should-Be 1
     }
 
     It 'annotates nothing when it is not running under a CI' {
@@ -420,7 +425,9 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Survived' }) }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
-        $env:GITHUB_ACTIONS = $null
+        # The BeforeEach already mocks this to $false; named again here so the pairing with the
+        # test above is readable rather than inherited.
+        Mock Test-PSMutationAnnotationHost { $false }
         Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
             -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
