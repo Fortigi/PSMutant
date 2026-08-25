@@ -12,6 +12,21 @@
 # must therefore be reachable from a self-contained, dot-sourced test, which is this.
 
 BeforeAll {
+    # This file starts REAL mutation runs, and a run under a CI annotates. Its fixtures are
+    # throwaway files in a temp directory, so those annotations point at paths that do not
+    # exist in this repository -- GitHub resolves them against the checkout and decorates the
+    # pull request with warnings a reviewer cannot open, sitting beside the real ones the gate
+    # produces. Seventeen of them, before this.
+    #
+    # Cleared for the file and RESTORED afterwards, never left as $null: $env: is process
+    # state, this suite runs inside CI where the variable is genuinely set, and a file that
+    # resets it silently decides what every later file sees.
+    #
+    # The annotation path itself is tested by MOCKING Test-PSMutationAnnotationHost, which is
+    # hermetic and does not care which file ran first.
+    $script:priorActions = $env:GITHUB_ACTIONS
+    $env:GITHUB_ACTIONS = $null
+
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
         'PSMutation.Config.ps1', 'PSMutation.Output.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
@@ -19,6 +34,9 @@ BeforeAll {
         . (Join-Path $src $f)
     }
 }
+
+
+AfterAll { $env:GITHUB_ACTIONS = $script:priorActions }
 
 Describe 'Invoke-PSMutation' {
     BeforeEach {
@@ -126,7 +144,34 @@ Describe 'Invoke-PSMutation' {
         $out | Should-BeLikeString '*Mutation score*'
     }
 
+    It 'annotates a survivor onto the diff under a CI, even with -Quiet' {
+        # The whole point of the feature, and the reason it does not forward -Quiet. CI runs
+        # quiet so the log is not several hundred progress lines; suppressing the findings too
+        # leaves a failed gate printing a score and nothing else, which is a backstop that
+        # cannot say what failed.
+        #
+        # The file and line come from the mutant row, so this also proves the annotation is
+        # built from Data rather than from the console text.
+        Mock Test-PSMutationAnnotationHost { $true }
+        $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String
+        $out | Should-BeLikeString '*::warning file=src/a.ps1,line=2::*'
+        # And only the survivor. The killed mutant has a file and a line too, so a renderer
+        # that annotated every row would pass the assertion above and bury the one finding.
+        $out | Should-NotBeLikeString '*line=1*'
+    }
+
+    It 'annotates nothing when it is not running under a CI' {
+        # The paired half. Without it the test above passes against a run that annotates
+        # unconditionally, putting workflow-command noise in front of every developer.
+        Mock Test-PSMutationAnnotationHost { $false }
+        $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root } 6>&1 | Out-String
+        $out | Should-NotBeLikeString '*::warning*'
+    }
+
     It 'prints nothing at all with -Quiet' {
+        # CI-neutral: this asserts silence, and under a real CI the annotation path speaks by
+        # design. Mocked rather than cleared from $env:, which is shared with every other file.
+        Mock Test-PSMutationAnnotationHost { $false }
         # Every one of the four guards is named, not just the banner and the summary:
         # a guard that stopped honouring -Quiet would otherwise ship unnoticed.
         $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String

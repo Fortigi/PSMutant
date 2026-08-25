@@ -331,6 +331,11 @@ Describe 'Invoke-PSMutationRecheckRun' {
         '{ "survivors": [ { "Id": 1, "File": "src/a.ps1" }, { "Id": 2, "File": "src/a.ps1" } ] }' |
             Set-Content $script:reportFile -Encoding utf8
         $script:plan = @{ TestsByFile = @{}; AllTests = @('tests/a.Tests.ps1') }
+        # Deliberately NOT mocking Test-PSMutationAnnotationHost here. Every test below that
+        # reaches the render path states its own answer, because a mock in BeforeEach plus a
+        # different one in the It is a bet on which wins -- and that bet paid differently on
+        # the runner (pwsh 7.4) than it did locally (7.6). A test whose result depends on mock
+        # precedence is not a test, it is a coin toss with good intentions.
     }
 
     It 'refuses, naming the reason, when the report no longer matches the source' {
@@ -346,6 +351,8 @@ Describe 'Invoke-PSMutationRecheckRun' {
     }
 
     It 'evaluates only the prior survivors and returns the recheck summary' {
+        # Not a CI: this counts render calls, and the annotation path adds one.
+        Mock Test-PSMutationAnnotationHost { $false }
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
@@ -369,7 +376,80 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Should-Invoke Write-PSMutationOutput -Exactly 2 -ParameterFilter { $Quiet }
     }
 
+    It 'annotates what is still surviving when it runs under a CI, even quietly' {
+        # -Quiet exists so a CI log is not several hundred progress lines long, and CI is
+        # exactly where a survivor most needs to be seen. Suppressing both leaves a failed gate
+        # printing a number and nothing else. So the annotation call deliberately does NOT
+        # forward -Quiet, and this is the assertion that keeps it that way: three render calls
+        # under Actions against the two that -Quiet alone produces.
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        # A survivor with a real file and line, so the annotation is a THING this test can name
+        # rather than a call it has to infer.
+        Mock Invoke-PSMutationLoop {
+            @([pscustomobject]@{ Status = 'Survived'; File = 'src/a.ps1'; Line = 7; Description = '-and -> -or' })
+        }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
+        Mock Test-PSMutationAnnotationHost { $true }
+        Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+            -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
+        # Filtered on what the call CARRIES, not on whether -Quiet was passed. An unbound switch
+        # inside a ParameterFilter is a scope-resolution question -- $false, or the caller's own
+        # $Quiet further up -- and the answer differed between the runner's PowerShell and this
+        # one, so the assertion passed here and failed there. Assert the thing, not a proxy.
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter {
+            @($Lines).Count -gt 0 -and @($Lines)[0].Role -eq 'Annotation'
+        }
+    }
+
+    It 'survives a CI run that has nothing to annotate' {
+        # The green path. Get-PSMutationAnnotationLine yields NO lines when nothing survived,
+        # and -Lines accepts an empty collection but not $null -- so without an @() wrap the
+        # run that passed is the one that throws, in CI only, where it is hardest to reproduce.
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Killed' }) }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 1; StillSurviving = 0 } }
+        Mock Test-PSMutationAnnotationHost { $true }
+        $s = Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+            -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet
+        $s.NowKilled | Should-Be 1
+    }
+
+    It 'annotates nothing when it is not running under a CI' {
+        # The paired half. Without it the test above passes against a run that annotates
+        # unconditionally, which would put workflow-command noise in front of every developer.
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        # A survivor WITH a file, exactly like its pair above. With a row that has none, no
+        # annotation is produced under either answer from the host check -- so the fixture
+        # could not tell "not a CI" from "a CI with nothing to say", and the guard could be
+        # forced either way without this test noticing.
+        Mock Invoke-PSMutationLoop {
+            @([pscustomobject]@{ Status = 'Survived'; File = 'src/a.ps1'; Line = 7; Description = '-and -> -or' })
+        }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
+        Mock Test-PSMutationAnnotationHost { $false }
+        Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+            -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
+        # The same filter as its pair above, so the two read as one claim about one thing.
+        Should-NotInvoke Write-PSMutationOutput -ParameterFilter {
+            @($Lines).Count -gt 0 -and @($Lines)[0].Role -eq 'Annotation'
+        }
+    }
+
     It 'reports progress and a summary when not quiet' {
+        # Not a CI: annotations would add a render call this test does not expect.
+        Mock Test-PSMutationAnnotationHost { $false }
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }

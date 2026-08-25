@@ -72,11 +72,125 @@ Describe 'Get-PSMutationKnownRole' {
     It 'lists every role, sorted' {
         # Joined and compared as a string: Should-BeCollection ignores order and has no
         # strict switch, so it would pass against an unsorted list.
-        ((Get-PSMutationKnownRole) -join ',') | Should-Be 'Bad,Banner,Detail,Good,Muted,Rule,Warn'
+        #
+        # The literal list is the point. A role is a promise to every renderer, so growing the
+        # vocabulary has to fail here first and be a decision -- this test caught Annotation
+        # being added, which is the behaviour wanted rather than a nuisance.
+        ((Get-PSMutationKnownRole) -join ',') | Should-Be 'Annotation,Bad,Banner,Detail,Good,Muted,Rule,Warn'
+    }
+}
+
+Describe 'Test-PSMutationAnnotationHost' {
+    # The one place that touches the real variable, because it is the thing under test. The
+    # ORIGINAL value is restored rather than cleared: $env: is process state, this suite runs
+    # inside CI where the variable is genuinely set, and a test that resets it to $null quietly
+    # changes what every later test file sees. That is not hypothetical -- it is why the whole
+    # suite passed locally and the gate failed.
+    BeforeAll { $script:priorActions = $env:GITHUB_ACTIONS }
+    AfterEach { $env:GITHUB_ACTIONS = $script:priorActions }
+    AfterAll { $env:GITHUB_ACTIONS = $script:priorActions }
+
+    It 'recognises a GitHub Actions step' {
+        $env:GITHUB_ACTIONS = 'true'
+        Should-BeTrue -Actual (Test-PSMutationAnnotationHost)
+    }
+
+    It 'does not treat an unset variable as a CI' {
+        # The paired half, and the one that matters for a developer: emitting workflow commands
+        # at a human puts '::warning' noise in front of them for no reason.
+        $env:GITHUB_ACTIONS = $null
+        Should-BeFalse -Actual (Test-PSMutationAnnotationHost)
+    }
+
+    It 'does not treat the string false as a CI' {
+        # Actions sets this to the literal 'false' in some contexts, and any non-empty string is
+        # truthy in PowerShell -- so a truthiness check here reads 'false' as yes.
+        $env:GITHUB_ACTIONS = 'false'
+        Should-BeFalse -Actual (Test-PSMutationAnnotationHost)
+    }
+}
+
+Describe 'Get-PSMutationAnnotationLine' {
+    BeforeAll {
+        $script:row = [pscustomobject]@{ File = 'src/Thing.ps1'; Line = 42; Description = '-and -> -or' }
+    }
+
+    It 'points the annotation at the file and line from the DATA' {
+        # The whole reason the Data field exists. Text here names a DIFFERENT file, so a
+        # renderer that parsed the formatted string would produce 'wrong.ps1' and this fails.
+        $line = New-PSMutationLine -Role 'Warn' -Data $script:row -Text '    wrong.ps1:999  something else'
+        (Get-PSMutationAnnotationLine -Lines @($line)).Text |
+            Should-Be '::warning file=src/Thing.ps1,line=42::Mutant survived: -and -> -or'
+    }
+
+    It 'annotates only the lines that carry a row' {
+        # Both halves in one call. A heading has no file to point at, and an annotation without
+        # a location renders against the workflow file -- sending the reviewer to YAML that has
+        # nothing to do with the finding. A fixture of survivors alone cannot show that.
+        $lines = @(
+            New-PSMutationLine -Role 'Warn' -Text '  Survivors (add assertions to kill these):'
+            New-PSMutationLine -Role 'Warn' -Data $script:row -Text '    src/Thing.ps1:42  -and -> -or'
+            New-PSMutationLine -Role 'Detail' -Text '  Report: reports/x.json'
+        )
+        @(Get-PSMutationAnnotationLine -Lines $lines).Count | Should-Be 1
+    }
+
+    It 'skips a row that has no file to point at' {
+        # A line can carry Data that is not a mutant row -- a summary object, or a row from a
+        # future caller. An annotation with no location renders against the workflow file, so
+        # the guard is on the FILE and not merely on Data being present.
+        $line = New-PSMutationLine -Role 'Warn' -Data ([pscustomobject]@{ Total = 12 }) -Text 'x'
+        @(Get-PSMutationAnnotationLine -Lines @($line)).Count | Should-Be 0
+    }
+
+    It 'skips a line with no row even under StrictMode' {
+        # The guard on Data is NOT redundant with the guard on File, although $null.File
+        # quietly yields $null in an ordinary session. Under Set-StrictMode -Version Latest --
+        # which a consumer may well have on -- it THROWS, so dropping the first check turns a
+        # heading line into an exception inside somebody else's build.
+        #
+        # Nothing else in this suite runs strict, which is exactly why the mutation gate found
+        # this: the check looked like it did nothing.
+        $lines = @(New-PSMutationLine -Role 'Warn' -Text '  Survivors (add assertions to kill these):')
+        $out = & {
+            Set-StrictMode -Version Latest
+            Get-PSMutationAnnotationLine -Lines $lines
+        }
+        @($out).Count | Should-Be 0
+    }
+
+    It 'emits nothing at all when nothing survived' {
+        $lines = @(New-PSMutationLine -Role 'Good' -Text '  Mutation score: 100%')
+        @(Get-PSMutationAnnotationLine -Lines $lines).Count | Should-Be 0
+    }
+
+    It 'starts the line at the workflow command, with nothing before it' {
+        # A workflow command is parsed from the START of the line. Anything ahead of the '::' --
+        # an ANSI colour escape, an indent copied from the console format -- stops it being a
+        # command and makes it a line of log nobody sees.
+        $line = New-PSMutationLine -Role 'Warn' -Data $script:row -Text '    indented for a console'
+        (Get-PSMutationAnnotationLine -Lines @($line)).Text | Should-BeLikeString '::warning*'
+    }
+
+    It 'carries the row through, so a later renderer need not re-derive it' {
+        $line = New-PSMutationLine -Role 'Warn' -Data $script:row -Text 'x'
+        (Get-PSMutationAnnotationLine -Lines @($line)).Data.File | Should-Be 'src/Thing.ps1'
     }
 }
 
 Describe 'Write-PSMutationOutput' {
+    It 'renders an uncoloured role without asking for a colour' {
+        # -ForegroundColor '' does not mean "no colour" -- it throws, because the empty string
+        # is not a ConsoleColor. So the uncoloured case has to OMIT the parameter rather than
+        # pass an empty value, and every other role supplies a real colour and never reaches
+        # that branch.
+        Get-PSMutationRoleColour -Role 'Annotation' | Should-Be ''
+        # Rendered for real, and the absence of an exception is the assertion -- there is no
+        # Should-NotThrow in Pester 6 because the runner already fails on one. Pass the empty
+        # string through to -ForegroundColor and this line is where it dies.
+        Write-PSMutationOutput -Lines @(New-PSMutationLine -Role 'Annotation' -Text '::warning file=a.ps1,line=1::x')
+    }
+
     BeforeEach {
         $script:said = [System.Collections.Generic.List[string]]::new()
         $script:colours = [System.Collections.Generic.List[string]]::new()
