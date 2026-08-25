@@ -145,6 +145,15 @@ scored. Nothing is emitted outside a recognised CI.
 
 ### Internal
 
+- **The suite now has to give the same answer in a different order.** This project runs its own
+  tests in two orders -- alphabetically by hand, in config order under the mutation baseline -- and
+  nothing checked they agree, which is how one file's uncleaned `AfterEach` made the suite green
+  locally and red in the gate for three rounds. A new gate runs the suite reversed and compares the
+  environment before and after it. The reversed run catches such a dependency by its symptom; the
+  environment comparison catches the cause, and is the half that fires on the file that leaks
+  rather than the file that happens to read. Values are never printed -- a variable holds tokens as
+  often as it holds flags.
+
 - **Pinned dependencies are watched instead of only written down.** A weekly job checks each
   pinned module against the gallery and opens one tracking issue when any has moved on;
   Dependabot watches the action SHAs, which `pins.env` structurally cannot hold because `uses:`
