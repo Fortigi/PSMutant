@@ -417,6 +417,31 @@ Describe 'Assert-PSMutationBaselineGreen' {
         # which is why v6 offers no "does not throw" assertion to wrap it in.
         Should-BeNull -Actual (Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $true }))
     }
+
+    It 'names the tests that failed' {
+        # The gate that reports a red baseline runs -Quiet, so the whole run prints one line.
+        # "Not green" without a name sends the reader to reproduce a failure that, by
+        # definition, is not happening on the machine they are standing on -- which is exactly
+        # what it cost when this message had no detail.
+        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
+                    Passed = $false; FailedTest = @('Output.annotates a survivor', 'Recheck.still surviving')
+                }) } | Should-Throw -ExceptionMessage '*Failed: Output.annotates a survivor; Recheck.still surviving.*'
+    }
+
+    It 'caps the list and says how many it left out' {
+        # A wholly broken suite would otherwise paste hundreds of names into one exception and
+        # bury the first, which is the one most likely to explain the rest.
+        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
+                    Passed = $false; FailedTest = @(1..14 | ForEach-Object { "T$_" })
+                }) } | Should-Throw -ExceptionMessage '*T10 (and 4 more).*'
+    }
+
+    It 'still refuses when it cannot say which test failed' {
+        # The names are a courtesy; the refusal is the point. An empty list must not turn the
+        # guard into a pass, which is the shape of every fake-green failure in this project.
+        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $false; FailedTest = @() }) } |
+            Should-Throw -ExceptionMessage '*fix the tests before mutating*'
+    }
 }
 
 Describe 'ids are assigned before the coverage filter, not after' {
