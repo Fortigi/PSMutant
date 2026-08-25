@@ -14,6 +14,26 @@ BeforeAll {
     . (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'tools' -AdditionalChildPath 'GateDecisions.ps1')
 }
 
+Describe 'Get-PSMutantLintFault' {
+    It 'passes a run that found nothing' {
+        Should-BeNull -Actual (Get-PSMutantLintFault -FindingCount 0)
+    }
+
+    It 'fails on a single finding' {
+        # One, not many: severity plays no part and no -Severity filter reaches the analyzer, so
+        # anything reported at all is a rule somebody decided to keep. A gate that needed two
+        # would let every lone Information-severity finding through -- which is the band that
+        # was invisible to this gate before the two workflows were made to share one script.
+        Get-PSMutantLintFault -FindingCount 1 | Should-BeLikeString '*lint gate failed*'
+    }
+
+    It 'says how many it found' {
+        # The count reaches the message. A gate that reports a failure without a number sends
+        # the reader back to run it again to find out how much work it is.
+        Get-PSMutantLintFault -FindingCount 7 | Should-BeLikeString '*7 PSScriptAnalyzer finding*'
+    }
+}
+
 Describe 'Get-PSMutantCoverageFailure' {
     It 'passes coverage that meets the minimum exactly' {
         # The boundary, and the case the gate exists to allow: 100 against a required 100.

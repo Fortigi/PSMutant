@@ -639,6 +639,14 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   before pushing; it reads `PSSA_PATHS` and `PSSA_VERSION` from `.github/pins.env` itself, so by
   hand and in CI are the same run with no setup step.
 
+  **It throws on a finding, so the exit code is the answer.** It did not always: it returned
+  findings and exited 0 either way, the verdict lived in `ci.yml`, and running it was therefore
+  not the same as passing it -- a branch was reported analyzer-clean three times before CI failed
+  it on both legs. Two of the three committed gate scripts failed loudly and this one did not,
+  which is what made the trap invisible. `-PassThru` returns the findings without failing, for
+  `code-scanning.yml`, which uploads them rather than gating on them; the decision itself is
+  `Get-PSMutantLintFault` in `GateDecisions.ps1`, with tests, like every other gate decision.
+
   It refuses to analyse nothing, which is the failure that would otherwise look identical to
   success: an empty `PSSA_PATHS` would have both gates report clean over zero files. The pin
   parsing behind that lives in `GateDecisions.ps1` with tests, for the same reason.

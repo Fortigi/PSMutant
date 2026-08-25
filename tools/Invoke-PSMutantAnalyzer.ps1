@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-    Run PSScriptAnalyzer the one way this project runs it, and return the findings.
+    Run PSScriptAnalyzer the one way this project runs it, and FAIL when it finds anything.
 
 .DESCRIPTION
     Two workflows analyse this repo: the lint gate in ci.yml, which fails the build, and
@@ -46,7 +46,16 @@ param(
     # Defaults to PSSA_VERSION. The exact version matters: rules and their inference change
     # between releases, so an unpinned analyzer can report a finding CI does not, or miss one
     # it does.
-    [string]$AnalyzerVersion
+    [string]$AnalyzerVersion,
+
+    # Return the findings as data instead of failing on them. For a caller that has its own use
+    # for them -- code-scanning.yml converts them to SARIF, where an EMPTY set is a meaningful
+    # upload that clears alerts already fixed, so that consumer must never be failed.
+    #
+    # Opt-out rather than opt-in, deliberately. The dangerous shape is a human running this and
+    # reading exit 0 as a pass, so the safe behaviour has to be what you get by not thinking
+    # about it.
+    [switch]$PassThru
 )
 
 $ErrorActionPreference = 'Stop'
@@ -97,8 +106,24 @@ $settings = Join-Path -Path $repoRoot -ChildPath 'PSScriptAnalyzerSettings.psd1'
 #
 # -Path takes a single item, so the loop is required rather than stylistic: passing the
 # array fails with "Cannot convert 'System.Object[]' to the type 'System.String'".
-$findings = $Path | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Settings $settings }
-
 # @() so a single finding is still a collection and callers can count it. No comma-wrap:
 # callers pipe this, and `, $array` would enter the pipeline as one item.
-return [object[]]@($findings)
+$findings = [object[]]@($Path | ForEach-Object { Invoke-ScriptAnalyzer -Path $_ -Recurse -Settings $settings })
+
+if ($PassThru) { return $findings }
+
+# Otherwise this script IS the gate, like Measure-PSMutantCoverage.ps1 and
+# Test-PSMutantRelease.ps1 beside it. It used to return findings and exit 0 whether or not it
+# found any, so $? was not a verdict: a person who ran it by hand and checked the exit code got
+# a confident wrong answer, and only the `if` in the workflow made it a gate at all. Two of the
+# three committed gate scripts failed loudly and this one did not, which is the inconsistency
+# that made the trap invisible.
+#
+# Printed before the throw, because a gate that says how many findings there are without saying
+# what they were sends the reader back to run it again.
+$fault = Get-PSMutantLintFault -FindingCount $findings.Count
+if ($fault) {
+    Write-Host ($findings | Format-Table Severity, RuleName, ScriptName, Line, Message -AutoSize | Out-String)
+    throw $fault
+}
+Write-Host 'Lint clean.'

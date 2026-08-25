@@ -49,6 +49,29 @@ function Get-PSMutantCoverageFailure {
     return $null
 }
 
+function Get-PSMutantLintFault {
+    <#
+    .SYNOPSIS
+        Why the lint gate should fail, or $null if it should pass.
+    .DESCRIPTION
+        One finding is enough. Severity plays no part here and no -Severity filter reaches the
+        analyzer either: rules are excluded by NAME in PSScriptAnalyzerSettings.psd1, each with
+        a reason, so anything still reported is a rule somebody decided to keep.
+
+        A count rather than the findings themselves, because the decision is arithmetic and the
+        rendering is the caller's business.
+    .OUTPUTS
+        [string] the reason, or $null.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$FindingCount)
+    if ($FindingCount -gt 0) {
+        return "$FindingCount PSScriptAnalyzer finding(s) - lint gate failed"
+    }
+    return $null
+}
+
 function Get-PSMutantMutationFailure {
     <#
     .SYNOPSIS
