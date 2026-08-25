@@ -5,6 +5,37 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+## [0.3.3] - 2026-08-25
+
+### For consumers
+
+**Two of these make a run that used to pass fail, and one makes a score go down. In every case
+the new answer is the honest one.**
+
+**A mutant that ran out of time is no longer counted as a kill.** A timeout was scored exactly
+like a test noticing the change, so a suite too slow for its budget reported mutants as caught
+that nothing had caught. Timeouts are now their own outcome and are reported separately. If your
+score drops after upgrading, it did not get worse -- it stopped counting the clock as a test.
+
+**A report that cannot be written now fails the run.** Writing the JSON failed
+non-terminatingly, so an unwritable path left the run reporting success with no artefact behind
+it. That is the shape of failure this tool exists to find, and it was in the tool.
+
+**A number now answers for what was left out of it.** Candidates dropped by the covered-lines
+filter are recorded in the report beside the score, so a figure computed over less code than you
+asked for says so rather than reading as a clean sweep.
+
+**Three config mistakes are refused instead of quietly changing what runs.** A file listed twice
+in `mutate` doubled that file's mutants and its weight in the score. A `mutate` file with no
+`tests` entry silently ran your whole suite for every one of its mutants. And a path that escapes
+the source root was mutated where it lives rather than in the sandbox -- interrupt such a run and
+the mutated file stayed on disk. Paths that merely contain `..` and still resolve inside, like
+`src/../src/a.ps1`, keep working.
+
+**Under GitHub Actions, survivors now appear on the pull request diff.** One warning per survivor,
+against the file and line it is in, so a failing gate says what survived instead of only what it
+scored. Nothing is emitted outside a recognised CI.
+
 ### Added
 
 - **Survivors land on the pull request diff instead of in job-log scrollback.** Under GitHub
@@ -21,20 +52,6 @@ All notable changes to PSMutant are documented here. Format follows
   variable and restore it, and the annotation path is tested by mocking the host check rather
   than by setting an environment variable. Otherwise this project's own fixtures decorate every
   pull request with warnings pointing at files that do not exist in the repository.
-
-### Internal
-
-- **Pinned dependencies are watched instead of only written down.** A weekly job checks each
-  pinned module against the gallery and opens one tracking issue when any has moved on;
-  Dependabot watches the action SHAs, which `pins.env` structurally cannot hold because `uses:`
-  does not expand variables and a SHA cannot be read to learn whether something newer exists.
-  An unreachable gallery is reported as **unknown** rather than as current, because a watcher
-  that reads "could not look" as "nothing newer" has stopped being able to fail.
-
-  `PESTER_COMPAT_VERSION` is judged on **difference, not freshness**: it is deliberately old,
-  because the compatibility guard runs a real mutation under the Pester the suite does *not*
-  use. Bumped to the newest it would equal the estate pin and prove nothing about the
-  manifest's `>= 5.0.0` promise -- while looking more up to date than a pin that works.
 
 ### Fixed
 
@@ -107,17 +124,6 @@ All notable changes to PSMutant are documented here. Format follows
   writers now go through one function that uses a literal path and stops on failure; a
   `reportPath` containing a bracket, which used to fail silently, now works.
 
-### Internal
-
-- The orchestrator splats two clusters of run values rather than naming each at every call
-  site: what a run **executes** with (candidates, timeout, sandbox, quiet) and what a report
-  **documents** itself with (source hashes, operators, equivalents, report path). Three calls
-  that needed line continuations now fit on one line each. `Provenance` stays explicit at both
-  sites, because the recheck takes the scriptblock and the report takes its invoked result --
-  a difference a shared key would hide.
-
-### Fixed
-
 - **A timed-out mutant is no longer counted as a plain kill.** `Invoke-PSBoundedPester` has
   always distinguished a timeout; the verdict was discarded one line later, so "the suite
   proved this fault is caught" and "the suite hung and we assumed so" became the same number.
@@ -136,6 +142,27 @@ All notable changes to PSMutant are documented here. Format follows
   the gallery API key. git accepts `v1.0";$x;"` as a ref name, and pushing a tag requires
   no review while pushing to main does. The name now arrives through an environment
   variable, which is read at run time and stays data whatever it contains.
+
+### Internal
+
+- **Pinned dependencies are watched instead of only written down.** A weekly job checks each
+  pinned module against the gallery and opens one tracking issue when any has moved on;
+  Dependabot watches the action SHAs, which `pins.env` structurally cannot hold because `uses:`
+  does not expand variables and a SHA cannot be read to learn whether something newer exists.
+  An unreachable gallery is reported as **unknown** rather than as current, because a watcher
+  that reads "could not look" as "nothing newer" has stopped being able to fail.
+
+  `PESTER_COMPAT_VERSION` is judged on **difference, not freshness**: it is deliberately old,
+  because the compatibility guard runs a real mutation under the Pester the suite does *not*
+  use. Bumped to the newest it would equal the estate pin and prove nothing about the
+  manifest's `>= 5.0.0` promise -- while looking more up to date than a pin that works.
+
+- The orchestrator splats two clusters of run values rather than naming each at every call
+  site: what a run **executes** with (candidates, timeout, sandbox, quiet) and what a report
+  **documents** itself with (source hashes, operators, equivalents, report path). Three calls
+  that needed line continuations now fit on one line each. `Provenance` stays explicit at both
+  sites, because the recheck takes the scriptblock and the report takes its invoked result --
+  a difference a shared key would hide.
 
 ## [0.3.2] - 2026-08-21
 
