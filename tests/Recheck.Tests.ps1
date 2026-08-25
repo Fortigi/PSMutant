@@ -385,14 +385,24 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1') }
-        Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Survived' }) }
+        # A survivor with a real file and line, so the annotation is a THING this test can name
+        # rather than a call it has to infer.
+        Mock Invoke-PSMutationLoop {
+            @([pscustomobject]@{ Status = 'Survived'; File = 'src/a.ps1'; Line = 7; Description = '-and -> -or' })
+        }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
         Mock Test-PSMutationAnnotationHost { $true }
         Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
             -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
-        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { -not $Quiet }
+        # Filtered on what the call CARRIES, not on whether -Quiet was passed. An unbound switch
+        # inside a ParameterFilter is a scope-resolution question -- $false, or the caller's own
+        # $Quiet further up -- and the answer differed between the runner's PowerShell and this
+        # one, so the assertion passed here and failed there. Assert the thing, not a proxy.
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter {
+            @($Lines).Count -gt 0 -and @($Lines)[0].Role -eq 'Annotation'
+        }
     }
 
     It 'survives a CI run that has nothing to annotate' {
@@ -425,7 +435,10 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
             -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
-        Should-NotInvoke Write-PSMutationOutput -ParameterFilter { -not $Quiet }
+        # The same filter as its pair above, so the two read as one claim about one thing.
+        Should-NotInvoke Write-PSMutationOutput -ParameterFilter {
+            @($Lines).Count -gt 0 -and @($Lines)[0].Role -eq 'Annotation'
+        }
     }
 
     It 'reports progress and a summary when not quiet' {
