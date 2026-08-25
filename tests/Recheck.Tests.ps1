@@ -405,8 +405,15 @@ Describe 'Invoke-PSMutationRecheckRun' {
         # inside a ParameterFilter is a scope-resolution question -- $false, or the caller's own
         # $Quiet further up -- and the answer differed between the runner's PowerShell and this
         # one, so the assertion passed here and failed there. Assert the thing, not a proxy.
+        # -not $Quiet is part of the claim, not decoration: the call being MADE is not the
+        # point if it was made quietly, because the renderer honours the switch and nothing
+        # would reach the log. Silencing this call is a one-character change that leaves every
+        # other assertion here green.
+        #
+        # And it is well-defined to ask: every renderer call in src/ binds -Quiet, including
+        # this one, which passes -Quiet:$false. Before that it was a scope-resolution question.
         Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter {
-            @($Lines).Count -gt 0 -and @($Lines)[0].Role -eq 'Annotation'
+            @($Lines).Count -gt 0 -and @($Lines)[0].Role -eq 'Annotation' -and -not $Quiet
         }
     }
 
