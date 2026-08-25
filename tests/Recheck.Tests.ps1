@@ -428,7 +428,13 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1') }
-        Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Survived' }) }
+        # A survivor WITH a file, exactly like its pair above. With a row that has none, no
+        # annotation is produced under either answer from the host check -- so the fixture
+        # could not tell "not a CI" from "a CI with nothing to say", and the guard could be
+        # forced either way without this test noticing.
+        Mock Invoke-PSMutationLoop {
+            @([pscustomobject]@{ Status = 'Survived'; File = 'src/a.ps1'; Line = 7; Description = '-and -> -or' })
+        }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
         Mock Test-PSMutationAnnotationHost { $false }

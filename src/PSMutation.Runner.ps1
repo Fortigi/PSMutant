@@ -55,15 +55,20 @@ function Invoke-PSMutationBaseline {
         Passed          = ($result.Result -eq 'Passed')
         DurationSeconds = $sw.Elapsed.TotalSeconds
         CoveredLines    = $covered
-        # Carried so the guard can NAME what broke. A red baseline is reported by a gate that
-        # runs -Quiet, where the whole run prints one line -- and "not green" without a test
-        # name sends the reader to reproduce a failure that, by definition, is not happening on
-        # the machine they are standing on.
-        # Name AND message. The name alone says which assertion broke, not why -- and the
-        # reader is looking at a failure that, by definition, is not reproducing on their
-        # machine. Two rounds of this branch were spent guessing from a name.
+        # Carried so the guard can NAME what broke, and say why. A red baseline is reported by
+        # a gate that runs -Quiet, where the whole run prints one line -- so "not green", or
+        # even a bare test name, sends the reader to reproduce a failure that by definition is
+        # not happening on the machine they are standing on.
+        #
+        # The FIRST line only. A Pester message is an expectation, then the actual, then a
+        # stack; the first line is the one that says what went wrong, and any later line reads
+        # as a fact about nothing once separated from it.
+        #
+        # Split on \r?\n rather than on "`n": a CRLF message otherwise keeps a trailing
+        # carriage return, which travels into an exception message and prints as a stray line
+        # break in the middle of the gate's one line of output.
         FailedTest      = @($result.Failed | ForEach-Object {
-                $why = @($_.ErrorRecord.Exception.Message -split "`n")[0]
+                $why = @($_.ErrorRecord.Exception.Message -split "\r?\n")[0]
                 "$($_.ExpandedPath) -- $why"
             })
     }
