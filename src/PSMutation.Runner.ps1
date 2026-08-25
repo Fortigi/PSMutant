@@ -20,7 +20,8 @@ function Invoke-PSMutationBaseline {
         Run the suite once (green-gate) and capture per-file covered line numbers,
         so we only mutate lines a test actually exercises (Stryker's perTest idea).
     .OUTPUTS
-        @{ Passed = <bool>; DurationSeconds = <double>; CoveredLines = @{ file = HashSet[int] } }
+        @{ Passed = <bool>; DurationSeconds = <double>; CoveredLines = @{ file = HashSet[int] };
+           FailedTest = <string[]> }
     #>
     [OutputType([hashtable])]
     [CmdletBinding()]
@@ -54,6 +55,22 @@ function Invoke-PSMutationBaseline {
         Passed          = ($result.Result -eq 'Passed')
         DurationSeconds = $sw.Elapsed.TotalSeconds
         CoveredLines    = $covered
+        # Carried so the guard can NAME what broke, and say why. A red baseline is reported by
+        # a gate that runs -Quiet, where the whole run prints one line -- so "not green", or
+        # even a bare test name, sends the reader to reproduce a failure that by definition is
+        # not happening on the machine they are standing on.
+        #
+        # The FIRST line only. A Pester message is an expectation, then the actual, then a
+        # stack; the first line is the one that says what went wrong, and any later line reads
+        # as a fact about nothing once separated from it.
+        #
+        # Split on \r?\n rather than on "`n": a CRLF message otherwise keeps a trailing
+        # carriage return, which travels into an exception message and prints as a stray line
+        # break in the middle of the gate's one line of output.
+        FailedTest      = @($result.Failed | ForEach-Object {
+                $why = @($_.ErrorRecord.Exception.Message -split "\r?\n")[0]
+                "$($_.ExpandedPath) -- $why"
+            })
     }
 }
 
@@ -65,9 +82,18 @@ function Assert-PSMutationBaselineGreen {
     # Lives beside Invoke-PSMutationBaseline, whose output it is the only reader of.
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Baseline)
-    if (-not $Baseline.Passed) {
-        throw 'Baseline suite is not green - fix the tests before mutating.'
+    if ($Baseline.Passed) { return }
+    # Named, and capped at ten. A wholly broken suite would otherwise paste hundreds of names
+    # into one exception and bury the first, which is the one most likely to explain the rest.
+    $named = @($Baseline.FailedTest)
+    $detail = ''
+    if ($named.Count -gt 0) {
+        $shown = @($named | Select-Object -First 10)
+        $more = ''
+        if ($named.Count -gt $shown.Count) { $more = " (and $($named.Count - $shown.Count) more)" }
+        $detail = " Failed: $($shown -join '; ')$more."
     }
+    throw "Baseline suite is not green - fix the tests before mutating.$detail"
 }
 
 function Test-PSMutantCovered {

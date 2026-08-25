@@ -403,6 +403,40 @@ Describe 'Invoke-PSBoundedPester' {
     }
 }
 
+Describe 'Invoke-PSMutationBaseline, on a red suite' {
+    It 'carries the first line of each failure, without a stray carriage return' {
+        # Two claims on one fixture, because the line does two things. A Pester message is an
+        # expectation, then the actual, then a stack -- index 1 would report "at <ScriptBlock>"
+        # as the reason, which is a fact about nothing.
+        #
+        # And the fixture uses CRLF on purpose: splitting on "`n" alone leaves the carriage
+        # return on the end of the first line, which then travels into the exception the gate
+        # throws and prints as a stray break in the middle of its one line of output.
+        Mock Invoke-Pester {
+            [pscustomobject]@{
+                Result       = 'Failed'
+                CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
+                Failed       = @(
+                    [pscustomobject]@{
+                        ExpandedPath = 'Recheck.annotates under a CI'
+                        ErrorRecord  = [pscustomobject]@{
+                            Exception = [pscustomobject]@{
+                                Message = "Expected 1 call, but was 0.`r`nat <ScriptBlock>, Recheck.Tests.ps1:389"
+                            }
+                        }
+                    }
+                )
+            }
+        }
+
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
+
+        $r.Passed | Should-BeFalse
+        @($r.FailedTest).Count | Should-Be 1
+        $r.FailedTest[0] | Should-Be 'Recheck.annotates under a CI -- Expected 1 call, but was 0.'
+    }
+}
+
 Describe 'Assert-PSMutationBaselineGreen' {
     It 'refuses to mutate against a red suite' {
         # The most misleading result this tool could produce: against a failing
@@ -416,6 +450,61 @@ Describe 'Assert-PSMutationBaselineGreen' {
         # covers the refusal case too: an exception here fails the test on its own,
         # which is why v6 offers no "does not throw" assertion to wrap it in.
         Should-BeNull -Actual (Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $true }))
+    }
+
+    It 'names the tests that failed' {
+        # The gate that reports a red baseline runs -Quiet, so the whole run prints one line.
+        # "Not green" without a name sends the reader to reproduce a failure that, by
+        # definition, is not happening on the machine they are standing on -- which is exactly
+        # what it cost when this message had no detail.
+        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
+                    Passed = $false; FailedTest = @('Output.annotates a survivor', 'Recheck.still surviving')
+                }) } | Should-Throw -ExceptionMessage '*Failed: Output.annotates a survivor; Recheck.still surviving.*'
+    }
+
+    It 'caps the list and says how many it left out' {
+        # A wholly broken suite would otherwise paste hundreds of names into one exception and
+        # bury the first, which is the one most likely to explain the rest.
+        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
+                    Passed = $false; FailedTest = @(1..14 | ForEach-Object { "T$_" })
+                }) } | Should-Throw -ExceptionMessage '*T10 (and 4 more).*'
+    }
+
+    It 'names a single failure rather than losing it' {
+        # Exactly ONE. The guard reads `-gt 0`, and as `-gt 1` a lone failure loses its name
+        # while the run still fails -- putting the reader back to reproducing something they
+        # cannot see, which is the whole cost this message exists to remove. Two names or more
+        # pass under either reading, so only a fixture of one discriminates.
+        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
+                    Passed = $false; FailedTest = @('Only.one -- Expected 1, got 0')
+                }) } | Should-Throw -ExceptionMessage '*Failed: Only.one -- Expected 1, got 0.*'
+    }
+
+    It 'says nothing about names it does not have' {
+        # The refusal is the point and the names are a courtesy -- but a courtesy that fires on
+        # an empty list reads " Failed: ." which is worse than silence. Asserted as an ABSENCE,
+        # because a message that merely still contains the refusal passes either way.
+        $message = $null
+        try {
+            Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $false; FailedTest = @() })
+        }
+        catch { $message = $_.Exception.Message }
+        $message | Should-BeLikeString '*fix the tests before mutating*'
+        $message | Should-NotBeLikeString '*Failed:*'
+    }
+
+    It 'claims no remainder when it showed every name' {
+        # Exactly ten, the cap itself. Read as at-or-over, the message ends "(and 0 more)" --
+        # a remainder that does not exist, on the one input where the two readings differ.
+        $message = $null
+        try {
+            Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
+                    Passed = $false; FailedTest = @(1..10 | ForEach-Object { "T$_" })
+                })
+        }
+        catch { $message = $_.Exception.Message }
+        $message | Should-BeLikeString '*T10.*'
+        $message | Should-NotBeLikeString '*more)*'
     }
 }
 
