@@ -20,7 +20,8 @@ function Invoke-PSMutationBaseline {
         Run the suite once (green-gate) and capture per-file covered line numbers,
         so we only mutate lines a test actually exercises (Stryker's perTest idea).
     .OUTPUTS
-        @{ Passed = <bool>; DurationSeconds = <double>; CoveredLines = @{ file = HashSet[int] } }
+        @{ Passed = <bool>; DurationSeconds = <double>; CoveredLines = @{ file = HashSet[int] };
+           FailedTest = <string[]> }
     #>
     [OutputType([hashtable])]
     [CmdletBinding()]
@@ -54,6 +55,11 @@ function Invoke-PSMutationBaseline {
         Passed          = ($result.Result -eq 'Passed')
         DurationSeconds = $sw.Elapsed.TotalSeconds
         CoveredLines    = $covered
+        # Carried so the guard can NAME what broke. A red baseline is reported by a gate that
+        # runs -Quiet, where the whole run prints one line -- and "not green" without a test
+        # name sends the reader to reproduce a failure that, by definition, is not happening on
+        # the machine they are standing on.
+        FailedTest      = @($result.Failed | ForEach-Object { $_.ExpandedPath })
     }
 }
 
@@ -65,9 +71,18 @@ function Assert-PSMutationBaselineGreen {
     # Lives beside Invoke-PSMutationBaseline, whose output it is the only reader of.
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Baseline)
-    if (-not $Baseline.Passed) {
-        throw 'Baseline suite is not green - fix the tests before mutating.'
+    if ($Baseline.Passed) { return }
+    # Named, and capped at ten. A wholly broken suite would otherwise paste hundreds of names
+    # into one exception and bury the first, which is the one most likely to explain the rest.
+    $named = @($Baseline.FailedTest)
+    $detail = ''
+    if ($named.Count -gt 0) {
+        $shown = @($named | Select-Object -First 10)
+        $more = ''
+        if ($named.Count -gt $shown.Count) { $more = " (and $($named.Count - $shown.Count) more)" }
+        $detail = " Failed: $($shown -join '; ')$more."
     }
+    throw "Baseline suite is not green - fix the tests before mutating.$detail"
 }
 
 function Test-PSMutantCovered {
