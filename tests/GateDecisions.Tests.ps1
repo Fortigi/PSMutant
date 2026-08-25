@@ -227,6 +227,67 @@ Describe 'Get-PSMutantTestRunFault' {
     }
 }
 
+Describe 'Get-PSMutantProcessStateFault' {
+    It 'says nothing about a run that put everything back' {
+        Get-PSMutantProcessStateFault -Before @{ 'env:PATH' = '/usr/bin'; 'env:HOME' = '/home/x' } `
+            -After @{ 'env:PATH' = '/usr/bin'; 'env:HOME' = '/home/x' } | Should-BeNull
+    }
+
+    It 'says nothing when there was nothing to compare' {
+        # Paired with the case above rather than left out: an empty environment must read as
+        # clean, not as every variable having been removed.
+        Get-PSMutantProcessStateFault -Before @{} -After @{} | Should-BeNull
+    }
+
+    It 'names a variable the run added' {
+        Get-PSMutantProcessStateFault -Before @{} -After @{ 'env:PSMUT_LEAK' = '1' } |
+            Should-BeLikeString '*added: env:PSMUT_LEAK*'
+    }
+
+    It 'names a variable the run removed' {
+        # This repo's actual failure: Output.Tests.ps1 cleared GITHUB_ACTIONS in an AfterEach and
+        # never put it back, so every file after it ran in a different environment.
+        Get-PSMutantProcessStateFault -Before @{ 'env:GITHUB_ACTIONS' = 'true' } -After @{} |
+            Should-BeLikeString '*removed: env:GITHUB_ACTIONS*'
+    }
+
+    It 'names a variable the run changed' {
+        Get-PSMutantProcessStateFault -Before @{ 'env:TERM' = 'xterm' } -After @{ 'env:TERM' = 'dumb' } |
+            Should-BeLikeString '*changed: env:TERM*'
+    }
+
+    It 'treats a change of CASE as a change' {
+        # The comparison is -cne, not -ne. A case-insensitive compare calls 'true' and 'True'
+        # equal, and a variable read case-sensitively downstream is then reported as untouched.
+        # The one input that tells the two operators apart.
+        Get-PSMutantProcessStateFault -Before @{ 'env:CI' = 'true' } -After @{ 'env:CI' = 'TRUE' } |
+            Should-BeLikeString '*changed: env:CI*'
+    }
+
+    It 'withholds the values' {
+        # Not tidiness. An environment variable holds tokens as often as it holds flags, and this
+        # message is printed into a build log anyone can read. The key says which variable; the
+        # value would say what it was.
+        $fault = Get-PSMutantProcessStateFault -Before @{ 'env:TOKEN' = 'ghp_secret' } `
+            -After @{ 'env:TOKEN' = 'ghp_other' }
+        $fault | Should-BeLikeString '*env:TOKEN*'
+        $fault | Should-NotBeLikeString '*ghp_secret*'
+        $fault | Should-NotBeLikeString '*ghp_other*'
+    }
+
+    It 'reports all three kinds at once, and every key in each' {
+        # One fault per run, so a message that stopped at the first kind would send the reader
+        # back for another round per variable.
+        $fault = Get-PSMutantProcessStateFault `
+            -Before @{ 'env:GONE_A' = '1'; 'env:GONE_B' = '1'; 'env:SAME' = 'x'; 'env:MOVED' = 'x' } `
+            -After @{ 'env:SAME' = 'x'; 'env:MOVED' = 'y'; 'env:NEW' = '1' }
+        $fault | Should-BeLikeString '*added: env:NEW*'
+        $fault | Should-BeLikeString '*removed: env:GONE_A, env:GONE_B*'
+        $fault | Should-BeLikeString '*changed: env:MOVED*'
+        $fault | Should-NotBeLikeString '*env:SAME*'
+    }
+}
+
 Describe 'a pin is watched, not just written down' {
     # A pin is a decision that was correct on the day it was made. Nothing watched them, and
     # the failure is asymmetric: a stale pin never breaks the build, it just quietly stops

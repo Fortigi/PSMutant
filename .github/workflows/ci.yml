@@ -162,6 +162,16 @@ jobs:
               -ContainerName @($r.Containers | ForEach-Object { Split-Path $_.Item -Leaf })
           if ($fault) { throw $fault }
 
+      # The step above ran the suite alphabetically. The mutation gate below runs the mapped
+      # covering suites in config order, and those two orders differ -- which is how a variable
+      # one file cleared and never restored made the suite green locally and red in the gate,
+      # for three CI rounds. Runs on every leg: an order dependency can be platform-specific.
+      - name: Order independence (the suite, reversed)
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
+          ./tools/Test-PSMutantOrderIndependence.ps1
+
       # Coverage is measured by a committed script, not by a snippet living only here, so
       # that a developer checking by hand runs exactly what the gate runs. The figure used
       # to be folklore; it is now enforced at 100.

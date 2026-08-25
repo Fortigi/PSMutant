@@ -35,6 +35,7 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 | Import smoke | module loads, `Invoke-PSMutation` is exported |
 | Lint | `tools/Invoke-PSMutantAnalyzer.ps1` — PSScriptAnalyzer over `PSSA_PATHS`, **every severity**. The same script code scanning runs |
 | Unit tests | whole `tests/` directory, must be 0 failures. Two gates live only here: `Layering.Tests.ps1` (file-to-file edges, acyclicity, the one `Write-Host`) and the public-help and schema assertions in `EndToEnd.Tests.ps1` |
+| Order independence | `tools/Test-PSMutantOrderIndependence.ps1` — the same suite again, reversed, plus an environment comparison |
 | Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
 | Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
 | Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100. Several hundred mutants and a handful of minutes -- deliberately not a figure to keep in step, because a hand-maintained count is how the numbers here became folklore before |
@@ -787,6 +788,32 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   The vacuity check is the part that is easy to skip. "I changed X and nothing broke" means
   nothing until you have also confirmed that a change which *should* break it does -- a fixture
   that cannot fail proves the same thing about every hypothesis.
+
+- **The suite runs in two orders here, and both are checked.** `Invoke-Pester ./tests` discovers
+  files alphabetically; the mutation baseline runs the mapped covering suites in the order
+  `psmutant.self.config.json` lists them. Those orders differ, and they have already disagreed:
+  `Output.Tests.ps1` sorts first and its `AfterEach` cleared an environment variable, so
+  `Recheck.Tests.ps1` saw the ambient value in config order and the cleared one alphabetically. The
+  suite was green locally and red in the gate, and three CI rounds went into finding out why.
+
+  `tools/Test-PSMutantOrderIndependence.ps1` runs the suite **reversed** and compares the
+  environment before and after. The two halves fail on opposite ends of the same problem, which is
+  why both are there: the reversed run catches a dependency by its **symptom** and is a probe
+  rather than a proof -- one more permutation, not all of them -- while the environment comparison
+  catches the **cause** and is direction-blind, firing on the file that leaks whether or not
+  anything reads it yet. Reversal alone can miss exactly that, because it moves the reader in front
+  of the leaker as readily as behind it.
+
+  **Two other kinds of state were tried and rejected, and the measurements are in the script.** The
+  working directory cannot fire, because Pester restores it around a run -- verified both with a
+  test that wanders off via `Set-Location` and with a full run of this suite. Global variables fire
+  on a *clean* suite: this one already leaves `d`, `p`, `root` and `LASTEXITCODE` behind, so
+  keeping the check would mean an allowlist that grows with the tests it is watching. A check that
+  cannot fire and a check that always fires are the same defect wearing different clothes; neither
+  was written and left in.
+
+  The failure message names keys and **never values**. An environment variable holds tokens as
+  often as it holds flags, and this message is printed into a build log anyone can read.
 
 - **Review by lens, not by file.** A pass over the same files with the same question finds what
   the last one found. Pointing an unused question at the project -- what does a hostile local

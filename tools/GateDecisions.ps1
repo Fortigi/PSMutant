@@ -297,3 +297,46 @@ function Get-PSMutantTestRunFault {
     }
     return $null
 }
+
+function Get-PSMutantProcessStateFault {
+    # Why a suite run must be treated as having leaked, or $null when it has not.
+    #
+    # A test file can only change how a LATER file behaves if what it changed outlives it. So
+    # comparing the process before against after asks the question that matters: did the suite
+    # leave anything behind. That is the precondition for order-dependence, and it is
+    # direction-blind -- it fires on the file that leaks rather than on the file that happens to
+    # read, which is the half a reversed run can miss. The leak this repo actually shipped was an
+    # AfterEach that cleared a variable and never put it back.
+    #
+    # Keys are named and values are NEVER printed. An environment variable holds tokens as often
+    # as it holds flags, and a gate that quotes one into a public build log has turned a tidiness
+    # check into a disclosure.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        # Process state as key -> value, keyed by the path you would type: environment variables
+        # arrive as 'env:NAME'. One map rather than a parameter per kind of state, so a new kind
+        # is a new key at the call site and not a new comparison here to keep in step.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [hashtable]$Before,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [hashtable]$After
+    )
+    $added = @($After.Keys | Where-Object { -not $Before.ContainsKey($_) } | Sort-Object)
+    $removed = @($Before.Keys | Where-Object { -not $After.ContainsKey($_) } | Sort-Object)
+    # Compare with -cne: on Linux two variables differing only in case are two variables, and a
+    # case-insensitive compare would call a genuine change no change at all.
+    $changed = @($Before.Keys |
+            Where-Object { $After.ContainsKey($_) -and [string]$Before[$_] -cne [string]$After[$_] } |
+            Sort-Object)
+
+    $parts = @()
+    foreach ($set in @(@{ N = 'added'; V = $added }, @{ N = 'removed'; V = $removed },
+            @{ N = 'changed'; V = $changed })) {
+        if ($set.V.Count -gt 0) { $parts += "$($set.N): $($set.V -join ', ')" }
+    }
+    if ($parts.Count -eq 0) { return $null }
+
+    return ('The suite changed process state it did not create -- ' + ($parts -join '; ') +
+        '. A test file that leaves the process different from how it found it decides what every ' +
+        'file after it sees, so the answer starts depending on the order. Restore it where you ' +
+        'change it. (Values are withheld: an environment variable can hold a token.)')
+}
