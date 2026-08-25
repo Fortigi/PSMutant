@@ -289,7 +289,16 @@ function Invoke-PSMutationRecheckRun {
         # @() because a run with NOTHING to annotate yields no lines at all, and -Lines
         # accepts an empty collection but not $null. Without it a clean run under Actions
         # throws on binding -- so the green path would be the one that crashed.
-        Write-PSMutationOutput -Lines @(Get-PSMutationAnnotationLine -Lines $recheckLines)
+        # -Quiet:$false rather than omitting the switch. Not decoration: an omitted switch
+        # is UNBOUND on the call, and a Should-Invoke filter that mentions $Quiet then has
+        # to resolve it -- $false, or the caller's own $Quiet further up the scope chain --
+        # and the two answers are not the same on every PowerShell. Binding it explicitly
+        # makes every renderer call carry the parameter, so no filter anywhere can be
+        # ambiguous about which calls it selected.
+        #
+        # It also says the thing out loud at the call site: annotations are deliberately
+        # NOT suppressed, because -Quiet silences the log and a finding is not log.
+        Write-PSMutationOutput -Quiet:$false -Lines @(Get-PSMutationAnnotationLine -Lines $recheckLines)
     }
     return $summary
 }

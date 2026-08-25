@@ -373,6 +373,11 @@ Describe 'Invoke-PSMutationRecheckRun' {
         # -Quiet reaches BOTH emitters -- the progress line and the closing summary -- and
         # is forwarded rather than used to skip the call, since the renderer is what
         # honours it. An unforwarded switch prints for real.
+        #
+        # This filter is well-defined because EVERY renderer call binds -Quiet, including the
+        # annotation one, which passes -Quiet:$false. Omit the switch anywhere and $Quiet here
+        # becomes a scope-resolution question rather than a value, which is how a filter starts
+        # selecting a different set of calls on somebody else's PowerShell.
         Should-Invoke Write-PSMutationOutput -Exactly 2 -ParameterFilter { $Quiet }
     }
 
