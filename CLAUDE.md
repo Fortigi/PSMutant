@@ -935,6 +935,18 @@ Traps that have bitten in this repo specifically:
   `Should -Match ([regex]::Escape(...))`.
 - A property getter that throws yields `$null` in PowerShell rather than raising, so a
   `try/catch` around it never runs. Test the value, not the exception.
+- **Help may only point at topics that ship.** The `.PARAMETER ConfigFile` block said "see
+  about_PSMutant / the README" and there was no such topic -- no `en-US/`, no `*.help.txt` -- so a
+  gallery consumer running `Get-Help Invoke-PSMutation -Full` was sent nowhere. `tests/EndToEnd.Tests.ps1`
+  now scans the resolved help for `about_*` names and fails on any the package does not provide,
+  paired with a case that proves the search finds things, because the list it iterates is empty
+  today and an empty loop passes whatever it is asked.
+
+  **An `about_` topic was considered and refused.** It would be a second place the config format is
+  described, and this project removed the last of those on purpose: `schemas/v1/config.schema.json`
+  IS the format, read at run time, with no PowerShell copy to fall out of step. The help now points
+  at the schema, which ships in the package and cannot describe a config the module would reject.
+
 - **A `<# #>` block immediately before `function` becomes that function's help.** So a
   file header written that way SHADOWS the comment-based help inside the body, and
   `Get-Help` serves the file's architecture notes instead of the documentation written for
