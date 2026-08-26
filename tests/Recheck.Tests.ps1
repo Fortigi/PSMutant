@@ -214,6 +214,36 @@ Describe 'Write-PSMutationRecheckReport' {
         $s.StillSurviving | Should-Be 1
     }
 
+    It 'shares ExitCode and FailureReason with a full run, so a generic caller can branch' {
+        # The two shapes used to have NO field in common, and the absence failed in both
+        # directions at once. The idiom this module's own README teaches --
+        # `if ($result.ExitCode -ne 0) { throw }` -- compared $null against 0 and threw on a
+        # perfectly successful recheck; `exit $result.ExitCode` became `exit $null`, which is 0,
+        # and passed even with every prior survivor still alive. One failed loudly, the other
+        # passed silently, from the same missing field.
+        $out = Join-Path $TestDrive 'r-exit.recheck.json'
+        $s = Write-PSMutationRecheckReport -Results $script:results -ReportPath $out `
+            -PriorSurvivorCount 5 -SourceReportPath 'reports/full.json'
+        $s.ExitCode | Should-Be 0
+        $s.FailureReason | Should-Be 'None'
+    }
+
+    It 'still exits 0 when everything rechecked is STILL surviving' {
+        # Paired with the case above, and the more important half: a recheck applies no
+        # thresholds by design. It answers "is this one dead yet" over a set somebody chose, and
+        # a verdict over a chosen subset is exactly the filtered number this module exists to
+        # stop people quoting. StillSurviving is the answer to read.
+        $allAlive = @(
+            [pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 10; Description = 'x'; Status = 'Survived' }
+            [pscustomobject]@{ Id = 2; File = 'src/a.ps1'; Line = 20; Description = 'y'; Status = 'Survived' }
+        )
+        $out = Join-Path $TestDrive 'r-alive.recheck.json'
+        $s = Write-PSMutationRecheckReport -Results $allAlive -ReportPath $out `
+            -PriorSurvivorCount 5 -SourceReportPath 'reports/full.json'
+        $s.StillSurviving | Should-Be 2
+        $s.ExitCode | Should-Be 0
+    }
+
     It 'writes no score field, because a filtered set has no score' {
         # 1 of 2 rechecked is not "50%" of the file. Emitting any percentage is how a
         # partial number ends up quoted as a real one, so the field does not exist

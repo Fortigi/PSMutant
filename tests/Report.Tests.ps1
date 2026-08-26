@@ -282,12 +282,64 @@ Describe 'Get-PSMutationSummaryLine' {
     }
 }
 
+Describe 'Get-PSMutationFailureReason' {
+    # The verdict and the reason are one judgement asked at two resolutions, so the exit code is
+    # DERIVED from this rather than deciding the same two rules again. Each case below checks
+    # both at the same inputs, which is what makes that derivation observable.
+
+    It 'is None for a clean run, and exit code 0' {
+        $s = [pscustomobject]@{ Score = 100; StaleEquivalents = @() }
+        $t = [pscustomobject]@{ break = 100 }
+        Get-PSMutationFailureReason -Summary $s -Thresholds $t | Should-Be 'None'
+        Get-PSMutationExitCode -Summary $s -Thresholds $t | Should-Be 0
+    }
+
+    It 'is BelowThreshold when the score is under break' {
+        $s = [pscustomobject]@{ Score = 99.8; StaleEquivalents = @() }
+        $t = [pscustomobject]@{ break = 100 }
+        Get-PSMutationFailureReason -Summary $s -Thresholds $t | Should-Be 'BelowThreshold'
+        Get-PSMutationExitCode -Summary $s -Thresholds $t | Should-Be 1
+    }
+
+    It 'is None with no break threshold at all, however low the score' {
+        # Report-only is a real configuration, and a run nobody asked to gate must not fail.
+        $s = [pscustomobject]@{ Score = 0; StaleEquivalents = @() }
+        Get-PSMutationFailureReason -Summary $s -Thresholds ([pscustomobject]@{ high = 90 }) |
+            Should-Be 'None'
+    }
+
+    It 'is StaleEquivalents even in report-only mode' {
+        # A stale declaration is not a quality shortfall to be graded on a curve; it is a false
+        # statement in the config that is inflating the score, so it fails regardless.
+        $s = [pscustomobject]@{ Score = 100; StaleEquivalents = @('src/a.ps1:F:1 -> 2') }
+        Get-PSMutationFailureReason -Summary $s -Thresholds $null | Should-Be 'StaleEquivalents'
+        Get-PSMutationExitCode -Summary $s -Thresholds $null | Should-Be 1
+    }
+
+    It 'reports STALE first when the run is both stale and under threshold' {
+        # The discriminating case: both rules fire. Stale is the more specific and the more
+        # actionable -- a score computed with a false declaration in it is not one anybody should
+        # act on, so "below threshold" would send the reader to write tests when the config is
+        # what needs editing.
+        $s = [pscustomobject]@{ Score = 50; StaleEquivalents = @('src/a.ps1:F:1 -> 2') }
+        Get-PSMutationFailureReason -Summary $s -Thresholds ([pscustomobject]@{ break = 100 }) |
+            Should-Be 'StaleEquivalents'
+    }
+
+    It 'is not fooled by a summary carrying no stale list at all' {
+        # @($null).Count is 1, not 0. Without the filter every run fails.
+        $s = [pscustomobject]@{ Score = 100 }
+        Get-PSMutationFailureReason -Summary $s -Thresholds ([pscustomobject]@{ break = 100 }) |
+            Should-Be 'None'
+    }
+}
+
 Describe 'ConvertTo-PSMutationRunResult' {
     It 'exposes the score, the counts and the exit code' {
         # This object is the module's public contract -- CI reads .Score and .ExitCode.
         $s = [pscustomobject]@{ Score = 64.3; Killed = 164; Survived = 91; Total = 255 }
 
-        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 1
+        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 1 -FailureReason 'BelowThreshold'
 
         $r.Score    | Should-Be 64.3
         $r.Killed   | Should-Be 164
@@ -299,11 +351,45 @@ Describe 'ConvertTo-PSMutationRunResult' {
     It 'keeps killed and survived distinct' {
         # Numbers chosen so a swapped pair cannot pass: equal counts would hide it.
         $s = [pscustomobject]@{ Score = 50; Killed = 3; Survived = 7; Total = 10 }
-        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 0
+        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 0 -FailureReason 'None'
         $r.Killed   | Should-Be 3
         $r.Survived | Should-Be 7
     }
+
+    It 'carries the reason and the stale list, not just the verdict' {
+        # The whole point. Exit code 1 means either a stale declaration or a low score, and a
+        # caller that cannot tell them apart has to guess -- which is how a workflow came to
+        # print "score is below the break threshold" over a run that scored 100%.
+        $s = [pscustomobject]@{
+            Score              = 100; Killed = 2; Survived = 0; Total = 2
+            DeclaredEquivalent = 1; StaleEquivalents = @('src/a.ps1:Get-Thing:1 -> 2')
+        }
+        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 1 -FailureReason 'StaleEquivalents'
+        $r.FailureReason | Should-Be 'StaleEquivalents'
+        $r.StaleEquivalents | Should-BeCollection @('src/a.ps1:Get-Thing:1 -> 2')
+        $r.DeclaredEquivalent | Should-Be 1
+        # And the score is still 100, which is exactly why the reason has to travel beside it.
+        $r.Score | Should-Be 100
+    }
+
+    It 'reports an EMPTY stale list rather than nothing when there is none' {
+        # Absent and empty are different answers. A consumer iterating this should not have to
+        # tell "nothing was stale" from "this build stopped reporting it".
+        $s = [pscustomobject]@{ Score = 100; Killed = 2; Survived = 0; Total = 2 }
+        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 0 -FailureReason 'None'
+        @($r.StaleEquivalents).Count | Should-Be 0
+        $r.DeclaredEquivalent | Should-Be 0
+    }
+
+    It 'says which mode produced it' {
+        # The two shapes shared no field at all, so a caller that did not choose the mode could
+        # not tell which one it was holding.
+        $s = [pscustomobject]@{ Score = 100; Killed = 1; Survived = 0; Total = 1 }
+        (ConvertTo-PSMutationRunResult -Summary $s -ExitCode 0 -FailureReason 'None').Mode |
+            Should-Be 'Full'
+    }
 }
+
 
 Describe 'Get-PSMutationScoreRole' {
     It 'scores <Score> against 85/70 as <Expected>' -ForEach @(
@@ -345,8 +431,9 @@ Describe 'the contract a consumer actually depends on' {
         # CI reads .Score and .ExitCode off this. An extra field is a promise nobody meant to
         # make; a missing one breaks a pipeline that has no way to see it coming.
         $s = [pscustomobject]@{ Score = 64.3; Killed = 164; Survived = 91; Total = 255 }
-        (ConvertTo-PSMutationRunResult -Summary $s -ExitCode 1).PSObject.Properties.Name |
-            Should-BeCollection @('Score', 'Killed', 'Survived', 'Total', 'ExitCode')
+        (ConvertTo-PSMutationRunResult -Summary $s -ExitCode 1 -FailureReason 'BelowThreshold').PSObject.Properties.Name |
+            Should-BeCollection @('Mode', 'Score', 'Killed', 'Survived', 'Total', 'ExitCode',
+                'FailureReason', 'StaleEquivalents', 'DeclaredEquivalent')
     }
 
     It 'writes exactly the documented top-level report fields' {

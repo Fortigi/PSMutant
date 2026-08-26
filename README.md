@@ -51,7 +51,8 @@ Run it from your repo root:
 Import-Module PSMutant
 $result = Invoke-PSMutation -ConfigFile ./psmutant.config.json
 "$($result.Score)% ($($result.Killed)/$($result.Total))"
-exit $result.ExitCode        # 0 unless thresholds.break is set and unmet
+exit $result.ExitCode        # 0 unless thresholds.break is unmet, or a declaration went stale
+                            # $result.FailureReason says which: None | StaleEquivalents | BelowThreshold
 ```
 
 Survivors are printed with `file:line` and the exact source→mutant change — each is a
