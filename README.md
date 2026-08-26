@@ -201,7 +201,7 @@ schema cannot give.
 | Key | Meaning |
 |---|---|
 | `mutate` | Files to mutate. Pure / I/O-free logic pays off most. **Required.** |
-| `tests` | Map each mutate file → the Pester file(s) covering it (per-file test scoping). **Required.** |
+| `tests` | Map each mutate file → the Pester file(s) covering it (per-file test scoping). **Required.** Every key must be a file listed in `mutate`; one that is not is refused, because it covers nothing while its tests still join the baseline. Comments (`_`-prefixed keys) go at the top level, not inside this map. |
 | `operators` | Operator classes to inject. Default is the four expression operators; `StringLiteral`, `ConditionalBoundary`, `ConditionForcing` and `ReturnValue` are opt-in. |
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |

@@ -438,6 +438,63 @@ function Get-PSMutationUnmappedMutateFile {
     return [string[]]@($MutateFiles | Where-Object { -not $TestsByFile.ContainsKey($_) })
 }
 
+function Get-PSMutationOrphanTestsFault {
+    <#
+    .SYNOPSIS
+        The fault, if any, when a `tests` key names no file in `mutate`.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        # The keys as written, for the message. Same length as Resolved and in the same order:
+        # the one caller builds both in lockstep from a single walk of the tests map, so an
+        # index valid in one is valid in the other.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$Raw,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$Resolved,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Mutate
+    )
+    # A key in `tests` IS a mutate file -- the map answers "which tests cover this one". A key that
+    # matches nothing is accepted today and does three wrong things quietly: its test files still
+    # join the baseline's set, its entry covers no mutant, and whichever file it was MEANT to name
+    # has no entry at all, so every one of that file's mutants falls back to running the whole
+    # suite. None of it fails. It makes the run slower while the score stays believable.
+    #
+    # Resolved and case-insensitive, for the reasons on the duplicate check above: `src/a.ps1` and
+    # `src/../src/a.ps1` are one file, and a config that fails on one platform but not the other
+    # is worse than one that fails on both.
+    $known = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($m in $Mutate) { [void]$known.Add($m) }
+
+    $orphans = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $Resolved.Count; $i++) {
+        if ($known.Contains($Resolved[$i])) { continue }
+        # The raw spelling, because that is the text the reader has to go and edit.
+        #
+        # No length guard on $Raw. The obvious defensive `if ($i -lt $Raw.Count)` was written
+        # first and removed: the two lists are built together from one walk, so the else branch
+        # cannot be reached, and it was a pair of mutants nothing could ever kill -- the same
+        # call Get-PSMutationEditDistance makes about its empty-string base cases. If the lists
+        # ever do drift, an index error naming this line is a better answer than a message
+        # quietly built from the wrong column.
+        $orphans.Add($Raw[$i])
+    }
+    if ($orphans.Count -eq 0) { return $null }
+
+    # A `_`-prefixed key earns its own sentence. Those ARE comments at the top level -- JSON has
+    # none of its own and every config here relies on them -- so somebody who has just written
+    # `_comment` beside `mutate` has no reason to expect the rule to change one level down.
+    $comment = ''
+    if (@($orphans | Where-Object { $_.StartsWith('_') }).Count -gt 0) {
+        $comment = " A '_'-prefixed key is a comment only at the TOP level of a config; inside " +
+        "'tests' every key is a path, so the note is looked for as a file."
+    }
+    return ("These 'tests' keys name no file in 'mutate': $(($orphans | Sort-Object -Unique) -join ', '). " +
+        'A key there is the mutate file whose covering tests it lists, so one that matches nothing ' +
+        'covers nothing -- while its test files still join the baseline suite, and whichever file ' +
+        'it was meant to name falls back to running your WHOLE suite for every one of its mutants.' +
+        $comment)
+}
+
 function Get-PSMutationSandboxPlan {
     # Translate the config's source-relative mutate/tests into sandbox absolute paths.
     #
@@ -449,18 +506,29 @@ function Get-PSMutationSandboxPlan {
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Cfg, [Parameter(Mandatory)] [string]$SourceRoot, [Parameter(Mandatory)] [string]$SandboxRoot)
     $toSb = { param($p) ConvertTo-PSMutationSandboxPath -Path (Join-Path $SourceRoot $p) -RepoRoot $SourceRoot -SandboxRoot $SandboxRoot }
-    $byFile = @{}
-    $all = [System.Collections.Generic.List[string]]::new()
-    foreach ($prop in $Cfg.tests.PSObject.Properties) {
-        $vals = @($prop.Value | ForEach-Object { & $toSb $_ })
-        $byFile[(& $toSb $prop.Name)] = $vals
-        $vals | ForEach-Object { $all.Add($_) }
-    }
     $mutate = @($Cfg.mutate | ForEach-Object { & $toSb $_ })
     # Here rather than in Assert-PSMutationConfig, which sees config STRINGS: two spellings of
-    # one path are only equal once resolved, and this is the first place that is true.
+    # one path are only equal once resolved, and this is the first place that is true. The orphan
+    # check below is here for the same reason and needs the resolved mutate list, so both now
+    # happen before the tests map is walked.
     $dupe = Get-PSMutationDuplicateMutateFault -Resolved $mutate
     if ($dupe) { throw $dupe }
+
+    $byFile = @{}
+    $all = [System.Collections.Generic.List[string]]::new()
+    $rawKeys = [System.Collections.Generic.List[string]]::new()
+    $mappedKeys = [System.Collections.Generic.List[string]]::new()
+    foreach ($prop in $Cfg.tests.PSObject.Properties) {
+        $vals = @($prop.Value | ForEach-Object { & $toSb $_ })
+        $key = & $toSb $prop.Name
+        $rawKeys.Add($prop.Name)
+        $mappedKeys.Add($key)
+        $byFile[$key] = $vals
+        $vals | ForEach-Object { $all.Add($_) }
+    }
+    $orphan = Get-PSMutationOrphanTestsFault -Raw $rawKeys.ToArray() `
+        -Resolved $mappedKeys.ToArray() -Mutate $mutate
+    if ($orphan) { throw $orphan }
     return @{
         Mutate      = $mutate
         TestsByFile = $byFile
