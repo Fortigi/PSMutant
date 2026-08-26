@@ -8,7 +8,7 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-26, with **0.4.0 prepared and unreleased**. 29 issues open.
+Snapshot 2026-08-26, with **0.4.0 prepared and unreleased**. 28 issues open.
 
 **The prepared 0.3.3 became 0.4.0 and never existed.** It was never tagged and never published --
 the gallery goes 0.3.2 straight to here, and nothing pins it, including the sibling -- so when the
