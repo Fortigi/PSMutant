@@ -8,7 +8,12 @@ This file records **ordering rationale only**. Status lives in the issues. Do no
 here: a second status list drifts from the first, which is the exact failure mode CLAUDE.md's
 "check the docs against the code" rule exists to prevent.
 
-Snapshot 2026-08-25, with **0.3.3 prepared and unreleased**. 29 issues open.
+Snapshot 2026-08-26, with **0.4.0 prepared and unreleased**. 29 issues open.
+
+**The prepared 0.3.3 became 0.4.0 and never existed.** It was never tagged and never published --
+the gallery goes 0.3.2 straight to here, and nothing pins it, including the sibling -- so when the
+run result gained fields it was renamed rather than shipped twice. Recorded rather than quietly
+overwritten, so nobody later goes looking for the version between them.
 
 Since the last snapshot: survivors now land on the pull request diff (#11), a red baseline names
 the tests that failed and why (#144), the suite stopped inheriting the ambient CI in both
@@ -16,6 +21,12 @@ directions (#145), the analyzer script became a verdict rather than a return val
 ten entries that had accumulated under `[Unreleased]` were prepared as 0.3.3 (#148) -- which also
 retired a release-check warning that had been printing on every run long enough to become
 scenery.
+
+**A `tests` key that names no `mutate` file is now refused** (#152). It covered no mutant, its
+test files still joined the baseline's set, and whichever file it was meant to name fell back to
+running the whole suite for every one of its mutants -- so a typo made runs far slower while the
+score stayed believable. Found by writing a comment inside `tests`, where `_`-prefixed keys are
+exempt from validation and were then consumed as paths.
 
 **The Guards section closed entirely.** Every renderer call now binds `-Quiet`, so no mock filter
 can be ambiguous about which calls it selected (#146), and the suite has to give the same answer
@@ -127,7 +138,20 @@ line, no operator. That is why full local runs happen at all.
 | 2 | **#39** | an interrupted run loses everything: the report is written after the last mutant |
 | 3 | **#124** | a suspended run hangs forever -- mutants are bounded, the run is not |
 
-**#54 is breaking**, so it wants to be early in a cycle rather than just before a release.
+**#54 has a pull request open**, so it keeps its entry here -- an entry removed on the strength
+of an open PR is a status claim in disguise.
+
+*This file said "#54 is breaking, so it wants to be early in a cycle rather than just before a
+release." That turned out to be wrong, and the correction is worth more than the claim was.* Adding
+`FailureReason`, `Mode`, `StaleEquivalents` and `DeclaredEquivalent` leaves `Score`, `Killed`,
+`Survived`, `Total` and `ExitCode` meaning exactly what they meant, so no existing consumer breaks;
+the change is **additive**. What it does break is three of this project's own tests, which pin the
+exact field lists precisely so that widening them is a decision rather than a side effect of a
+rename -- and a test that fails on purpose is not a breaking change, it is the mechanism working.
+
+The lesson is about which kind of "breaking" a plan is tracking. A published contract that only
+GROWS is safe for consumers and expensive for nobody. It was scheduled around a cost it did not
+have, and sat behind a release that had not happened.
 
 **The wave is smaller than it was, and #11 leaving changed its argument.** A failing gate no
 longer prints a bare percentage: under GitHub Actions each survivor is annotated onto the diff,
