@@ -5,12 +5,31 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.3.3] - 2026-08-25
+## [0.4.0] - 2026-08-26
+
+> Renamed from an unreleased 0.3.3. That version was prepared but never tagged and never
+> published -- the gallery went 0.3.2 straight to here -- so nothing pins it and nothing needs a
+> 0.3.3 to exist. It became 0.4.0 rather than shipping twice when the run result gained fields.
 
 ### For consumers
 
 **Two of these make a run that used to pass fail, and one makes a score go down. In every case
 the new answer is the honest one.**
+
+**The run result now says WHY it failed, not just that it did.** `ExitCode 1` meant either a score
+under `thresholds.break` or an equivalence declaration that had gone stale, and nothing in the
+returned object told you which -- so a run scoring 100% with one stale declaration failed with
+whatever message your workflow had hardcoded, usually "below the break threshold", which was simply
+untrue. The result carries `FailureReason` (`None` / `StaleEquivalents` / `BelowThreshold`) plus the
+stale list and the declared-equivalent count. Nothing existing changed meaning; branch on
+`FailureReason` before printing a reason.
+
+**A recheck result now carries `ExitCode` and `Mode` too, and this fixes a live bug.** The two
+shapes shared no field at all, so `if ($result.ExitCode -ne 0) { throw }` -- the idiom this README
+taught -- compared `$null` against `0` and threw on a perfectly successful recheck, while
+`exit $result.ExitCode` became `exit $null`, which is `0`, and passed even when every prior survivor
+was still alive. A recheck `ExitCode` is always `0`: it applies no thresholds by design, and
+`StillSurviving` is the number to read.
 
 **A mutant that ran out of time is no longer counted as a kill.** A timeout was scored exactly
 like a test noticing the change, so a suite too slow for its budget reported mutants as caught
@@ -43,6 +62,11 @@ against the file and line it is in, so a failing gate says what survived instead
 scored. Nothing is emitted outside a recognised CI.
 
 ### Added
+
+- **`FailureReason`, `StaleEquivalents`, `DeclaredEquivalent` and `Mode` on the full-run result;
+  `ExitCode`, `FailureReason` and `Mode` on the recheck result.** The exit code is now derived from
+  the reason rather than deciding the same rules a second time, so the two cannot disagree about one
+  run. `ci.yml` reads the reason instead of assuming one.
 
 - **Survivors land on the pull request diff instead of in job-log scrollback.** Under GitHub
   Actions the run now emits a `::warning file=...,line=...` per survivor, so the finding appears

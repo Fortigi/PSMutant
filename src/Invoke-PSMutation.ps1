@@ -51,8 +51,22 @@ function Invoke-PSMutation {
         rather than all at the end.
 
     .OUTPUTS
-        [pscustomobject] @{ Score; Killed; Survived; Total; ExitCode }, or for
-        -RecheckFrom, @{ Mode; PriorSurvivors; Rechecked; NowKilled; StillSurviving }.
+        [pscustomobject]. Two shapes, sharing Mode, ExitCode and FailureReason so a caller that
+        did not choose the mode can still branch on the result:
+
+            full     @{ Mode='Full'; Score; Killed; Survived; Total; ExitCode; FailureReason;
+                        StaleEquivalents; DeclaredEquivalent }
+            recheck  @{ Mode='Recheck'; PriorSurvivors; Rechecked; NowKilled; StillSurviving;
+                        ExitCode; FailureReason }
+
+        FailureReason is 'None', 'StaleEquivalents' or 'BelowThreshold'. It exists because
+        ExitCode 1 means either of the last two, and the difference decides what to go and fix:
+        a stale declaration is a false statement in the config inflating the score, not a
+        shortfall to write tests against.
+
+        A recheck ExitCode is always 0. It applies no thresholds by design -- it answers "is this
+        one dead yet" over a set you chose, and a verdict over a chosen subset is the filtered
+        number this module exists to stop people quoting. Read StillSurviving.
 
     .EXAMPLE
         Invoke-PSMutation -ConfigFile ./psmutant.config.json
@@ -62,11 +76,15 @@ function Invoke-PSMutation {
 
     .EXAMPLE
         $r = Invoke-PSMutation -ConfigFile ./psmutant.config.json -Quiet
-        if ($r.ExitCode -ne 0) { throw "Mutation score $($r.Score)% is below the threshold" }
+        if ($r.ExitCode -ne 0) { throw "Mutation run failed: $($r.FailureReason)" }
 
         A CI gate. -Quiet drops the per-mutant progress lines, which are worth watching
-        interactively and are noise in a build log. ExitCode is 0 unless thresholds.break
-        is set and unmet, so a config without it is report-only.
+        interactively and are noise in a build log.
+
+        Read FailureReason rather than assuming the score. ExitCode 1 also means a stale
+        equivalence declaration, which fires at any score and in report-only mode -- so a
+        message hardcoded to "below the threshold" is a false statement about that run, and on
+        a destroyed CI runner it is the only thing left.
 
     .EXAMPLE
         Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json
@@ -198,8 +216,11 @@ function Invoke-PSMutation {
             Write-PSMutationOutput -Quiet:$false -Lines @(Get-PSMutationAnnotationLine -Lines $summaryLines)
         }
 
+        # The reason first, and the exit code derived from it, so the two cannot disagree about
+        # the same run.
+        $reason = Get-PSMutationFailureReason -Summary $summary -Thresholds $cfg.thresholds
         $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds
-        return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit
+        return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit -FailureReason $reason
     }
     finally {
         Remove-PSMutationSandbox -SandboxRoot $sandbox

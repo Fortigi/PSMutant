@@ -198,20 +198,41 @@ function Get-PSMutationScore {
     }
 }
 
-function Get-PSMutationExitCode {
-    # Report-only unless thresholds.break is set and the score is below it. Pure.
+function Get-PSMutationFailureReason {
+    # WHY a run failed, as a value rather than as prose: 'None', 'StaleEquivalents' or
+    # 'BelowThreshold'. Pure.
     #
-    # A stale equivalence declaration fails the run REGARDLESS of thresholds, and
-    # regardless of report-only mode: it is not a quality shortfall to be graded on
-    # a curve, it is a false statement in the config that is inflating the score.
-    [OutputType([int])]
+    # Report-only unless thresholds.break is set and the score is below it. A stale equivalence
+    # declaration fails the run REGARDLESS of thresholds, and regardless of report-only mode: it
+    # is not a quality shortfall to be graded on a curve, it is a false statement in the config
+    # that is inflating the score.
+    #
+    # Stale is reported FIRST when both are true. It is the more specific answer and the more
+    # actionable one -- a score computed with a false declaration in it is not a score anybody
+    # should be reading, so "your score is low" would send the reader to write tests when the
+    # config is what needs editing.
+    [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Summary, $Thresholds)
     # Filter before counting: @($null).Count is 1, not 0, so a summary that carries
     # no stale list at all would otherwise fail every run.
-    if (@($Summary.StaleEquivalents | Where-Object { $_ }).Count -gt 0) { return 1 }
-    if ($null -ne $Thresholds.break -and $Summary.Score -lt $Thresholds.break) { return 1 }
-    return 0
+    if (@($Summary.StaleEquivalents | Where-Object { $_ }).Count -gt 0) { return 'StaleEquivalents' }
+    if ($null -ne $Thresholds.break -and $Summary.Score -lt $Thresholds.break) { return 'BelowThreshold' }
+    return 'None'
+}
+
+function Get-PSMutationExitCode {
+    # The verdict, derived from the reason. Pure.
+    #
+    # Derived rather than decided again. These two answers are the same judgement asked at
+    # different resolutions, and written as two independent rule sets they would drift the first
+    # time a third failure mode arrived -- one of them silently keeping the old vocabulary while
+    # the other grew. The exit code is a projection of the reason, so it cannot disagree with it.
+    [OutputType([int])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Summary, $Thresholds)
+    if ((Get-PSMutationFailureReason -Summary $Summary -Thresholds $Thresholds) -eq 'None') { return 0 }
+    return 1
 }
 
 function Get-PSMutationCoverageExclusion {
@@ -484,14 +505,37 @@ function ConvertTo-PSMutationRunResult {
     # The public shape of a completed run: what a consumer's CI reads off Invoke-PSMutation.
     # A published contract -- a test pins the exact field list, so widening it is a
     # decision rather than a side effect of a rename.
+    #
+    # It carries the REASON, not just the verdict. ExitCode 1 means either a stale equivalence
+    # declaration or a score below the break threshold, and a caller that cannot tell them apart
+    # has to guess -- which is how a workflow came to print "score is below the break threshold"
+    # over a run scoring 100%, a false statement about the run and the only thing a destroyed
+    # runner leaves behind.
+    #
+    # The equivalents travel with it for the same reason. The stale list is the whole content of
+    # that failure, and it otherwise exists only in a JSON file nothing uploads and in a summary
+    # line -Quiet suppresses -- which is to say, in CI, nowhere.
+    #
+    # Mode is on BOTH shapes so a caller that did not choose the mode can still tell which one it
+    # received. The two used to share no field at all.
     [OutputType([pscustomobject])]
     [CmdletBinding()]
-    param([Parameter(Mandatory)] $Summary, [Parameter(Mandatory)] [int]$ExitCode)
+    param(
+        [Parameter(Mandatory)] $Summary,
+        [Parameter(Mandatory)] [int]$ExitCode,
+        [Parameter(Mandatory)] [string]$FailureReason
+    )
     return [pscustomobject]@{
-        Score    = $Summary.Score
-        Killed   = $Summary.Killed
-        Survived = $Summary.Survived
-        Total    = $Summary.Total
-        ExitCode = $ExitCode
+        Mode               = 'Full'
+        Score              = $Summary.Score
+        Killed             = $Summary.Killed
+        Survived           = $Summary.Survived
+        Total              = $Summary.Total
+        ExitCode           = $ExitCode
+        FailureReason      = $FailureReason
+        # Always an array, never $null: a consumer iterating this should not have to tell
+        # "nothing was stale" from "this build of the module stopped reporting it".
+        StaleEquivalents   = [string[]]@($Summary.StaleEquivalents | Where-Object { $_ })
+        DeclaredEquivalent = [int]$Summary.DeclaredEquivalent
     }
 }
