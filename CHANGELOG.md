@@ -85,6 +85,18 @@ scored. Nothing is emitted outside a recognised CI.
 
 ### Fixed
 
+- **`Get-Help Invoke-PSMutation -Full` no longer points at a help topic that does not exist.** It
+  said "see about_PSMutant / the README", and there is no `about_PSMutant` -- no `en-US` directory
+  and no `*.help.txt` anywhere -- so a consumer installing from the gallery was sent somewhere that
+  does not resolve. It now names `schemas/v1/config.schema.json`, which ships beside the module and
+  is what the module validates against, so it cannot describe a config PSMutant would reject. A test
+  now fails on any `about_` topic the package does not actually provide.
+
+- **The `-Operators` help named one opt-in operator when there are four.** It read "StringLiteral
+  off -- opt in explicitly", implying that was the only one, while `ConditionalBoundary`,
+  `ConditionForcing` and `ReturnValue` are equally off by default -- and those three are what stop
+  structural code scoring a vacuous 100%.
+
 - **A `tests` key naming no `mutate` file is refused rather than accepted and misused.** Its values
   still joined `AllTests` -- the baseline's test set and the fallback covering suite -- while its
   entry covered nothing, and the file it was meant to name silently fell back to the whole suite per

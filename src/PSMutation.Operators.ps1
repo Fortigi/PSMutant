@@ -347,10 +347,18 @@ function Get-PSMutationCandidate {
         the caller iterates the mutate set rather than passing it here.
 
     .PARAMETER Operators
-        Operator classes to emit. Defaults to the high-signal set (StringLiteral off --
-        it's high-volume / low-signal; opt in explicitly). An unknown name is an error,
-        not an empty result: a misspelling in a config would otherwise silently restore
-        the vacuous score the opt-in operators exist to prevent.
+        Operator classes to emit. Defaults to the four expression operators: BinaryOperator,
+        BooleanLiteral, NumberLiteral, NegationRemoval.
+
+        FOUR more are opt-in, not one. ConditionalBoundary reaches off-by-one errors,
+        ConditionForcing reaches a bare guard with no comparison in it, ReturnValue reaches a
+        result nothing asserts on, and StringLiteral is high-volume and low-signal. The first
+        three are what stop structural code scoring a vacuous 100%; each roughly doubles the
+        mutant count, which is why none of them is on by default.
+
+        An unknown name is an error, not an empty result: a misspelling in a config would
+        otherwise be dropped and then written into the report as though it had run, handing back
+        exactly the vacuous score the opt-in operators exist to prevent.
     #>
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
