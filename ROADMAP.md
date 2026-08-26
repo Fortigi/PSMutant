@@ -22,6 +22,13 @@ ten entries that had accumulated under `[Unreleased]` were prepared as 0.3.3 (#1
 retired a release-check warning that had been printing on every run long enough to become
 scenery.
 
+**The run result carries the reason it failed** (#54). `ExitCode 1` meant either a stale
+equivalence declaration or a score under the break threshold, and nothing said which -- so a run
+scoring 100% with one stale declaration failed with a hardcoded "below the break threshold", which
+was false, and the real reason lived only in a summary line `-Quiet` suppresses and a JSON file
+nothing uploads. Both result shapes now share `Mode`, `ExitCode` and `FailureReason`; they had no
+field in common at all, which broke the README's own CI idiom in both directions at once.
+
 **A `tests` key that names no `mutate` file is now refused** (#152). It covered no mutant, its
 test files still joined the baseline's set, and whichever file it was meant to name fell back to
 running the whole suite for every one of its mutants -- so a typo made runs far slower while the
@@ -126,39 +133,32 @@ fall out of it.
 reason is not effort -- the isolation unit is wrong. Fixing #53 retires the exception rather
 than documenting it a fourth time.
 
-## Wave 2 -- a run that can explain itself
-
-The object CI reads is the return value of Invoke-PSMutation. It carries a verdict without its
-reason, so a failing mutation gate prints `99.8% (532/533)` and nothing else -- no file, no
-line, no operator. That is why full local runs happen at all.
+## Wave 2 -- a run that survives its own interruption
 
 | Order | Issue | Why here |
 |---|---|---|
-| 1 | **#54** | a verdict with no reason, and no field common to both modes. Three numbers that qualify a score -- timedOut, skippedAsUncovered, filesWithNoMutants -- live in the report and not in the result |
-| 2 | **#39** | an interrupted run loses everything: the report is written after the last mutant |
-| 3 | **#124** | a suspended run hangs forever -- mutants are bounded, the run is not |
+| 1 | **#39** | an interrupted run loses everything: the report is written after the last mutant |
+| 2 | **#124** | a suspended run hangs forever -- mutants are bounded, the run is not |
 
-**#54 has a pull request open**, so it keeps its entry here -- an entry removed on the strength
-of an open PR is a status claim in disguise.
+**This wave is what is left after its own premise dissolved.** It existed because a failing gate
+printed `99.8% (532/533)` and nothing else. That is no longer true three times over: survivors are
+annotated onto the pull request diff (#11), a red baseline names the failing tests with their
+messages (#144), and the run result now carries the REASON it failed rather than only the verdict
+(#54). Nothing here is urgent any more; both remaining items are about a run that ends badly rather
+than one that reports badly.
 
-*This file said "#54 is breaking, so it wants to be early in a cycle rather than just before a
-release." That turned out to be wrong, and the correction is worth more than the claim was.* Adding
-`FailureReason`, `Mode`, `StaleEquivalents` and `DeclaredEquivalent` leaves `Score`, `Killed`,
-`Survived`, `Total` and `ExitCode` meaning exactly what they meant, so no existing consumer breaks;
-the change is **additive**. What it does break is three of this project's own tests, which pin the
-exact field lists precisely so that widening them is a decision rather than a side effect of a
-rename -- and a test that fails on purpose is not a breaking change, it is the mechanism working.
+*One claim this file made about #54 was wrong, and the correction is worth more than the entry
+was.* It read "#54 is breaking, so it wants to be early in a cycle rather than just before a
+release", and scheduled the work around a cost it did not have. Adding `FailureReason`, `Mode`,
+`StaleEquivalents` and `DeclaredEquivalent` left `Score`, `Killed`, `Survived`, `Total` and
+`ExitCode` meaning exactly what they meant, so no consumer broke. What it broke was three of this
+project's OWN tests, which pin the exact field lists so that widening them is a decision rather than
+a side effect of a rename -- and a test failing on purpose is the mechanism working, not a breaking
+change.
 
-The lesson is about which kind of "breaking" a plan is tracking. A published contract that only
-GROWS is safe for consumers and expensive for nobody. It was scheduled around a cost it did not
-have, and sat behind a release that had not happened.
-
-**The wave is smaller than it was, and #11 leaving changed its argument.** A failing gate no
-longer prints a bare percentage: under GitHub Actions each survivor is annotated onto the diff,
-and a red baseline now names the failing tests with their messages. So the pressure that made
-this wave urgent is off, and what remains is what those two did not reach -- a run result a
-PowerShell caller can interrogate (#54), a report that survives an interruption (#39), and a run
-that is bounded rather than only its mutants (#124).
+The lesson is about which kind of "breaking" a plan tracks. A published contract that only GROWS is
+safe for consumers and expensive for nobody. #54 sat behind a release that had not happened, for a
+reason that was not true.
 
 ## Wave 3 -- the operator set sees the language
 
