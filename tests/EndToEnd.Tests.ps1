@@ -495,6 +495,37 @@ Describe 'the help a user actually gets' {
         }
     }
 
+    It 'points only at help topics that actually ship' {
+        # The help said "see about_PSMutant / the README" and there is no about_PSMutant: no
+        # en-US directory, no *.help.txt anywhere. A consumer installing from the gallery and
+        # running Get-Help Invoke-PSMutation -Full was sent to a topic that does not resolve.
+        #
+        # Checked against the FILES rather than against a list of known-good names, so writing a
+        # real topic satisfies this by existing rather than by being added here too. The module
+        # root is where PowerShell looks: <module>/<culture>/about_<name>.help.txt.
+        $root = Split-Path -Parent $PSScriptRoot
+        $text = @($script:help.parameters.parameter.description.Text) +
+                @($script:help.description.Text) + @($script:help.Synopsis)
+        $named = @([regex]::Matches(($text -join "`n"), 'about_[A-Za-z0-9_]+') |
+                ForEach-Object { $_.Value } | Sort-Object -Unique)
+        foreach ($topic in $named) {
+            $shipped = @(Get-ChildItem -Path $root -Recurse -Filter "$topic.help.txt" -ErrorAction SilentlyContinue)
+            $shipped.Count | Should-BeGreaterThan 0 -Because "the help points at $topic, which no *.help.txt provides"
+        }
+    }
+
+    It 'would notice a topic that does not exist' {
+        # The paired half, and it is not optional here: the assertion above iterates a list that
+        # is EMPTY today, so it passes over zero topics and would pass just as well if the regex
+        # matched nothing at all. This runs the same rule against a name known to be absent.
+        $root = Split-Path -Parent $PSScriptRoot
+        @(Get-ChildItem -Path $root -Recurse -Filter 'about_NoSuchTopic.help.txt' -ErrorAction SilentlyContinue).Count |
+            Should-Be 0
+        # And against one known to be present, so the search itself is proven to find things.
+        @(Get-ChildItem -Path $root -Recurse -Filter 'PSMutant.psd1' -ErrorAction SilentlyContinue).Count |
+            Should-BeGreaterThan 0
+    }
+
     It 'carries examples with runnable code' {
         # The shadowed help reported one example whose title and code were both empty.
         # Counting examples is not enough -- an empty one still counts.

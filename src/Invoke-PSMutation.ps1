@@ -13,8 +13,13 @@ function Invoke-PSMutation {
         a summary object; report-only unless the config sets thresholds.break.
 
     .PARAMETER ConfigFile
-        Path to a JSON config (see about_PSMutant / the README): mutate, tests,
-        operators, coveredLinesOnly, thresholds, reportPath, sandboxSubtrees.
+        Path to a JSON config: mutate, tests, operators, coveredLinesOnly, thresholds,
+        reportPath, sandboxSubtrees.
+
+        The format is DEFINED by schemas/v1/config.schema.json, which ships beside this module
+        and is what the module itself validates against -- so it cannot describe a config this
+        module would reject. Point a config's $schema at it for editor completion. The README
+        carries the same table with prose around it.
 
     .PARAMETER SourceRoot
         Root of the code under test; config paths are relative to it. Defaults to the
