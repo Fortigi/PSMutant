@@ -778,3 +778,93 @@ Describe 'the mutate list answers for itself' {
         $unmapped.Count | Should-Be 0
     }
 }
+
+Describe 'Get-PSMutationOrphanTestsFault' {
+    # A key in `tests` IS a mutate file. One that matches nothing was accepted, and did three
+    # wrong things quietly: its test files joined the baseline's set, its entry covered no
+    # mutant, and whichever file it was meant to name fell back to the whole suite per mutant.
+    # None of that fails -- it just makes the run slower while the score stays believable.
+
+    It 'says nothing when every key names a mutate file' {
+        Get-PSMutationOrphanTestsFault -Raw @('src/a.ps1') -Resolved @('/sb/src/a.ps1') `
+            -Mutate @('/sb/src/a.ps1') | Should-BeNull
+    }
+
+    It 'says nothing about an empty tests map' {
+        # Paired with the case above rather than left out: a config with no `tests` at all is
+        # legal, and a check that treated "no keys" as "no keys matched" would refuse it.
+        Get-PSMutationOrphanTestsFault -Raw @() -Resolved @() -Mutate @('/sb/src/a.ps1') |
+            Should-BeNull
+    }
+
+    It 'names a key that matches no mutate file' {
+        Get-PSMutationOrphanTestsFault -Raw @('src/typo.ps1') -Resolved @('/sb/src/typo.ps1') `
+            -Mutate @('/sb/src/a.ps1') | Should-BeLikeString '*src/typo.ps1*'
+    }
+
+    It 'names the key AS WRITTEN, not the path it resolved to' {
+        # The reader has to go and edit the config, and the resolved path is a temp directory
+        # that appears nowhere in it.
+        $fault = Get-PSMutationOrphanTestsFault -Raw @('src/typo.ps1') `
+            -Resolved @('/tmp/psmut-sandbox-1/src/typo.ps1') -Mutate @('/sb/src/a.ps1')
+        $fault | Should-BeLikeString '*src/typo.ps1*'
+        $fault | Should-NotBeLikeString '*psmut-sandbox-1*'
+    }
+
+    It 'matches case-insensitively' {
+        # A config that fails on one platform and not the other is worse than one that fails on
+        # both: Windows would accept SRC/A.ps1 against src/a.ps1 and Linux would refuse it.
+        Get-PSMutationOrphanTestsFault -Raw @('SRC/A.ps1') -Resolved @('/sb/SRC/A.ps1') `
+            -Mutate @('/sb/src/a.ps1') | Should-BeNull
+    }
+
+    It 'reports every orphan, not just the first' {
+        # Fixing a config should cost one round trip rather than one per key.
+        Get-PSMutationOrphanTestsFault -Raw @('src/x.ps1', 'src/y.ps1') `
+            -Resolved @('/sb/src/x.ps1', '/sb/src/y.ps1') -Mutate @('/sb/src/a.ps1') |
+            Should-BeLikeString '*src/x.ps1, src/y.ps1*'
+    }
+
+    It 'tells a _-prefixed key where comments actually go' {
+        # Those ARE comments one level up -- JSON has none of its own and every config here
+        # relies on them -- so somebody who has just written `_comment` beside `mutate` has no
+        # reason to expect the rule to change inside `tests`.
+        Get-PSMutationOrphanTestsFault -Raw @('_note') -Resolved @('/sb/_note') `
+            -Mutate @('/sb/src/a.ps1') | Should-BeLikeString '*TOP level*'
+    }
+
+    It 'does NOT offer that advice when no key is a comment' {
+        # The paired half. Without it the sentence could be unconditional and every ordinary
+        # typo would be told about comment placement, which is not what went wrong.
+        Get-PSMutationOrphanTestsFault -Raw @('src/typo.ps1') -Resolved @('/sb/src/typo.ps1') `
+            -Mutate @('/sb/src/a.ps1') | Should-NotBeLikeString '*TOP level*'
+    }
+}
+
+Describe 'the sandbox plan refuses a tests key that covers nothing' {
+    # Through the real entry point, with a kept case beside the refused one. A fixture that only
+    # ever fails proves nothing about the plan a good config still produces.
+    It 'builds a plan when every key names a mutate file' {
+        $cfg = [pscustomobject]@{
+            mutate = @('src/a.ps1')
+            tests  = [pscustomobject]@{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
+        }
+        (Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot (Join-Path $TestDrive 'r2') `
+                -SandboxRoot (Join-Path $TestDrive 's2')).AllTests | Should-BeCollection -Count 1
+    }
+
+    It 'throws before the baseline when a key names nothing, naming the key' {
+        # Before the baseline on purpose: afterwards the run has already paid for the extra test
+        # files the orphan contributed, and the only symptom is a suite that took too long.
+        $cfg = [pscustomobject]@{
+            mutate = @('src/a.ps1')
+            tests  = [pscustomobject]@{
+                'src/a.ps1'   = @('tests/a.Tests.ps1')
+                '_why-a-note' = 'prose, which would be looked for as a file'
+            }
+        }
+        { Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot (Join-Path $TestDrive 'r3') `
+                -SandboxRoot (Join-Path $TestDrive 's3') } |
+            Should-Throw -ExceptionMessage '*_why-a-note*TOP level*'
+    }
+}

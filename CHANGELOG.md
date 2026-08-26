@@ -25,6 +25,12 @@ it. That is the shape of failure this tool exists to find, and it was in the too
 filter are recorded in the report beside the score, so a figure computed over less code than you
 asked for says so rather than reading as a clean sweep.
 
+**A `tests` key that names no file in `mutate` is refused.** It covered no mutant, its test files
+still joined the baseline's set, and whichever file it was meant to name had no entry at all -- so
+every one of that file's mutants fell back to running your whole suite. A typo made runs far slower
+while the score stayed believable. If your config has one, the message names it; `_`-prefixed
+comments belong at the top level, not inside `tests`.
+
 **Three config mistakes are refused instead of quietly changing what runs.** A file listed twice
 in `mutate` doubled that file's mutants and its weight in the score. A `mutate` file with no
 `tests` entry silently ran your whole suite for every one of its mutants. And a path that escapes
@@ -54,6 +60,13 @@ scored. Nothing is emitted outside a recognised CI.
   pull request with warnings pointing at files that do not exist in the repository.
 
 ### Fixed
+
+- **A `tests` key naming no `mutate` file is refused rather than accepted and misused.** Its values
+  still joined `AllTests` -- the baseline's test set and the fallback covering suite -- while its
+  entry covered nothing, and the file it was meant to name silently fell back to the whole suite per
+  mutant. Checked in `Get-PSMutationSandboxPlan` on resolved paths, beside the duplicate-mutate
+  check and for the same reason: two spellings of one path are only equal once resolved. The schema
+  cannot express this -- a bare string is a legal single test file, so a comment key is schema-valid.
 
 - **Running the analyzer by hand is now the same as passing it.**
   `tools/Invoke-PSMutantAnalyzer.ps1` returned its findings and exited 0 whether or not it found
