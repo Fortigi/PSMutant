@@ -594,6 +594,27 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   built rather than merely serialised. Widening any of the three should fail a test and be a
   decision, not a side effect of an internal rename.
 
+  **A verdict travels with its reason.** `ExitCode` 1 means either a stale equivalence
+  declaration or a score under `thresholds.break`, and for a long time nothing in the returned
+  object told them apart -- so a run scoring 100% with one stale declaration failed with whatever
+  the workflow had hardcoded, which was "below the break threshold", which was false. The
+  explanation existed in exactly two places a CI run destroys: a summary line `-Quiet` suppresses,
+  and a JSON file nothing uploads.
+
+  `FailureReason` is now on the result, and **`Get-PSMutationExitCode` is derived from
+  `Get-PSMutationFailureReason`** rather than deciding the same two rules again. Two independent
+  rule sets would drift the first time a third failure mode arrived, one of them silently keeping
+  the old vocabulary. Stale is reported before threshold when both fire: a score computed with a
+  false declaration in it is not one to act on, so "below threshold" would send the reader to write
+  tests when the config is what needs editing.
+
+  **Both result shapes now share `Mode`, `ExitCode` and `FailureReason`.** They shared no field at
+  all, and the absence failed in both directions from one cause: `if ($result.ExitCode -ne 0)`
+  compared `$null` against `0` and threw on a successful recheck, while `exit $result.ExitCode`
+  became `exit $null`, which is `0`, and passed with every survivor still alive. A recheck
+  `ExitCode` is always `0` -- it applies no thresholds by design, and a verdict over a subset
+  somebody chose is the filtered number this project exists to stop people quoting.
+
   `Id` is **not** contractual. It is a walk position, it has changed once already (#29), and
   its only consumer is this project's own `-RecheckFrom`.
 

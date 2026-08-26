@@ -198,10 +198,21 @@ function Write-PSMutationRecheckReport {
         mutants            = $Results
     }
     Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath
+    # ExitCode and FailureReason are here so the two shapes share a field a caller can branch on
+    # without first knowing which mode it asked for. They used to have no field in common at all,
+    # so `if ($result.ExitCode -ne 0) { throw }` -- the idiom this module's own README teaches --
+    # compared $null against 0 and threw on a perfectly successful recheck, while `exit
+    # $result.ExitCode` became `exit $null`, which is 0, and passed even with every prior survivor
+    # still alive. One shape failed loudly and the other passed silently, from the same absence.
+    #
+    # Always 0, because a recheck applies no thresholds by design: it answers "is this one dead
+    # yet", over a set somebody chose, and a verdict over a chosen subset is the filtered number
+    # this module exists to stop people quoting. StillSurviving is the answer to read.
     return [pscustomobject]@{
         Mode = 'Recheck'; PriorSurvivors = $PriorSurvivorCount
         Rechecked = $Results.Count; NowKilled = $killed
         StillSurviving = $Results.Count - $killed
+        ExitCode = 0; FailureReason = 'None'
     }
 }
 

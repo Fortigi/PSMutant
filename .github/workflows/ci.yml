@@ -204,7 +204,19 @@ jobs:
           Import-Module ./PSMutant.psd1 -Force
           $result = Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot . -Quiet
           Write-Host "Self mutation score: $($result.Score)% ($($result.Killed)/$($result.Total))"
-          if ($result.ExitCode -ne 0) { throw "Mutation score $($result.Score)% is below the break threshold" }
+          # Read the REASON off the result rather than assuming one. Exit code 1 means either a
+          # stale equivalence declaration or a score under the break threshold, and this line
+          # used to say "below the break threshold" for both -- so the run that scored 100% with
+          # one stale declaration failed with a message that was simply untrue, and the actual
+          # reason lived only in a JSON file nothing uploads and a summary line -Quiet suppresses.
+          if ($result.ExitCode -ne 0) {
+            if ($result.FailureReason -eq 'StaleEquivalents') {
+              throw ("Equivalence declarations no longer describe this run: " +
+                ($result.StaleEquivalents -join '; ') +
+                ". A declaration that stopped matching is inflating the score; delete it or fix the key.")
+            }
+            throw "Mutation score $($result.Score)% is below the break threshold ($($result.FailureReason))"
+          }
 
       # The manifest promises Pester >= 5.0.0, but the suite above runs on exactly one
       # version, so nothing in it can prove that promise. This step loads the OTHER
