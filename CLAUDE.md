@@ -618,6 +618,26 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   **kill**. `coveredLinesOnly` is milder and the same shape of bug -- any non-empty string
   is `$true`.
 
+  **A `tests` key is checked differently, because the schema cannot check it.** Its keys are
+  arbitrary file paths, so `additionalProperties` describes their VALUES and says nothing about
+  their names -- and `"_comment": "prose"` is schema-VALID, because a bare string is a legal
+  single test file. JSON Schema also cannot say "this key must appear in that array". So the rule
+  lives in code and only in code: a `tests` key must name a file in `mutate`.
+
+  It earns that place by what it catches. A key matching nothing was accepted, and did three
+  quiet things: its test files still joined the baseline's set, its entry covered no mutant, and
+  whichever file it was MEANT to name had no entry -- so every one of that file's mutants fell
+  back to running the whole suite. Nothing failed. The run just got slower while the score stayed
+  believable, which is #141's cost arriving by accident and unseen.
+
+  It is checked in `Get-PSMutationSandboxPlan` rather than `Assert-PSMutationConfig`, beside the
+  duplicate-mutate check and for the same recorded reason: the validator sees config STRINGS, and
+  two spellings of one path are only equal once resolved.
+
+  A `_`-prefixed key gets its own sentence in the message. Those are comments at the **top level**
+  only -- somebody who has just written `_comment` beside `mutate` has no reason to expect the
+  rule to change one level down, and this was found by doing exactly that.
+
   **Adding a key means editing `schemas/v1/config.schema.json`, and that is the whole list.**
   The key names, the threshold sub-keys and every type are read back out of the schema at
   run time, so there is no PowerShell copy to keep in step. Update the README table in the
