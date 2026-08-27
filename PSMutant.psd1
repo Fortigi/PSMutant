@@ -40,7 +40,30 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**Two of these make a run that used to pass fail, and one makes a score go down. In every case
+            ReleaseNotes = '**SECURITY -- the mutation sandbox no longer uses a predictable path.** It was
+`$TMPDIR/psmut-sandbox-<pid>`, and creating it began by removing whatever was already there. On a
+machine you share with anyone else that is a hole: another local user creates that path first as a
+symlink to a directory they own, your `Remove-Item` of THEIR entry fails because the sticky bit
+protects it, the failure is non-terminating so the run carries on, and your source is copied through
+the link. Reproduced end to end with two real users on a current kernel -- `fs.protected_symlinks`
+does not prevent it, because that guard covers only the final path component and the planted symlink
+is an intermediate one. The exposure is larger than disclosure: the sandbox is where your tests RUN
+FROM, so whoever controls it can substitute a file between the copy and the run.
+
+Sandboxes are now created under a name carrying 128 bits from a cryptographic RNG, a path that
+already exists is **refused rather than cleared**, and what was created is checked to be a plain
+directory rather than a link. The stale sweep still recognises and reclaims sandboxes named the old
+way, so nothing left by a previous version is orphaned, and it now skips symlinks rather than
+recursively deleting through them. On a single-user machine this changes nothing you will notice
+beyond longer names in temp; on a shared box or a multi-tenant build agent, it is the reason to take
+this release.
+
+One residual is stated rather than left to be discovered: the sandbox is created with your process
+umask, so it is world-READABLE while a run lasts. Closing that needs `File.SetUnixFileMode`, which
+is .NET 7 and above this module''s PowerShell 7.2 floor. The unguessable name closes the
+write-through attack; a reader still has to find the name first.
+
+**Two of these make a run that used to pass fail, and one makes a score go down. In every case
 the new answer is the honest one.**
 
 **The run result now says WHY it failed, not just that it did.** `ExitCode 1` meant either a score

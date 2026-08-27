@@ -14,6 +14,74 @@
     confined here.
 #>
 
+function New-PSMutationSandboxName {
+    # A sandbox directory name no other local user can predict.
+    #
+    # The name used to be exactly "psmut-sandbox-$PID", in a world-writable temp directory. That is
+    # guessable -- process ids are small, visible, and a watcher can simply wait -- so another local
+    # user could create that path FIRST, as a symlink to a directory they own. The run then copied
+    # the source through it. Reproduced end to end on Linux with the sticky bit set and
+    # fs.protected_symlinks=1, which does not help here: that guard only covers the FINAL path
+    # component, and the planted symlink is an intermediate one.
+    #
+    # The process id stays in the name because the stale sweep identifies an owner by it. What makes
+    # the name unguessable is the suffix, and it comes from a cryptographic RNG rather than
+    # Get-Random or a GUID: those are about uniqueness, and the property needed here is that an
+    # attacker cannot predict the next value. RandomNumberGenerator.Create() predates .NET Core 1.0,
+    # so it costs nothing against this module's PowerShell 7.2 floor.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure factory: returns a string, changes no system state. New-PSMutationSandbox below is the one that creates something, and it does support ShouldProcess.')]
+    [OutputType([string])]
+    [CmdletBinding()]
+    param()
+    $bytes = [byte[]]::new(16)
+    $rng = [System.Security.Cryptography.RandomNumberGenerator]::Create()
+    try { $rng.GetBytes($bytes) } finally { $rng.Dispose() }
+    return "psmut-sandbox-$PID-" + [System.BitConverter]::ToString($bytes).Replace('-', '').ToLowerInvariant()
+}
+
+function Assert-PSMutationSandboxPath {
+    # Refuse a sandbox path that already exists, rather than clearing it.
+    #
+    # The old code removed whatever was there first. That is what made the attack above work: on a
+    # sticky temp directory the removal of another user's entry FAILS, the failure is
+    # non-terminating, and execution carried on to write through the entry that was left. Refusing
+    # is both safer and simpler -- with an unguessable name a collision is not a case worth
+    # recovering from, so an existing path means something is wrong and the run should say so
+    # instead of clearing it.
+    #
+    # Checked again AFTER creation by the caller, because a check followed by a create is a race.
+    # Nothing about this refusal depends on winning it: the name is unguessable, so an attacker
+    # cannot aim at it, and the post-creation check catches the case where the path we ended up
+    # with is not the directory we asked for.
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Path)
+    if (-not (Test-Path -LiteralPath $Path)) { return }
+    throw ("Refusing to use the mutation sandbox '$Path': something is already there. The name " +
+        'carries 128 bits of randomness, so this is not an ordinary collision -- it is either a ' +
+        'leftover nothing cleaned up, or another local user placing something where this run was ' +
+        'about to write. Delete it if you recognise it; investigate if you do not.')
+}
+
+function Assert-PSMutationSandboxReal {
+    # Refuse a sandbox that is not the plain directory we just created.
+    #
+    # A reparse point here -- a symlink or a junction -- means writes land somewhere else, which is
+    # the whole of the vulnerability this pair of guards closes. Checked after creation rather than
+    # only before it, so a path substituted between the two is still caught.
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Path)
+    $item = Get-Item -LiteralPath $Path -Force
+    if (-not $item.PSIsContainer -or $item.LinkType) {
+        throw ("Refusing to use the mutation sandbox '$Path': it is a " +
+            "$(if ($item.LinkType) { "$($item.LinkType) to '$($item.Target -join ', ')'" } else { 'file' }), " +
+            'not a directory this run created. Writes would land outside the sandbox, which is the ' +
+            'one thing the sandbox exists to prevent.')
+    }
+}
+
 function New-PSMutationSandbox {
     # Copy the source subtrees into a fresh temp dir; return its root path.
     #
@@ -21,17 +89,21 @@ function New-PSMutationSandbox {
     # and this file is mechanism: giving it an opinion about the repo's layout would put
     # the default here, where the resolver that owns it would have to reach across files
     # to read it.
+    #
+    # -Name defaults to an UNGUESSABLE name; see New-PSMutationSandboxName for why, and
+    # Assert-PSMutationSandboxPath for why an existing path is refused rather than cleared.
     [OutputType([string])]
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
     param(
         [Parameter(Mandatory)] [string]$RepoRoot,
         [Parameter(Mandatory)] [string[]]$Subtrees,
-        [string]$Name = "psmut-sandbox-$PID"
+        [string]$Name = (New-PSMutationSandboxName)
     )
     $root = Join-Path ([System.IO.Path]::GetTempPath()) $Name
     if ($PSCmdlet.ShouldProcess($root, 'Create mutation sandbox')) {
-        if (Test-Path $root) { Remove-Item $root -Recurse -Force }
-        New-Item -ItemType Directory -Path $root -Force | Out-Null
+        Assert-PSMutationSandboxPath -Path $root
+        New-Item -ItemType Directory -Path $root | Out-Null
+        Assert-PSMutationSandboxReal -Path $root
         $Subtrees |
             Where-Object { Test-Path (Join-Path $RepoRoot $_) } |
             ForEach-Object { Copy-Item (Join-Path $RepoRoot $_) (Join-Path $root $_) -Recurse -Force }
@@ -94,11 +166,17 @@ function Remove-PSMutationSandbox {
 function Get-PSMutationSandboxOwnerId {
     # The process id encoded in a sandbox directory name, or $null when the name is
     # not one the runner produces. New-PSMutationSandbox names them
-    # "psmut-sandbox-$PID"; anything else in temp is somebody else's and is left alone.
+    # "psmut-sandbox-<pid>-<random>"; anything else in temp is somebody else's and is left alone.
+    #
+    # The random suffix is OPTIONAL in this pattern, and that is not laxity: sandboxes created
+    # before the name was randomised are called "psmut-sandbox-<pid>" and still need reclaiming.
+    # Refusing to recognise them would orphan every one of them permanently the moment this
+    # version ships. The suffix is what makes a name unguessable when it is WRITTEN; reading one
+    # is a different question.
     [OutputType([int])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string]$Name)
-    if ($Name -match '^psmut-sandbox-(\d+)$') { return [int]$Matches[1] }
+    if ($Name -match '^psmut-sandbox-(\d+)(-[0-9a-f]+)?$') { return [int]$Matches[1] }
     return          # emits nothing, so the caller's variable is $null
 }
 
@@ -148,6 +226,11 @@ function Clear-PSMutationStaleSandbox {
     param()
     if ($PSCmdlet.ShouldProcess('temp', 'Clear stale mutation sandboxes')) {
         Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter 'psmut-sandbox-*' -ErrorAction SilentlyContinue |
+            # A reparse point is skipped rather than swept. Temp is world-writable, so anyone can
+            # leave a symlink named like a sandbox; recursively removing one asks the sweep to
+            # follow a path an attacker chose. Nothing this module creates is ever a link, so
+            # skipping costs nothing and removes the sweep as a deletion primitive.
+            Where-Object { -not $_.LinkType } |
             Where-Object { Test-PSMutationSandboxAbandoned -Directory $_ } |
             ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
     }

@@ -73,29 +73,107 @@ Describe 'New/Remove-PSMutationSandbox' {
         }
     }
 
-    It 'wipes a sandbox left over from a previous run instead of merging into it' {
-        # A killed run leaves its sandbox behind, and the name is per-PID, so the next
-        # run in the same shell reuses it. Merging would leave the previous run's
-        # mutated copy in place -- mutants stacking on mutants, and a score describing
-        # code that never existed.
+    It 'REFUSES a path that already exists rather than clearing it' {
+        # This replaces a test that asserted the opposite, and the reversal is the security fix.
+        #
+        # The old name was exactly "psmut-sandbox-$PID", so a killed run left a directory the next
+        # run in the same shell would reuse -- and clearing it first was how merging was avoided.
+        # Clearing is also what made the sandbox attackable: temp is world-writable, another local
+        # user could create that predictable path first as a symlink, the removal of THEIR entry
+        # fails on a sticky directory, the failure is non-terminating, and the copy then wrote the
+        # source through the link. Reproduced end to end.
+        #
+        # With an unguessable name there is no reuse to design for, so the safe answer is available:
+        # refuse. A path that exists under a 128-bit random name is not a collision.
         $srcDir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-src-$([System.Guid]::NewGuid().ToString('N'))"
         New-Item -ItemType Directory -Path (Join-Path $srcDir 'keep') -Force | Out-Null
         'current' | Set-Content (Join-Path $srcDir 'keep/file.txt')
         $name = "psmut-sandbox-test-$([System.Guid]::NewGuid().ToString('N'))"
-        $stale = Join-Path ([System.IO.Path]::GetTempPath()) $name
+        $occupied = Join-Path ([System.IO.Path]::GetTempPath()) $name
         try {
-            New-Item -ItemType Directory -Path (Join-Path $stale 'keep') -Force | Out-Null
-            'left over from a killed run' | Set-Content (Join-Path $stale 'keep/file.txt')
-            'orphan' | Set-Content (Join-Path $stale 'keep/ghost.txt')
+            New-Item -ItemType Directory -Path (Join-Path $occupied 'keep') -Force | Out-Null
+            'left over from a killed run' | Set-Content (Join-Path $occupied 'keep/file.txt')
 
-            $sb = New-PSMutationSandbox -RepoRoot $srcDir -Subtrees @('keep') -Name $name
-            Get-Content (Join-Path $sb 'keep/file.txt') | Should-Be 'current'
-            Test-Path (Join-Path $sb 'keep/ghost.txt')  | Should-BeFalse
+            { New-PSMutationSandbox -RepoRoot $srcDir -Subtrees @('keep') -Name $name } |
+                Should-Throw -ExceptionMessage '*already there*'
+            # And it did not touch what was there, which is the half that matters when the thing
+            # in the way belongs to somebody else.
+            Get-Content (Join-Path $occupied 'keep/file.txt') | Should-Be 'left over from a killed run'
         }
         finally {
             Remove-Item $srcDir -Recurse -Force -ErrorAction SilentlyContinue
-            Remove-Item $stale -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $occupied -Recurse -Force -ErrorAction SilentlyContinue
         }
+    }
+
+    It 'refuses a sandbox path that is a SYMLINK to somewhere else' {
+        # The attack itself, as a test. Another local user cannot be simulated here, but the shape
+        # they create can: a link where the sandbox is about to be, pointing at a directory they
+        # own. Without the guard the source is copied through it.
+        $srcDir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-src-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $srcDir 'keep') -Force | Out-Null
+        'secret' | Set-Content (Join-Path $srcDir 'keep/file.txt')
+        $elsewhere = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-elsewhere-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $elsewhere -Force | Out-Null
+        $name = "psmut-sandbox-test-$([System.Guid]::NewGuid().ToString('N'))"
+        $link = Join-Path ([System.IO.Path]::GetTempPath()) $name
+        try {
+            New-Item -ItemType SymbolicLink -Path $link -Target $elsewhere -Force | Out-Null
+            { New-PSMutationSandbox -RepoRoot $srcDir -Subtrees @('keep') -Name $name } |
+                Should-Throw -ExceptionMessage '*already there*'
+            @(Get-ChildItem $elsewhere -Recurse -File -ErrorAction SilentlyContinue).Count | Should-Be 0
+        }
+        finally {
+            Remove-Item $link -Force -Recurse -ErrorAction SilentlyContinue
+            Remove-Item $elsewhere -Recurse -Force -ErrorAction SilentlyContinue
+            Remove-Item $srcDir -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'names a sandbox nobody can guess, and differently every time' {
+        # The property the fix rests on. Two names from one process must differ, and both must
+        # carry the process id the stale sweep identifies an owner by.
+        $a = New-PSMutationSandboxName
+        $b = New-PSMutationSandboxName
+        $a | Should-NotBe $b
+        $a | Should-MatchString "^psmut-sandbox-$PID-[0-9a-f]{32}$"
+        Get-PSMutationSandboxOwnerId -Name $a | Should-Be $PID
+    }
+
+    It 'refuses a sandbox path that turns out not to be a real directory' {
+        # Assert-PSMutationSandboxReal is the guard for the RACE, and it is tested directly
+        # because that is the only way to reach it: Assert-PSMutationSandboxPath refuses an
+        # existing path first, so through New-PSMutationSandbox this arm fires only when a path
+        # is substituted between the check and the create. That window is real -- it is why the
+        # check is repeated after creation -- and not something a test can schedule.
+        $elsewhere = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-elsewhere-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $elsewhere -Force | Out-Null
+        $link = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-link-$([System.Guid]::NewGuid().ToString('N'))"
+        $file = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-file-$([System.Guid]::NewGuid().ToString('N'))"
+        try {
+            New-Item -ItemType SymbolicLink -Path $link -Target $elsewhere -Force | Out-Null
+            'not a directory' | Set-Content -LiteralPath $file
+            { Assert-PSMutationSandboxReal -Path $link } | Should-Throw -ExceptionMessage '*not a directory this run created*'
+            { Assert-PSMutationSandboxReal -Path $file } | Should-Throw -ExceptionMessage '*not a directory this run created*'
+            # And it says which of the two it found, because the answers send you to different places.
+            { Assert-PSMutationSandboxReal -Path $file } | Should-Throw -ExceptionMessage '*is a file*'
+        }
+        finally {
+            Remove-Item $link -Force -Recurse -ErrorAction SilentlyContinue
+            Remove-Item $file -Force -ErrorAction SilentlyContinue
+            Remove-Item $elsewhere -Recurse -Force -ErrorAction SilentlyContinue
+        }
+    }
+
+    It 'accepts the ordinary case: a plain directory it just made' {
+        # The other half. A guard asserted only by what it rejects would pass just as well if it
+        # rejected everything.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-real-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        # Called directly rather than wrapped: the assertion is that it returns, and a throw here
+        # fails the test on its own with the real error rather than a wrapper's.
+        try { Assert-PSMutationSandboxReal -Path $dir; $true | Should-BeTrue }
+        finally { Remove-Item $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
     It 'Remove-PSMutationSandbox is a no-op on a path that is already gone' {
