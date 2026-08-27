@@ -265,23 +265,6 @@ Describe 'Invoke-PSMutationBaseline' {
     }
 }
 
-Describe 'Get-PSMutationRunspaceError' {
-    It 'joins every message the child wrote to its error stream' {
-        $fake = [pscustomobject]@{ Streams = [pscustomobject]@{ Error = @(
-                    [pscustomobject]@{ Exception = [pscustomobject]@{ Message = 'first' } }
-                    [pscustomobject]@{ Exception = [pscustomobject]@{ Message = 'second' } }
-                ) } }
-        Get-PSMutationRunspaceError -Runspace $fake | Should-Be 'first; second'
-    }
-
-    It 'says so when the child died without writing an error' {
-        # This text lands inside a thrown exception. An empty string there would
-        # report "produced no result: " and name nothing at all.
-        $fake = [pscustomobject]@{ Streams = [pscustomobject]@{ Error = @() } }
-        Get-PSMutationRunspaceError -Runspace $fake | Should-Be 'the child runspace reported no error'
-    }
-}
-
 Describe 'Invoke-PSMutant' {
     # Invoke-PSMutant is also exercised for real in tests/Mutant.Tests.ps1, against a
     # live child runspace. These mocked versions exist so this file alone can be the
@@ -358,10 +341,11 @@ Describe 'Invoke-PSMutant' {
 }
 
 Describe 'Invoke-PSBoundedPester' {
-    BeforeEach { Mock Get-PSMutationPesterPath { 'unused - the child script is mocked too' } }
-
+    # Get-PSMutationPesterPath is NOT mocked here any more. The runspace is warmed once and
+    # reused, and warming it means really importing Pester -- so a fake path would break the
+    # import rather than being ignored the way it was when the child script carried it.
     It 'hands back the verdict the child produced' {
-        Mock Get-PSMutationBoundedPesterScript { 'param($tests, $pester) "Passed"' }
+        Mock Get-PSMutationWarmPesterScript { 'param($tests) "Passed"' }
         Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 | Should-Be 'Passed'
     }
 
@@ -374,7 +358,7 @@ Describe 'Invoke-PSBoundedPester' {
         # literal prefix is not discriminating: if the concatenation breaks, the
         # resulting conversion error QUOTES the prefix, so a prefix-only pattern still
         # matches and the diagnosis is silently lost.
-        Mock Get-PSMutationBoundedPesterScript { 'param($tests, $pester) Write-Error "child said no"' }
+        Mock Get-PSMutationWarmPesterScript { 'param($tests) Write-Error "child said no"' }
         { Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 } |
             Should-Throw -ExceptionMessage '*produced no result*child said no*'
     }
@@ -384,7 +368,7 @@ Describe 'Invoke-PSBoundedPester' {
         # stray Write-Output, a warning surfacing as an object. Only the final value is
         # the verdict; carrying any of the noise with it stops the string ever matching
         # 'Passed', which silently turns every survivor into a kill.
-        Mock Get-PSMutationBoundedPesterScript { 'param($tests, $pester) "noise from a test file"; "Passed"' }
+        Mock Get-PSMutationWarmPesterScript { 'param($tests) "noise from a test file"; "Passed"' }
         Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 | Should-Be 'Passed'
     }
 
@@ -392,7 +376,7 @@ Describe 'Invoke-PSBoundedPester' {
         # The real non-terminating case is proven in tests/Mutant.Tests.ps1. Here the
         # child merely sleeps, so the deadline is reached in seconds rather than by
         # spinning a mutated loop -- same branch, a fraction of the wall clock.
-        Mock Get-PSMutationBoundedPesterScript { 'param($tests, $pester) Start-Sleep -Seconds 30' }
+        Mock Get-PSMutationWarmPesterScript { 'param($tests) Start-Sleep -Seconds 30' }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $outcome = Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 2

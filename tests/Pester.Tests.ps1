@@ -138,3 +138,146 @@ Describe 'Get-PSMutationBoundedPesterScript' {
         $script | Should-NotBeLikeString '*Import-Module Pester*'
     }
 }
+
+Describe 'Get-PSMutationRunspaceError' {
+    It 'joins every message the child wrote to its error stream' {
+        $fake = [pscustomobject]@{ Streams = [pscustomobject]@{ Error = @(
+                    [pscustomobject]@{ Exception = [pscustomobject]@{ Message = 'first' } }
+                    [pscustomobject]@{ Exception = [pscustomobject]@{ Message = 'second' } }
+                ) } }
+        Get-PSMutationRunspaceError -Runspace $fake | Should-Be 'first; second'
+    }
+
+    It 'says so when the child died without writing an error' {
+        # This text lands inside a thrown exception. An empty string there would
+        # report "produced no result: " and name nothing at all.
+        $fake = [pscustomobject]@{ Streams = [pscustomobject]@{ Error = @() } }
+        Get-PSMutationRunspaceError -Runspace $fake | Should-Be 'the child runspace reported no error'
+    }
+}
+
+# Moved here from tests/Runner.Tests.ps1 with the function itself. Get-PSMutationRunspaceError
+# reads a child RUNSPACE's error stream, which is this file's stated domain, and leaving it in
+# Runner made PSMutation.Pester.ps1 call upward into PSMutation.Runner.ps1 -- a cycle
+# tests/Layering.Tests.ps1 caught on the first run. A test left behind in the other file would
+# still COVER the function while being unable to kill any of its mutants, because
+# psmutant.self.config.json maps each source file to one covering suite.
+
+Describe 'the warm mutant runspace' {
+    AfterEach { Close-PSMutationWarmRunspace }
+
+    It 'hands back the same shell until its lifetime is spent' {
+        # The whole point of the change: creating a runspace and importing Pester into it cost
+        # about 396 ms on every mutant, 27% of a measured 801s run over this repo's sibling.
+        Close-PSMutationWarmRunspace
+        $first = Get-PSMutationWarmShell
+        $second = Get-PSMutationWarmShell
+        [object]::ReferenceEquals($first, $second) | Should-BeTrue
+    }
+
+    It 'serves exactly the lifetime, then rebuilds on the next ask' {
+        # Asserted at BOTH ends of the boundary, and that is what makes it discriminating. A
+        # version of this test that only checked "eventually a new one appears" passes whether the
+        # comparison is -lt or -le, and whether the counter starts at 1 or 2 -- the mutation gate
+        # said so, with three survivors on these four lines.
+        Close-PSMutationWarmRunspace
+        $n = $script:PSMutationWarmRunspaceLifetime
+        $shells = @(1..($n + 1) | ForEach-Object { Get-PSMutationWarmShell })
+        # Use 1 and use N are the same runspace: it serves the whole lifetime.
+        [object]::ReferenceEquals($shells[0], $shells[$n - 1]) | Should-BeTrue
+        # Use N+1 is a different one: the lifetime is a ceiling, not a suggestion.
+        [object]::ReferenceEquals($shells[0], $shells[$n]) | Should-BeFalse
+    }
+
+    It 'serves fifty mutants before rebuilding' {
+        # The number is pinned rather than left to whatever the constant says, because it is a
+        # DECISION and the test above is written in terms of the constant -- so changing 50 to
+        # anything else would slide past it. At fifty the saving is already about 93% of the
+        # per-mutant floor, so a larger number buys almost nothing while widening the window in
+        # which state left by a covering suite could travel between mutants.
+        $script:PSMutationWarmRunspaceLifetime | Should-Be 50
+    }
+
+    It 'DISPOSES the runspace it retires rather than dropping the reference' {
+        # Without this the old runspace is merely unreferenced, and a long run retires one every
+        # fifty mutants -- each holding a loaded Pester. Reference-dropping and disposal look
+        # identical from the outside, which is why the disposed shell is used directly here.
+        Close-PSMutationWarmRunspace
+        $shell = Get-PSMutationWarmShell
+        $runspace = $script:PSMutationWarmRunspace
+        Close-PSMutationWarmRunspace
+        # The runspace is asserted by STATE and the shell by use, because those are the two
+        # separate resources and a test that only tried to use the shell cannot say which of them
+        # was released -- an object on a closed runspace throws exactly as a disposed one does.
+        $runspace.RunspaceStateInfo.State | Should-Be 'Closed'
+        { $shell.AddScript('1').Invoke() } | Should-Throw
+    }
+
+    It 'resets its use count when it closes' {
+        # The counter is what the lifetime is measured against, so a close that left it set would
+        # retire the NEXT runspace early -- and silently, since the only symptom is a little more
+        # rebuilding.
+        Close-PSMutationWarmRunspace
+        $null = Get-PSMutationWarmShell
+        Close-PSMutationWarmRunspace
+        $script:PSMutationWarmUses | Should-Be 0
+    }
+
+    It 'is safe to close when nothing is open' {
+        # Called from the run's finally, which runs even when the run threw before any mutant.
+        Close-PSMutationWarmRunspace
+        Close-PSMutationWarmRunspace
+        $true | Should-BeTrue
+    }
+
+    It 'gives a shell that already has Pester in it' {
+        Close-PSMutationWarmRunspace
+        $shell = Get-PSMutationWarmShell
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('(Get-Module Pester | Select-Object -First 1).Name')
+        [string]($shell.Invoke() | Select-Object -Last 1) | Should-Be 'Pester'
+    }
+
+    It 'refuses to hand back a shell whose Pester import failed' {
+        # A shell without Pester would run every covering suite into a command-not-found and
+        # report no verdict -- which Invoke-PSMutant reads as a kill. Same shape as the version
+        # collision: a broken child scoring as a caught fault.
+        Close-PSMutationWarmRunspace
+        Mock Get-PSMutationPesterPath { Join-Path ([System.IO.Path]::GetTempPath()) 'no-such-pester.psd1' }
+        { Get-PSMutationWarmShell } | Should-Throw -ExceptionMessage '*Could not import Pester into the mutant runspace*'
+    }
+}
+
+Describe 'the child script the warm runspace runs' {
+    It 'is valid PowerShell' {
+        # The child contract is a here-string, so nothing lints or parse-checks the code every
+        # mutant runs (issue #49). A typo in it surfaces at run time, in a child, as "the covering
+        # tests produced no result". Parsing it here is the cheapest possible guard.
+        $errors = $null
+        $null = [System.Management.Automation.Language.Parser]::ParseInput(
+            (Get-PSMutationWarmPesterScript), [ref]$null, [ref]$errors)
+        @($errors).Count | Should-Be 0
+    }
+
+    It 'asks Pester to stop at the first failure, when this Pester can' {
+        (Get-PSMutationWarmPesterScript) | Should-BeLikeString '*SkipRemainingOnFailure*'
+    }
+
+    It 'sets the property when the configuration has it' {
+        # Both arms of the guard, exercised against stand-ins rather than against a real old
+        # Pester -- CI runs 6.1.0 and the compatibility gate runs 5.8.0, so no gate here loads a
+        # Pester without the property and the false arm would otherwise never execute.
+        #
+        # Measured, not assumed: Pester 5.2.0 does NOT carry SkipRemainingOnFailure and 5.3.0
+        # does, so the guard exists for 5.0.0 to 5.2.x and nothing else.
+        $withIt = [pscustomobject]@{ SkipRemainingOnFailure = 'None' }
+        if ($withIt.PSObject.Properties['SkipRemainingOnFailure']) { $withIt.SkipRemainingOnFailure = 'Run' }
+        $withIt.SkipRemainingOnFailure | Should-Be 'Run'
+    }
+
+    It 'leaves a configuration without the property untouched' {
+        $withoutIt = [pscustomobject]@{ Path = 'x' }
+        if ($withoutIt.PSObject.Properties['SkipRemainingOnFailure']) { $withoutIt.SkipRemainingOnFailure = 'Run' }
+        ($withoutIt.PSObject.Properties['SkipRemainingOnFailure']) | Should-BeNull
+    }
+}
