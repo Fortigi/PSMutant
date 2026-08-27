@@ -40,7 +40,24 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**SECURITY -- the mutation sandbox no longer uses a predictable path.** It was
+            ReleaseNotes = '**Runs are about three times faster, and no score moves.** Two costs went, both paid on every
+mutant. A fresh runspace was created and Pester imported into it for each one -- measured at about
+396 ms, which over a real 801 s run was 219 s, 27%, spent re-importing a module that does not change
+between mutants. The runspace is now built once and reused. And a mutant only ever asks one question
+-- does ANY test notice -- so once one has, every test after it is work whose outcome cannot change
+the verdict; the covering suite now stops at the first failure. A killed mutant''s 2.03 s suite
+finishes in 0.34 s; a SURVIVOR is unaffected by construction, because nothing fails and so nothing
+is skipped.
+
+Measured end to end against 0.4.0 on a real consumer repository, interleaved, two pairs:
+**221 s -> 71 s** over 225 mutants, with 225 killed and a score of 100 on both sides and every
+per-mutant verdict identical.
+
+The fail-fast half needs `SkipRemainingOnFailure`, which arrived in **Pester 5.3.0**. It is set only
+when the loaded Pester has it, so nothing changes for a consumer on 5.0.0 to 5.2.x beyond not
+getting that part of the speedup -- the module still promises, and still honours, Pester >= 5.0.0.
+
+**SECURITY -- the mutation sandbox no longer uses a predictable path.** It was
 `$TMPDIR/psmut-sandbox-<pid>`, and creating it began by removing whatever was already there. On a
 machine you share with anyone else that is a hole: another local user creates that path first as a
 symlink to a directory they own, your `Remove-Item` of THEIR entry fails because the sticky bit

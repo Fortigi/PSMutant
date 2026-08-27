@@ -158,36 +158,35 @@ function Invoke-PSBoundedPester {
     [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string[]]$CoveringTests, [Parameter(Mandatory)] [int]$TimeoutSeconds)
-    $ps = [PowerShell]::Create()
-    [void]$ps.AddScript((Get-PSMutationBoundedPesterScript)).
-        AddParameter('tests', $CoveringTests).
-        AddParameter('pester', (Get-PSMutationPesterPath))
+    # The runspace is REUSED across mutants and Pester is imported into it once. Creating one and
+    # importing Pester per mutant cost about 396 ms every time -- 27% of a measured 801s run over
+    # PSComplexity -- to re-import a module that does not change between mutants.
+    #
+    # Nothing about the mutant is cached: the covering suite dot-sources the file under test, so
+    # each run reads the spliced source afresh. Get-PSMutationWarmShell recycles on a fixed
+    # interval to bound any state a suite leaves behind.
+    $ps = Get-PSMutationWarmShell
+    $ps.Commands.Clear()
+    [void]$ps.AddScript((Get-PSMutationWarmPesterScript)).AddParameter('tests', $CoveringTests)
     $async = $ps.BeginInvoke()
-    try {
-        if (-not $async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))) {
-            $ps.Stop()
-            return 'TimedOut'
-        }
-        $outcome = [string]($ps.EndInvoke($async) | Select-Object -Last 1)
-        # A child that returned no verdict proved nothing about the mutant. Handing
-        # that back would classify it Killed -- anything but 'Passed' is a kill -- so a
-        # broken child reads as a perfect score. That is exactly how the Pester version
-        # collision stayed invisible for so long. Fail the run instead of scoring it.
-        if (-not $outcome) { throw ('The covering tests produced no result: ' + (Get-PSMutationRunspaceError -Runspace $ps)) }
-        return $outcome
+    if (-not $async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))) {
+        $ps.Stop()
+        # Stop() leaves the runspace unusable, so it is discarded rather than handed to the next
+        # mutant. A timeout is rare; paying a cold start after one is the cheap half of the trade.
+        Close-PSMutationWarmRunspace
+        return 'TimedOut'
     }
-    finally { $ps.Dispose() }
-}
-
-function Get-PSMutationRunspaceError {
-    # Whatever the child wrote to its error stream, as one line. Reported rather than
-    # swallowed: without it a failed child is indistinguishable from a killed mutant.
-    [OutputType([string])]
-    [CmdletBinding()]
-    param([Parameter(Mandatory)] $Runspace)
-    $messages = @($Runspace.Streams.Error | ForEach-Object { $_.Exception.Message })
-    if (-not $messages) { return 'the child runspace reported no error' }
-    return ($messages -join '; ')
+    $outcome = [string]($ps.EndInvoke($async) | Select-Object -Last 1)
+    # A child that returned no verdict proved nothing about the mutant. Handing
+    # that back would classify it Killed -- anything but 'Passed' is a kill -- so a
+    # broken child reads as a perfect score. That is exactly how the Pester version
+    # collision stayed invisible for so long. Fail the run instead of scoring it.
+    if (-not $outcome) {
+        $why = Get-PSMutationRunspaceError -Runspace $ps
+        Close-PSMutationWarmRunspace
+        throw "The covering tests produced no result: $why"
+    }
+    return $outcome
 }
 
 function Invoke-PSMutant {

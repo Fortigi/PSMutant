@@ -231,6 +231,50 @@ Its behaviour is pinned by the normal suite at 100% coverage instead.
 
 ---
 
+## The mutant runspace is warm, and what that costs to keep true
+
+Every mutant used to get a fresh `[PowerShell]` and its own `Import-Module Pester`. Measured with
+PSComplexity as the target -- a real consumer repo, which is a better subject than this module's own
+source and is also the consumer-shaped fixture #35 asks for -- that floor is about **396 ms**, and
+over an 801 s run it was **219 s, 27%**, re-importing a module that does not change between mutants.
+
+The runspace is now built once and reused, and the covering suite stops at the first failure. End to
+end, interleaved, two pairs: **221 s -> 71 s** over 225 mutants, 225 killed both sides, every
+per-mutant verdict identical.
+
+Four things about it are easy to undo:
+
+- **Reuse is safe because nothing about a mutant is cached.** The covering suite dot-sources the
+  file under test, so each run reads the spliced source afresh. What COULD travel is state a suite
+  leaves behind, which is why the runspace is retired after a fixed number of uses. Fifty is a
+  decision, not a constant to tune upward: the saving is already ~93% of the floor there, so a
+  larger number buys almost nothing and widens the window in which a leak goes unnoticed. A test
+  pins the number for exactly that reason -- the boundary test is written in terms of the constant,
+  so changing it would otherwise slide past.
+- **A timeout discards the runspace.** `Stop()` leaves it unusable, so handing it to the next mutant
+  would fail every subsequent one.
+- **A failed Pester import throws rather than yielding a shell.** A shell without Pester runs every
+  covering suite into a command-not-found and returns no verdict -- which `Invoke-PSMutant` reads as
+  a KILL. Same shape as the version collision this file already documents at length, reached through
+  a different door. There is deliberately no `HadErrors` check beside the `catch`: the child's
+  `-ErrorAction Stop` makes a failed import terminating, so that branch could never fire.
+- **`SkipRemainingOnFailure` is feature-detected, never version-compared.** It arrived in **Pester
+  5.3.0** -- measured, not looked up: 5.2.0 does not carry the property and 5.3.0 does. So the guard
+  exists for 5.0.0 to 5.2.x and nothing else. It is kept because the module promises to run under
+  whatever Pester >= 5 the consumer already has, and assigning a missing property would fail the
+  whole run for a speed optimisation. The comment beside it said 5.5 until the versions were
+  actually installed and checked, which is why it now says how it was measured.
+
+  Both arms are pinned by tests against stand-in objects, because CI runs 6.1.0 and the
+  compatibility gate runs 5.8.0 -- no gate here loads a Pester without the property, so the false
+  arm would otherwise never execute.
+
+**`Get-PSMutationRunspaceError` lives in `PSMutation.Pester.ps1`, not `PSMutation.Runner.ps1`.**
+Reading a child runspace's error stream is this file's domain. The first draft of the warm runspace
+left it in Runner and called upward, making a cycle -- and coverage, the suite and the mutation gate
+all passed. `tests/Layering.Tests.ps1` failed on the second run, naming both the undeclared edge and
+the cycle. That is the gate doing the one job nothing else can do.
+
 ## The sandbox path is a security boundary, not just a scratch location
 
 The sandbox used to be `$TMPDIR/psmut-sandbox-$PID`, and creating it began by removing whatever

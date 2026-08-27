@@ -228,6 +228,9 @@ function Invoke-PSMutation {
         return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit -FailureReason $reason
     }
     finally {
+        # The warm mutant runspace outlives individual mutants by design; it must not outlive the
+        # run, or a long-lived host keeps a Pester-loaded runspace per completed run.
+        Close-PSMutationWarmRunspace
         Remove-PSMutationSandbox -SandboxRoot $sandbox
     }
 }
