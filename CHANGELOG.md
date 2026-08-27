@@ -13,6 +13,23 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### For consumers
 
+**Runs are about three times faster, and no score moves.** Two costs went, both paid on every
+mutant. A fresh runspace was created and Pester imported into it for each one -- measured at about
+396 ms, which over a real 801 s run was 219 s, 27%, spent re-importing a module that does not change
+between mutants. The runspace is now built once and reused. And a mutant only ever asks one question
+-- does ANY test notice -- so once one has, every test after it is work whose outcome cannot change
+the verdict; the covering suite now stops at the first failure. A killed mutant's 2.03 s suite
+finishes in 0.34 s; a SURVIVOR is unaffected by construction, because nothing fails and so nothing
+is skipped.
+
+Measured end to end against 0.4.0 on a real consumer repository, interleaved, two pairs:
+**221 s -> 71 s** over 225 mutants, with 225 killed and a score of 100 on both sides and every
+per-mutant verdict identical.
+
+The fail-fast half needs `SkipRemainingOnFailure`, which arrived in **Pester 5.3.0**. It is set only
+when the loaded Pester has it, so nothing changes for a consumer on 5.0.0 to 5.2.x beyond not
+getting that part of the speedup -- the module still promises, and still honours, Pester >= 5.0.0.
+
 **SECURITY -- the mutation sandbox no longer uses a predictable path.** It was
 `$TMPDIR/psmut-sandbox-<pid>`, and creating it began by removing whatever was already there. On a
 machine you share with anyone else that is a hole: another local user creates that path first as a
@@ -216,6 +233,24 @@ scored. Nothing is emitted outside a recognised CI.
   variable, which is read at run time and stays data whatever it contains.
 
 ### Internal
+- **The mutant runspace is warm.** `Get-PSMutationWarmShell` builds one runspace with Pester in it
+  and hands it to every mutant, rebuilding after a fixed number of uses and unconditionally after a
+  timeout -- `Stop()` leaves a runspace unusable. Nothing about a mutant is cached: the covering
+  suite dot-sources the file under test, so each run reads the spliced source afresh. The recycle
+  interval bounds any state a suite leaves behind.
+- `Get-PSMutationRunspaceError` moved from `PSMutation.Runner.ps1` to `PSMutation.Pester.ps1`, where
+  the child-runspace contract lives. Leaving it made `Pester.ps1` call upward into `Runner.ps1` --
+  a cycle `tests/Layering.Tests.ps1` caught on the first run, which coverage, the suite and the
+  mutation gate would all have passed. Its tests moved with it, because a test in the wrong file
+  covers a function while being unable to kill any of its mutants.
+- The child script is now **parse-checked by a test** (part of #49): it is a here-string, so nothing
+  lints the code every mutant runs, and a typo in it surfaces only at run time as "the covering
+  tests produced no result".
+- Two guards in `Close-PSMutationWarmRunspace` were collapsed into one. The shell and the runspace
+  are always set together and cleared together, so two guards implied a state that cannot exist --
+  and the mutation gate proved the cost: forcing either one false left the OTHER object disposed,
+  so a test asking whether the shell still worked threw anyway and both mutants survived.
+
 - **The sandbox path is now a security boundary.** `New-PSMutationSandbox` gained two guards with
   their own tests: `Assert-PSMutationSandboxPath` refuses an occupied path, and
   `Assert-PSMutationSandboxReal` refuses one that is not the plain directory just created. The

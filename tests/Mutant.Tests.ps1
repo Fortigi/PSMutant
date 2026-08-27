@@ -82,8 +82,13 @@ Describe 'Invoke-PSBoundedPester' {
         # A fresh runspace resolves "Pester" by NAME and gets the newest installed,
         # which need not be the version this process loaded; assemblies are per-process
         # so the mismatch is fatal. Pointing the pin at a module that does not exist
-        # proves the child really uses the handed-over path -- if it resolved the name
+        # proves the runspace really uses the handed-over path -- if it resolved the name
         # itself instead, the run would sail past this and report Passed.
+        #
+        # The close FIRST is load-bearing now that the runspace is reused: a warm one left
+        # by an earlier test already has Pester in it, so the mock would never be consulted
+        # and the test would pass without proving anything.
+        Close-PSMutationWarmRunspace
         Mock Get-PSMutationPesterPath { Join-Path $script:proj 'not-a-real-pester.psd1' }
 
         { Invoke-PSBoundedPester -CoveringTests @($script:strictTest) -TimeoutSeconds 30 } |
@@ -95,7 +100,7 @@ Describe 'Invoke-PSBoundedPester' {
         # anything-but-Passed as a kill, and a machine with two Pesters scored every
         # mutant Killed -- a silent, entirely fake 100%. A mutant nobody could evaluate
         # has to stop the run, not quietly count as caught.
-        Mock Get-PSMutationBoundedPesterScript { 'param($tests, $pester)' }
+        Mock Get-PSMutationWarmPesterScript { 'param($tests)' }
 
         { Invoke-PSBoundedPester -CoveringTests @($script:strictTest) -TimeoutSeconds 30 } |
             Should-Throw -ExceptionMessage '*produced no result*'
