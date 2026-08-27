@@ -133,7 +133,9 @@ a 100% resting on a dozen declarations can never be mistaken for one that killed
    lines are kept (an uncovered mutant is guaranteed to survive and teaches nothing).
 3. **Evaluate** — copies the source subtrees into a temp **sandbox**, splices each mutant
    into the copy, runs the covering tests in-process, and restores the copy. Tracked source
-   is never touched.
+   is never touched. The sandbox is created under a name carrying 128 bits of randomness, and
+   a path that already exists is refused rather than cleared: temp is world-writable on a
+   shared machine, and a predictable name is one another local user can occupy first.
 4. **Score** — `killed / total`, written to the JSON report. A mutant that hits the
    per-mutant timeout counts toward `killed`, because a mutant that hangs your suite is a
    fault -- but it is also reported on its own as `timedOut`, in the JSON and on the

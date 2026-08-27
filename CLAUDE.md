@@ -231,6 +231,51 @@ Its behaviour is pinned by the normal suite at 100% coverage instead.
 
 ---
 
+## The sandbox path is a security boundary, not just a scratch location
+
+The sandbox used to be `$TMPDIR/psmut-sandbox-$PID`, and creating it began by removing whatever
+was already there. On a shared machine that is a hole, and it was reproduced end to end rather
+than argued about: another local user creates that path first as a symlink to a directory they
+own, the victim's `Remove-Item` fails because the sticky bit protects the attacker's entry, the
+failure is **non-terminating** so execution carries on, and `Copy-Item` writes the source through
+the link.
+
+`fs.protected_symlinks` does not save you here, which is the part worth remembering: it guards
+only the **final** path component, and the planted symlink is an intermediate one. Confirmed with
+two real users on a current kernel with the sticky bit set.
+
+The exposure is larger than disclosure. The sandbox is where the tests **run from**, so whoever
+controls that directory can substitute a source or test file between the copy and the run -- code
+execution as the victim, from a directory they were merely allowed to create.
+
+Three rules now, and none of them is decoration:
+
+- **The name is unguessable.** `New-PSMutationSandboxName` appends 128 bits from
+  `RandomNumberGenerator`, not `Get-Random` and not a GUID: those are about uniqueness, and the
+  property needed is that an attacker cannot predict the next value. The process id stays in the
+  name because the stale sweep identifies an owner by it.
+- **An existing path is REFUSED, never cleared.** Clearing is what made the attack work. With an
+  unguessable name a collision is not a case worth recovering from, so refusing is both safer and
+  the more honest answer.
+- **What was created is checked to be a plain directory.** A check followed by a create is a race;
+  the post-creation check is what catches a path substituted inside it.
+
+`Get-PSMutationSandboxOwnerId` still accepts the OLD `psmut-sandbox-<pid>` form, deliberately.
+The suffix is what makes a name unguessable when it is *written*; reading one is a different
+question, and refusing the legacy shape would orphan every sandbox left by a previous version the
+moment this ships.
+
+The sweep also skips reparse points now. Anyone can leave a symlink in temp named like a sandbox,
+and recursively removing one asks the sweep to follow a path an attacker chose -- nothing this
+module creates is ever a link, so skipping costs nothing and removes the sweep as a deletion
+primitive.
+
+**Residual, and stated rather than left to be discovered:** the sandbox directory is created with
+the process umask, so on a typical Unix box it is world-READABLE while the run lasts. Closing that
+needs `File.SetUnixFileMode`, which is .NET 7 and above this module's PowerShell 7.2 floor. The
+unguessable name closes the write-through attack, which is the one with the proof of concept; a
+reader still has to find the name first.
+
 ## Output: deciding what to say, and saying it
 
 Every file that produces output returns **lines**; `src/PSMutation.Output.ps1` emits them and
