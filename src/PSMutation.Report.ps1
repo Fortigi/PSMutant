@@ -373,7 +373,16 @@ function Write-PSMutationReport {
         $Exclusion = $null,
         # Mutate files with no tests entry. Not a correctness problem -- the whole suite is
         # never less thorough -- but a cost paid per mutant, and invisible until now.
-        [AllowEmptyCollection()] [string[]]$UnmappedFiles = @()
+        [AllowEmptyCollection()] [string[]]$UnmappedFiles = @(),
+        # The files the config asked to mutate, reported as a COUNT beside the score. A score
+        # has no denominator otherwise: 100% over eight files and 100% over nine are the same
+        # number, and only one of them covers the ninth.
+        #
+        # This is the list the CALLER supplied, never a directory listing. Nothing in this
+        # module walks a source tree, so a run cannot know about a file the config never
+        # named -- and reporting a fraction like "8 of 9" would require exactly that
+        # knowledge. What a report can honestly say is how many files it was pointed at.
+        [AllowEmptyCollection()] [string[]]$MutateFiles = @()
     )
     # The only place holding EVERY row, so the only place that can ask whether a
     # declaration matched nothing. The per-set fold no longer answers it.
@@ -402,6 +411,9 @@ function Write-PSMutationReport {
         declaredEquivalent = $summary.DeclaredEquivalent
         # Beside declaredEquivalent because it answers the same question: how much of what
         # the config asked for is NOT behind this number. This one removes far more.
+        # Beside skippedAsUncovered and declaredEquivalent, for the same reason: a number
+        # cannot be read without knowing what it was computed over.
+        filesMutated = @($MutateFiles | Where-Object { $_ }).Count
         skippedAsUncovered = [int]$Exclusion.Skipped
         filesWithNoMutants = ConvertTo-PSMutationList -Value $Exclusion.FilesWithNoMutants
         # Recorded beside the other disclosures: a run that took twice as long for a reason

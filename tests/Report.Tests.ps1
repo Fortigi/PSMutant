@@ -477,7 +477,7 @@ Describe 'the contract a consumer actually depends on' {
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
                     'mutationScore', 'total', 'killed', 'survived', 'timedOut',
-                    'declaredEquivalent', 'skippedAsUncovered', 'filesWithNoMutants',
+                    'declaredEquivalent', 'filesMutated', 'skippedAsUncovered', 'filesWithNoMutants',
                     'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
@@ -1033,5 +1033,49 @@ Describe 'ConvertTo-PSMutationList' {
 
     It 'drops a $null sitting among real elements' {
         Should-BeCollection -Expected @('a', 'b') -Actual (ConvertTo-PSMutationList -Value @('a', $null, 'b'))
+    }
+}
+
+
+Describe 'the score reports the denominator it was computed over' {
+    # A score with no file count cannot be read: 100% across eight files and 100% across nine
+    # are the same number, and only one of them covers the ninth. This repo is the live case --
+    # one src/ file is deliberately outside the mutate list (#22), and until now nothing in the
+    # output said so.
+    It 'counts the files the config asked to mutate' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-fm-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null `
+                -MutateFiles @('src/A.ps1', 'src/B.ps1', 'src/C.ps1') | Out-Null
+            (Get-Content -LiteralPath $out -Raw | ConvertFrom-Json).filesMutated | Should-Be 3
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'reports zero rather than omitting the field when nothing was named' {
+        # Absent and zero are different answers, and the schema requires the field on a full
+        # run, so the empty case must still produce a number.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-fm0-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+            $raw = [System.IO.File]::ReadAllText($out)
+            $raw.Contains('"filesMutated": 0') | Should-BeTrue
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'does not count an empty entry as a file' {
+        # Paired with the count above so this pins the filter rather than passing on any
+        # number: three entries in, one of them empty, two counted.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-fme-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null `
+                -MutateFiles @('src/A.ps1', '', 'src/B.ps1') | Out-Null
+            (Get-Content -LiteralPath $out -Raw | ConvertFrom-Json).filesMutated | Should-Be 2
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }

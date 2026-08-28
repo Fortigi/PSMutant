@@ -88,6 +88,10 @@
       "items": { "type": "string" },
       "description": "Full runs only. Equivalence declarations that are no longer true or no longer identify exactly one mutant. Non-empty means the run failed on them."
     },
+    "filesMutated": {
+      "type": "integer",
+      "description": "Full runs only, and OPTIONAL rather than required, unlike the disclosures beside it. Those were always written and merely undeclared, so requiring them invalidated no document that ever existed; this field is genuinely new, and requiring it would make every report produced before it fail validation -- which is the one thing schemaVersion 1 promises not to do, since it moves only when a field changes meaning or disappears, never when one is added. A consumer branches on its presence. How many files the config asked to mutate. The denominator the score was computed over: 100% across eight files and 100% across nine are the same number, and only one covers the ninth. It counts the CONFIGURED list, never a directory listing -- a run cannot know about a file the config never named, so this says what it was pointed at rather than what it might have missed."
+    },
     "skippedAsUncovered": {
       "type": "integer",
       "description": "Full runs only. Candidates the covered-lines filter removed before any test ran. Beside declaredEquivalent because it answers the same question -- how much of what the config asked for is NOT behind the score -- and this one usually removes far more."

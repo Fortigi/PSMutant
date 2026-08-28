@@ -5,6 +5,24 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
+### For consumers
+
+**The report says how many files the score was computed over.** `filesMutated` joins
+`skippedAsUncovered` and `declaredEquivalent` in the document and in the schema, for the reason
+those two already exist: 100% across eight files and 100% across nine are the same number, and only
+one of them covers the ninth. If your `mutate` list is narrower than your source tree -- and most
+are, deliberately -- nothing in the output said so until now.
+
+It is **optional** in the v1 schema, where the two fields beside it are required, and the difference
+is not an oversight. Those two were always written and merely undeclared, so requiring them
+invalidated no document that had ever existed. This field is genuinely new: requiring it would fail
+every report 0.4.0 produced, and `schemaVersion` moves only when a field changes meaning or
+disappears -- never when one is added. Branch on its presence.
+
+It counts the list your config names, never a directory listing. A run cannot know about a file the
+config never mentioned, so it reports what it was pointed at rather than guessing what it might have
+missed; the fraction is yours to compute against your own file count.
+
 ## [0.4.0] - 2026-08-28
 
 > Renamed from an unreleased 0.3.3. That version was prepared but never tagged and never
