@@ -183,7 +183,10 @@ function Invoke-PSMutation {
 
         # Said before the loop, because that is when it can still be acted on -- the cost it
         # names is paid on every mutant that follows.
-        $unmapped = Get-PSMutationUnmappedMutateFile -MutateFiles $t.Mutate -TestsByFile $t.TestsByFile
+        # Wrapped: a PowerShell function returning an empty collection unrolls it to NOTHING,
+        # so this binds $null on the ordinary path however carefully the callee types its
+        # output. That $null is what reached the report as `[null]` in #158.
+        $unmapped = @(Get-PSMutationUnmappedMutateFile -MutateFiles $t.Mutate -TestsByFile $t.TestsByFile)
         if ($unmapped.Count -gt 0) {
             Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Muted' `
                     -Text ("  {0} mutate file(s) have no tests entry, so every one of their mutants runs the WHOLE suite: {1}" -f `
