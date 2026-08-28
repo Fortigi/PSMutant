@@ -8,6 +8,12 @@
     floor nothing runs on is a claim rather than a guarantee -- the same defect the Pester gate
     beside this one closed, from the other side.
 
+    The legs run on WINDOWS, and that is a hosting fact rather than a preference: measured on a
+    current Linux image, PowerShell 7.0 dies before running a line ("No usable version of libssl
+    was found" -- .NET Core 3.1 needs libssl 1.1, and Fedora 44 offers no compatibility package),
+    and starting 7.2 needs an ICU package the image may not carry. The Windows archives are
+    self-contained, so the floor legs can only be proven there.
+
     UNLIKE THE SIBLING'S EQUIVALENT, THIS GATE MUST BRING A PESTER. PSComplexity can assert
     directly because nothing in its src/ calls a Pester API; PSMutant exists to drive Pester, so a
     PowerShell leg cannot avoid choosing a version. It is pinned rather than resolved, because
