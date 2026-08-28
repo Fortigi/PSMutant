@@ -685,6 +685,46 @@ Describe 'a score answers for what the coverage filter removed' {
         finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It 'writes an EMPTY array, never [null], when every file has a test mapping' {
+        # The default path, and the one that shipped wrong for two releases (#158). The test
+        # beside this one covers the non-empty case and passed throughout, which is exactly how
+        # it survived: `@($null)` is an array of ONE element whose value is $null, so the field
+        # read `[null]` on every ordinary run.
+        #
+        # Asserted against the raw JSON TEXT rather than a parsed object, because
+        # ConvertFrom-Json turns both [] and [null] into something a -Count check cannot tell
+        # apart -- `@($null).Count` is 1, but so is the count of a one-element array of a real
+        # file, and a null-vs-empty distinction is precisely what is being pinned.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-nomapping-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+            $raw = [System.IO.File]::ReadAllText($out)
+            # .Contains, not Should-BeLikeString: `[]` in a -like pattern is a CHARACTER CLASS,
+            # so the obvious spelling is not a wildcard error away from working -- it is a
+            # pattern that cannot match. This file's header warns about exactly that trap for
+            # version numbers; it bites identically here.
+            $raw.Contains('"filesWithoutTestMapping": []') | Should-BeTrue
+            $raw.Contains('"filesWithoutTestMapping": null') | Should-BeFalse
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'writes an empty array for the sibling list fields too' {
+        # The two beside it escaped by accident -- their sources happen to be initialised
+        # collections today -- and an accident is not a property. Same normaliser, so this is
+        # what stops one of them acquiring the bug the day its source changes.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-siblings-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+            $raw = [System.IO.File]::ReadAllText($out)
+            $raw.Contains('"filesWithNoMutants": []') | Should-BeTrue
+            $raw.Contains('"staleEquivalents": []') | Should-BeTrue
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It 'records both numbers in the report document' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-excl-$([guid]::NewGuid())"
         try {
@@ -922,5 +962,33 @@ Describe 'the provenance a report carries' {
             (Get-Content $out -Raw | ConvertFrom-Json).mutationScore | Should-Be 66.7
         }
         finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+
+Describe 'ConvertTo-PSMutationList' {
+    # The normaliser behind #158. One place, so the three report list fields cannot drift.
+    It 'turns $null into an empty array rather than a one-element array of $null' {
+        $got = ConvertTo-PSMutationList -Value $null
+        @($got).Count | Should-Be 0
+    }
+
+    It 'keeps every real element, in order' {
+        # Paired with the test above deliberately: a normaliser that returned @() for
+        # everything would pass that one on its own.
+        # -Actual rather than a pipe: the function returns `,@(...)` so that an EMPTY result
+        # survives the pipeline, and piping that into a collection assertion presents it as one
+        # item. Pester says so in its own hint.
+        Should-BeCollection -Expected @('b', 'a') -Actual (ConvertTo-PSMutationList -Value @('b', 'a'))
+    }
+
+    It 'keeps an EMPTY STRING, which is a value a caller may hold' {
+        # Only $null is a phantom. Dropping '' would be a second, quieter version of the same
+        # bug -- a caller's real entry silently vanishing from a published list.
+        @(ConvertTo-PSMutationList -Value @('')).Count | Should-Be 1
+    }
+
+    It 'drops a $null sitting among real elements' {
+        Should-BeCollection -Expected @('a', 'b') -Actual (ConvertTo-PSMutationList -Value @('a', $null, 'b'))
     }
 }

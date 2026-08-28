@@ -608,6 +608,28 @@ Describe 'the published report schema' {
         Should-BeFalse -Actual (Test-AgainstSchema -Json $tampered)
     }
 
+    It 'refuses a report whose filesWithoutTestMapping holds a null' {
+        # The #158 shape, made unrepresentable rather than merely fixed. `@($null)` is an array
+        # of ONE element whose value is $null, and the report published exactly that on the
+        # DEFAULT path for two releases. Nothing caught it because the field was not in this
+        # schema at all, and additionalProperties is true by design -- so an unknown field with
+        # a wrong value validated cleanly. Declaring `items` is what turns it into a violation.
+        $tampered = $script:fullText -replace '("filesWithoutTestMapping"\s*:\s*)\[\s*\]', '$1[ null ]'
+        # Asserted first: a -replace that matched nothing would leave the document untouched and
+        # this test would pass while proving nothing, which is the trap the test above names too.
+        $tampered | Should-NotBe $script:fullText
+        Should-BeFalse -Actual (Test-AgainstSchema -Json $tampered)
+    }
+
+    It 'refuses a full report that omits what the score excluded' {
+        # skippedAsUncovered, filesWithNoMutants and filesWithoutTestMapping are REQUIRED on a
+        # full run for the same reason declaredEquivalent is: a number cannot be read without
+        # what was left out of it. They were absent from this schema until #158.
+        $stripped = $script:fullText -replace '\s*"skippedAsUncovered"\s*:\s*\d+,', ''
+        $stripped | Should-NotBe $script:fullText
+        Should-BeFalse -Actual (Test-AgainstSchema -Json $stripped)
+    }
+
     It 'still accepts a report carrying a field it has never seen' {
         # The additive promise, in the other direction: schemaVersion changes when a field
         # changes meaning or disappears, NEVER when one is added. So the schema must permit

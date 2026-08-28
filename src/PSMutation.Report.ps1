@@ -303,6 +303,41 @@ function Save-PSMutationReportDocument {
     $Document | ConvertTo-Json -Depth 6 | Set-Content -LiteralPath $ReportPath -ErrorAction Stop
 }
 
+function ConvertTo-PSMutationList {
+    <#
+    .SYNOPSIS
+        A value as a JSON array, with the phantom element `@($null)` produces removed.
+    .DESCRIPTION
+        `@($null)` is an array of ONE element whose value is $null -- not an empty array. So the
+        idiomatic wrap that guarantees "this serialises as a JSON array" quietly manufactures an
+        entry when handed nothing, and the report published `"filesWithoutTestMapping": [null]`
+        on the DEFAULT path for two releases (#158). A consumer iterating the field to list the
+        files that fell back to the whole suite got one entry that is not a file.
+
+        The $null arrives by an ordinary route rather than a strange one: a PowerShell function
+        returning an empty collection unrolls it to nothing, so
+        `$x = Get-PSMutationUnmappedMutateFile ...` binds $null however carefully that function
+        types its output.
+
+        Used for every array the report writes, not only the field that was wrong. The sibling
+        fields escaped by accident -- their sources happen to be initialised collections today --
+        and an accident is not a property.
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowNull()] [AllowEmptyCollection()] $Value)
+    # Only $null is dropped. An empty string is a value a caller may legitimately hold, and
+    # silently discarding it would be a second, quieter version of this same bug.
+    #
+    # `return ,@(...)`, and the comma is load-bearing. Without it this function walks into the
+    # very bug it exists to fix, one level up: returning an empty collection unrolls it to
+    # nothing, the caller binds $null, and the field serialises as `null` -- which is not even
+    # the array the schema now requires. Written first without the comma, and the report came
+    # back with `"filesWithoutTestMapping": null`. The unary comma wraps the result so the
+    # pipeline's one level of unrolling yields the array itself.
+    return , @($Value | Where-Object { $null -ne $_ })
+}
+
 function Write-PSMutationReport {
     # Write the JSON report; return the summary.
     [OutputType([pscustomobject])]
@@ -351,11 +386,11 @@ function Write-PSMutationReport {
         # Beside declaredEquivalent because it answers the same question: how much of what
         # the config asked for is NOT behind this number. This one removes far more.
         skippedAsUncovered = [int]$Exclusion.Skipped
-        filesWithNoMutants = @($Exclusion.FilesWithNoMutants)
+        filesWithNoMutants = ConvertTo-PSMutationList -Value $Exclusion.FilesWithNoMutants
         # Recorded beside the other disclosures: a run that took twice as long for a reason
         # nobody chose should say so somewhere a CI job can read afterwards.
-        filesWithoutTestMapping = @($UnmappedFiles)
-        staleEquivalents = @($summary.StaleEquivalents)
+        filesWithoutTestMapping = ConvertTo-PSMutationList -Value $UnmappedFiles
+        staleEquivalents = ConvertTo-PSMutationList -Value $summary.StaleEquivalents
         thresholds = $Thresholds
         # Recorded so a later -RecheckFrom can prove the mutant numbering in this
         # report still refers to the same code. Mutant Ids come from AST walk order,
