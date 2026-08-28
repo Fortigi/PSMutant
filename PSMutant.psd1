@@ -6,7 +6,7 @@
     CompanyName       = 'Fortigi'
     Copyright         = '(c) Fortigi. MIT licensed.'
     Description       = 'Mutation testing for PowerShell. Injects small faults (flip -eq to -ne, $true to $false, N to N+1, drop -not) into your scripts using the PowerShell AST and reports how many your Pester suite catches - the metric line coverage cannot give you. Runs mutants in a throwaway sandbox so your source is never modified. Requires Pester 5.2.0 or later AT RUN TIME, and deliberately does not declare it as a RequiredModule: PSMutant runs under whichever Pester >= 5.2.0 you have loaded rather than importing one for you. Install Pester yourself if you do not already have it.'
-    PowerShellVersion = '7.2'
+    PowerShellVersion = '7.0'
 
     # One function. Get-PSMutationCandidate and Set-PSMutationText used to be exported too,
     # and between them they trafficked a nine-field [pscustomobject] that nothing declared,
@@ -40,7 +40,26 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**The Pester floor is 5.2.0, not 5.0.0, and it is now executed rather than declared.** The
+            ReleaseNotes = '**The PowerShell floor is 7.0, lowered from 7.2, and it is executed rather than declared.** The
+7.2 was set in the first commit and never touched, while CI ran whatever the runners shipped --
+several minors newer -- so the number consumers were told had never been run, in either direction.
+Nothing in `src/` reaches past 7.0: every type literal predates .NET Core 3.1, `Test-Json` is called
+through its 6.1 parameter set rather than the `-Path` form that arrived in 7.4, and `[SHA256]` uses
+the instance API rather than .NET 5''s `HashData`.
+
+A gate now downloads **every supported host, one leg per minor from 7.0 up**, and requires each to
+produce the *same mutant verdicts* the launching host measured -- not merely the same score, since
+two hosts can agree on a percentage while disagreeing about which mutants died. The legs run on
+Windows: the old .NET runtimes need system libraries a current Linux image no longer carries, so a
+Linux leg would fail for reasons that are not about this module.
+
+**If you are on PowerShell 7.0 to 7.3, use Pester 5.x, not Pester 6.** Measured while building
+that gate: Pester 6.1.0 fails on PowerShell 7.2 with `Unable to find type [PesterConfiguration]`
+and works on 7.4, while its own manifest claims it needs only PowerShell 5.1. That is Pester''s
+constraint rather than this module''s, but PSMutant drives Pester, so it lands on you either way and
+is better said out loud than discovered.
+
+**The Pester floor is 5.2.0, not 5.0.0, and it is now executed rather than declared.** The
 manifest and README promised 5.0.0 and the gate ran exactly one version, so the number consumers
 were given had never once been tried. Pointed at it, the module fails: PSMutant calls
 `New-PesterConfiguration`, which **arrives in 5.2.0** -- measured across every installed version,

@@ -449,3 +449,63 @@ Describe 'the shipped pins.env is itself a claim, so it is asserted here' {
                 -FloorVersion $floor)
     }
 }
+
+Describe 'the declared PowerShell floor and the legs that execute it' {
+    # #157 in one rule. The manifest declared 7.2 and nothing ever ran on it; a floor nothing
+    # executes is a claim, not a guarantee. This is what makes the two move together.
+
+    It 'accepts the configuration this repo actually ships' {
+        Should-BeNull -Actual (Get-PSMutantHostFloorFault -Declared '7.2' `
+                -Leg @('7.2.24', '7.3.12', '7.4.19', '7.5.10'))
+    }
+
+    It 'refuses a floor no leg covers' {
+        # Lowering the floor without adding its leg recreates the exact defect being closed.
+        Get-PSMutantHostFloorFault -Declared '7.0' -Leg @('7.2.24', '7.4.19') |
+            Should-MatchString 'no leg on PowerShell 7.0'
+    }
+
+    It 'refuses a leg BELOW the declared floor' {
+        # The other direction, and it is not symmetric: such a leg either proves something nobody
+        # promised, or goes red for a version consumers were told not to use.
+        Get-PSMutantHostFloorFault -Declared '7.2' -Leg @('7.0.13', '7.2.24') |
+            Should-MatchString 'BELOW the declared floor'
+    }
+
+    It 'covers the floor by MINOR, so the patch stays free to advance' {
+        # Paired with the refusal above so this pins "the minor is covered" rather than "the patch
+        # equals the floor" -- which would freeze the one leg the newest-patch rule says moves.
+        Should-BeNull -Actual (Get-PSMutantHostFloorFault -Declared '7.2' -Leg @('7.2.99', '7.4.19'))
+    }
+
+    It 'refuses an empty leg list rather than passing over zero hosts' {
+        Get-PSMutantHostFloorFault -Declared '7.2' -Leg @() | Should-MatchString 'zero hosts'
+    }
+
+    It 'refuses a manifest with no declared floor' {
+        Get-PSMutantHostFloorFault -Declared '' -Leg @('7.2.24') | Should-MatchString 'no PowerShellVersion'
+    }
+
+    It 'holds for the manifest and pins that actually ship' {
+        # The rule is unit-tested above against fixtures; this runs it over what ships, which is
+        # the part a fixture cannot certify.
+        $root = Split-Path -Parent $PSScriptRoot
+        $declared = (Import-PowerShellDataFile (Join-Path $root 'PSMutant.psd1')).PowerShellVersion
+        $legs = @((Get-PSMutantPinValue -Line (Get-Content (Join-Path $root '.github/pins.env')) `
+                    -Name 'PS_COMPAT_VERSIONS') -split ' ' | Where-Object { $_ })
+        Should-BeNull -Actual (Get-PSMutantHostFloorFault -Declared $declared -Leg $legs)
+    }
+
+    It 'pins a Pester for those legs, because this module cannot run without one' {
+        # PSMutant DRIVES Pester, so a PowerShell leg cannot avoid choosing a version -- and
+        # resolving by name takes the newest. Measured: Pester 6.1.0 fails on PowerShell 7.2 with
+        # "Unable to find type [PesterConfiguration]" and works on 7.4, while its own manifest
+        # claims PowerShellVersion 5.1. Unpinned, the floor leg would fail for a reason that is
+        # not about this module. The sibling's gate needs no such pin: nothing in its src/ calls
+        # a Pester API.
+        $root = Split-Path -Parent $PSScriptRoot
+        $pinned = Get-PSMutantPinValue -Line (Get-Content (Join-Path $root '.github/pins.env')) -Name 'PS_COMPAT_PESTER'
+        $pinned | Should-NotBeNull -Because 'PS_COMPAT_PESTER must name the Pester the PowerShell legs run under'
+        [version]$pinned | Should-BeLessThan ([version]'6.0.0')
+    }
+}

@@ -142,6 +142,48 @@ function Get-PSMutantUnloadedFile {
     return $unloaded
 }
 
+function Get-PSMutantHostFloorFault {
+    <#
+    .SYNOPSIS
+        The fault, if any, between the declared PowerShell floor and the legs that execute it.
+    .DESCRIPTION
+        #157 in one rule: the manifest declared 7.2 and nothing ever ran on it. A floor nothing
+        executes is a claim, not a guarantee, and this is what makes the two move together --
+        lower the floor without adding its leg and the gate refuses.
+
+        The floor's MINOR must be covered, not its exact patch: legs are the newest patch of each
+        minor and are free to advance, which is the same rule the Pester legs follow.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Declared,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$Leg
+    )
+    $legs = @($Leg | Where-Object { $_ })
+    if ([string]::IsNullOrWhiteSpace($Declared)) {
+        return 'PSMutant.psd1 declares no PowerShellVersion, so there is no floor for a leg to execute.'
+    }
+    if ($legs.Count -eq 0) {
+        return 'PS_COMPAT_VERSIONS is empty: a compatibility gate over zero hosts passes every time.'
+    }
+    $floor = [version]$Declared
+    $minors = @($legs | ForEach-Object { $v = [version]$_; "$($v.Major).$($v.Minor)" })
+    if ($minors -notcontains "$($floor.Major).$($floor.Minor)") {
+        return ("PS_COMPAT_VERSIONS has no leg on PowerShell $($floor.Major).$($floor.Minor), which is the floor " +
+            "PSMutant.psd1 declares. The number consumers are told has to be one the legs execute -- " +
+            'that it was not is exactly what #157 was filed about.')
+    }
+    foreach ($l in $legs) {
+        if ([version]$l -lt $floor) {
+            return ("PS_COMPAT_VERSIONS lists PowerShell $l, which is BELOW the declared floor of $Declared. " +
+                'A leg under the floor either proves something nobody promised or fails for a version ' +
+                'consumers were told not to use; lower the floor deliberately, or drop the leg.')
+        }
+    }
+    return $null
+}
+
 function Get-PSMutantPesterFloor {
     <#
     .SYNOPSIS
