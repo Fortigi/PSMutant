@@ -51,18 +51,32 @@ function Assert-PSMutationPester {
         honour the >= 5.2.0 in its manifest: it runs under the caller's Pester rather
         than choosing one for them.
 
-        THE FLOOR IS 5.2.0 BECAUSE THAT IS WHERE `New-PesterConfiguration` ARRIVES, and this
-        module cannot work without it -- the baseline needs code coverage configured, which the
-        simple parameter set cannot express. Measured across every installed version rather
-        than looked up:
+        THE FLOOR IS 5.2.0, AND THERE ARE TWO REASONS. The first is the one #161 found and it
+        is the weaker of them, so read the second before trying to lower this.
 
-            5.0.0 False   5.1.0 False   5.2.0 True   5.3.0 True   ... 6.1.0 True
+        1. `New-PesterConfiguration` arrives in 5.2.0 -- measured, 5.0.0 and 5.1.0 do not export
+           it. Under those, the command is not found, PowerShell autoloads `Pester` by NAME to
+           the newest installed, and that collides with the Pester.dll already in the process.
 
-        It said 5.0.0 until #161, and the number had never been executed. Pointed at it, the
-        module failed -- under 5.0.x and 5.1.x the command is not found, PowerShell autoloads
-        `Pester` by NAME to the newest installed, and that collides with the Pester.dll already
-        in the process. The promise was corrected to the version that works rather than the gate
-        being trimmed to protect the promise.
+           THIS ONE IS SOLVABLE and was tried: 5.0.0 has the `-Configuration` parameter and the
+           `[PesterConfiguration]` TYPE, so only the cmdlet that builds one is missing.
+           `[PesterConfiguration]::Default` works on every version in range and returns a fresh
+           instance rather than a shared singleton. Swapping it in gets 5.0.0 past this point.
+
+        2. `CodeCoverage.CommandsExecuted` comes back UNUSABLE on 5.0.0 and 5.1.0. Measured over
+           the same fixture:
+
+               5.0.0  CommandsExecuted=1, no properties at all, File=[] Line=[]
+               5.1.0  CommandsExecuted=1, no properties at all, File=[] Line=[]
+               5.2.0  CommandsExecuted=2, File=/.../calc.ps1 Line=1
+
+           `coveredLinesOnly` reads File and Line from those objects, and no guard can conjure
+           data that is not there. Degrading to "mutate everything" instead would silently
+           change the mutant set and the score on those two versions -- the quiet difference
+           this tool exists to find in other people's code.
+
+        So the floor is 5.2.0 for reason 2, not reason 1, and a guard around the constructor
+        buys nothing on its own.
     #>
     [CmdletBinding()]
     param()
