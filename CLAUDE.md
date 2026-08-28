@@ -650,6 +650,22 @@ lets the self-mutation gate stay in the single digits of minutes.
 - **ASCII only** in `src/`, `tests/` and `tools/`. Non-ASCII without a BOM trips
   `PSUseBOMForUnicodeEncodedFile` and fails the lint gate.
 - Keep each function under the complexity ceiling; the gate is per unit, not per file.
+- **A ternary where it fits on ONE line, an `if`/`else` where it does not.** `$score = $total -gt 0
+  ? [math]::Round(100.0 * $killed / $total, 1) : 0` reads better than the four-line form; the same
+  conversion spread over three lines does not, and is worth refusing on readability alone.
+
+  It is also worth refusing because **a multi-line ternary without backtick continuations is not a
+  ternary**. `?` is an alias for `Where-Object`, so
+
+  ```powershell
+  $x = $c
+      ? 'a'
+      : 'b'
+  ```
+
+  parses cleanly as THREE statements with zero `TernaryExpressionAst` nodes. Verified against the
+  AST rather than assumed from the fact that it compiled -- which is the whole problem with it, and
+  the reason the one-line rule is the safe one rather than merely the tidy one.
 
 ## Practices to preserve
 
