@@ -281,7 +281,7 @@ Describe 'Invoke-PSMutant' {
     It 'reports Survived only when the suite still fully passes' {
         Mock Invoke-PSBoundedPester { 'Passed' }
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Survived'
+            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Survived'
     }
 
     It 'reports TimedOut apart from Killed, because a hang is not evidence' {
@@ -289,7 +289,7 @@ Describe 'Invoke-PSMutant' {
         # line later, so a suite that was merely too slow scored kills it never earned.
         Mock Invoke-PSBoundedPester { 'TimedOut' }
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'TimedOut'
+            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'TimedOut'
     }
 
     It 'refuses an outcome it does not model rather than scoring it' {
@@ -299,7 +299,7 @@ Describe 'Invoke-PSMutant' {
         # baseline; a widening does not, which is why the set is closed here.
         Mock Invoke-PSBoundedPester { 'Inconclusive' }
         { Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-                -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } |
+                -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } |
             Should-Throw -ExceptionMessage '*flatters the score*'
         # Asserted on the LAST fragment of the message, not the first. Breaking a `+` between
         # the fragments raises a conversion error that QUOTES its left operand, so a pattern
@@ -314,7 +314,7 @@ Describe 'Invoke-PSMutant' {
         # not tell" must never reach here -- see Invoke-PSBoundedPester.
         Mock Invoke-PSBoundedPester { $Outcome }
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Killed'
+            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Killed'
     }
 
     It 'writes the mutant into the file and restores it afterwards' {
@@ -323,7 +323,7 @@ Describe 'Invoke-PSMutant' {
         Mock Invoke-PSBoundedPester { $script:during = [System.IO.File]::ReadAllText($script:target); 'Passed' }
 
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'MUTATED' `
-            -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Out-Null
+            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Out-Null
 
         $script:during | Should-Be 'MUTATED'
         [System.IO.File]::ReadAllText($script:target) | Should-Be $script:before
@@ -335,7 +335,7 @@ Describe 'Invoke-PSMutant' {
         # sandbox corrupted for every mutant after it.
         Mock Invoke-PSBoundedPester { throw 'child exploded' }
         { Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'MUTATED' `
-                -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } | Should-Throw
+                -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } | Should-Throw
         [System.IO.File]::ReadAllText($script:target) | Should-Be $script:before
     }
 }
@@ -548,5 +548,72 @@ Describe 'the mutant row the report publishes' {
         # for -- it failed when the field was added, which is the pin working.
         @($r)[0].PSObject.Properties.Name |
             Should-BeCollection @('Id', 'Function', 'File', 'Line', 'Operator', 'Description', 'Status')
+    }
+}
+
+Describe 'the mutate file is read once per FILE, not twice per mutant' {
+    # It used to be read twice for every mutant: once in the loop to splice against, and again
+    # inside Invoke-PSMutant to restore from -- the same unchanged bytes off disk twice, producing
+    # two strings equal by construction. A file contributes MANY candidates (125 for the largest in
+    # this repo's sibling), so that was per mutant, not per file.
+    #
+    # Asserted as a CONTRACT rather than by counting reads: [System.IO.File] is a .NET type and
+    # cannot be mocked, and a wall-clock assertion could not tell 0.16 ms from noise on Linux --
+    # issue #101 reports a far larger cost on Windows. What makes one read enough is that every
+    # mutant is HANDED the original text instead of fetching it, and that is observable.
+    It 'hands every mutant of a file the same original text, read by the loop' {
+        $script:seenOriginals = @()
+        Mock Invoke-PSMutant { $script:seenOriginals += $OriginalContent; 'Killed' }
+        $cands = 1..5 | ForEach-Object {
+            [pscustomobject]@{
+                Id = $_; Function = ''; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
+                Description = "m$_"; StartOffset = 0; EndOffset = 1; Mutated = ' '
+            }
+        }
+        $r = Invoke-PSMutationLoop -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
+            -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
+
+        @($r).Count | Should-Be 5
+        # Five mutants, five identical originals -- and each is the file's real text, so the loop
+        # read it rather than passing something it happened to have.
+        @($script:seenOriginals).Count | Should-Be 5
+        $expected = [System.IO.File]::ReadAllText($script:fixture)
+        @($script:seenOriginals | Sort-Object -Unique) | Should-BeCollection @($expected)
+    }
+
+    It 'splices every mutant against the ORIGINAL text even if the file changes mid-run' {
+        # The half that makes the cache a CORRECTNESS property rather than a speed one, and the
+        # only thing that tells a cached read from a repeated one -- re-reading returns the same
+        # bytes and is invisible, which is exactly what the mutation gate reported.
+        #
+        # The scenario is a restore that did not happen: Invoke-PSMutant writes the mutant, runs,
+        # and restores in a finally, but a process killed between the write and the restore leaves
+        # the sandbox mutated. A loop that re-read the file would then splice the NEXT mutant onto
+        # the previous one -- mutants stacking, and a score describing code that never existed.
+        $original = [System.IO.File]::ReadAllText($script:fixture)
+        $script:seenOriginals = @()
+        $script:calls = 0
+        Mock Invoke-PSMutant {
+            $script:calls++
+            $script:seenOriginals += $OriginalContent
+            # Corrupt the file behind the loop's back, once, after the first mutant.
+            if ($script:calls -eq 1) { [System.IO.File]::WriteAllText($script:fixture, 'CORRUPTED') }
+            'Killed'
+        }
+        $cands = 1..2 | ForEach-Object {
+            [pscustomobject]@{
+                Id = $_; Function = ''; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
+                Description = "m$_"; StartOffset = 0; EndOffset = 1; Mutated = ' '
+            }
+        }
+        try {
+            $null = Invoke-PSMutationLoop -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
+                -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
+            # The second mutant must have been handed the original, not what was on disk by then.
+            @($script:seenOriginals).Count | Should-Be 2
+            $script:seenOriginals[1] | Should-Be $original
+            $script:seenOriginals[1] | Should-NotBe 'CORRUPTED'
+        }
+        finally { [System.IO.File]::WriteAllText($script:fixture, $original) }
     }
 }

@@ -35,12 +35,12 @@ AfterAll { Remove-Item $script:proj -Recurse -Force -ErrorAction SilentlyContinu
 Describe 'Invoke-PSMutant classification' {
     It 'reports Killed when the mutation breaks a strict test' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
-        Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -CoveringTests @($script:strictTest) -TimeoutSeconds 30 |
+        Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -OriginalContent $script:original -CoveringTests @($script:strictTest) -TimeoutSeconds 30 |
             Should-Be 'Killed'
     }
     It 'reports Survived when a weak test misses the mutation' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
-        Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -CoveringTests @($script:weakTest) -TimeoutSeconds 30 |
+        Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -OriginalContent $script:original -CoveringTests @($script:weakTest) -TimeoutSeconds 30 |
             Should-Be 'Survived'
     }
 }
@@ -48,12 +48,12 @@ Describe 'Invoke-PSMutant classification' {
 Describe 'Invoke-PSMutant isolation' {
     It 'restores the original file after evaluating a mutant' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
-        Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -CoveringTests @($script:strictTest) -TimeoutSeconds 30 | Out-Null
+        Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -OriginalContent $script:original -CoveringTests @($script:strictTest) -TimeoutSeconds 30 | Out-Null
         [System.IO.File]::ReadAllText($script:modPath) | Should-Be $script:original
     }
     It 'restores the original file even when the mutant times out' {
         $infinite = $script:original -replace '\$i = \$i \+ 1', '$i = $i - 1'
-        Invoke-PSMutant -Candidate $script:cand -MutatedContent $infinite -CoveringTests @($script:countTest) -TimeoutSeconds 3 | Out-Null
+        Invoke-PSMutant -Candidate $script:cand -MutatedContent $infinite -OriginalContent $script:original -CoveringTests @($script:countTest) -TimeoutSeconds 3 | Out-Null
         [System.IO.File]::ReadAllText($script:modPath) | Should-Be $script:original
     }
 }
@@ -67,7 +67,7 @@ Describe 'Timeout safety (the loop-body hang the loop guard cannot catch)' {
         # still scores with the kills; it is reported apart from them.
         $infinite = $script:original -replace '\$i = \$i \+ 1', '$i = $i - 1'
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $status = Invoke-PSMutant -Candidate $script:cand -MutatedContent $infinite -CoveringTests @($script:countTest) -TimeoutSeconds 3
+        $status = Invoke-PSMutant -Candidate $script:cand -MutatedContent $infinite -OriginalContent $script:original -CoveringTests @($script:countTest) -TimeoutSeconds 3
         $sw.Stop()
         $status | Should-Be 'TimedOut'
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 20   # bounded, not hung

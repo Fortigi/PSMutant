@@ -206,10 +206,17 @@ function Invoke-PSMutant {
     param(
         [Parameter(Mandatory)] $Candidate,
         [Parameter(Mandatory)] [string]$MutatedContent,
+        # The file's UNMUTATED text, read once per file by the caller rather than once per mutant
+        # here. It was read twice for every mutant -- once in the loop to splice against, and again
+        # here to restore from -- which is the same bytes off disk twice to produce two strings that
+        # are equal by construction. Mandatory rather than optional-with-a-fallback: a fallback that
+        # re-read the file would be a second way to answer one question, and the two could differ
+        # only if the sandbox had been changed underneath the run, which is the case where guessing
+        # is worst.
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$OriginalContent,
         [Parameter(Mandatory)] [string[]]$CoveringTests,
         [Parameter(Mandatory)] [int]$TimeoutSeconds
     )
-    $original = [System.IO.File]::ReadAllText($Candidate.File)
     try {
         [System.IO.File]::WriteAllText($Candidate.File, $MutatedContent)
         $outcome = Invoke-PSBoundedPester -CoveringTests $CoveringTests -TimeoutSeconds $TimeoutSeconds
@@ -235,7 +242,12 @@ function Invoke-PSMutant {
         return 'Killed'
     }
     finally {
-        [System.IO.File]::WriteAllText($Candidate.File, $original)
+        # Still restored per mutant, and deliberately. The next mutant writes the whole file anyway,
+        # so this write is redundant between two mutants of the SAME file -- but it is what makes
+        # this function self-contained: a mutant that throws, or a run killed here, leaves the
+        # sandbox as it found it. That is a property worth one write, and the reads it used to sit
+        # beside were the redundancy actually worth removing.
+        [System.IO.File]::WriteAllText($Candidate.File, $OriginalContent)
     }
 }
 
@@ -269,13 +281,23 @@ function Invoke-PSMutationLoop {
         [switch]$Quiet
     )
     $results = [System.Collections.Generic.List[object]]::new()
+    # One read per FILE, not per mutant. A file contributes many candidates -- 125 for the largest
+    # in this repo's sibling -- and every one of them re-read the same unchanged bytes to splice
+    # against, then Invoke-PSMutant re-read them again to restore from.
+    #
+    # Read here rather than by the caller because this is the loop that knows which files are
+    # actually reached: a candidate list filtered by coverage can leave a mutate file contributing
+    # nothing, and reading it would be work for a file no mutant touches.
+    $originals = @{}
     $n = 0
     foreach ($c in $Candidates) {
         $n++
-        $content = [System.IO.File]::ReadAllText($c.File)
+        if (-not $originals.ContainsKey($c.File)) { $originals[$c.File] = [System.IO.File]::ReadAllText($c.File) }
+        $content = $originals[$c.File]
         $mutated = Set-PSMutationText -Content $content -Candidate $c
         $covering = if ($TestsByFile.ContainsKey($c.File)) { $TestsByFile[$c.File] } else { $AllTests }
-        $status = Invoke-PSMutant -Candidate $c -MutatedContent $mutated -CoveringTests $covering -TimeoutSeconds $TimeoutSeconds
+        $status = Invoke-PSMutant -Candidate $c -MutatedContent $mutated -OriginalContent $content `
+            -CoveringTests $covering -TimeoutSeconds $TimeoutSeconds
         $display = ConvertFrom-PSMutationSandboxPath -Path $c.File -SandboxRoot $SandboxRoot
         $row = [pscustomobject]@{
             # Function is carried so an equivalence declaration can address this mutant by
