@@ -119,7 +119,17 @@ jobs:
               continue
             }
             Write-Host "install  $($m.Name) $($m.Version)"
-            Install-Module $m.Name -RequiredVersion $m.Version -Force -Scope CurrentUser
+            # -SkipPublisherCheck because Pester's signing certificate is NOT the same across the
+            # range these legs cover: installing 5.2.2 while 6.1.0 is present makes Install-Module
+            # refuse over an authenticode issuer mismatch (DigiCert Assured ID Root CA against
+            # DigiCert Trusted Root G4), and the assert below then reports the version as "not
+            # available after install" -- naming the symptom rather than the cause. Hit on the
+            # first Windows run of the multi-version gate.
+            #
+            # It skips the match against the ALREADY-INSTALLED copy, which is a hijack check for a
+            # module resolved by NAME. Every version here is pinned exactly, comes from the
+            # gallery, and is asserted present afterwards, so that is not the risk being run.
+            Install-Module $m.Name -RequiredVersion $m.Version -Force -Scope CurrentUser -SkipPublisherCheck
           }
           # Fail here rather than three steps later with a confusing version error.
           foreach ($m in $wanted) {
