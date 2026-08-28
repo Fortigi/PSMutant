@@ -98,11 +98,44 @@ Describe 'Get-PSMutationScore with declared equivalents' {
 }
 
 Describe 'Get-PSMutationEquivalentKey' {
-    It 'keys on file, line and the change, not the mutant id' {
-        # Ids renumber when anything earlier in the file changes; a declaration
-        # keyed on one would silently start pointing at a different mutant.
-        Get-PSMutationEquivalentKey -Result ([pscustomobject]@{ Id = 9; File = 'a.ps1'; Line = 3; Description = '6 -> 7' }) |
-            Should-Be 'a.ps1:3:6 -> 7'
+    It 'keys on file, function and the change, not the mutant id' {
+        # Ids renumber when anything earlier in the file changes; a declaration keyed on one
+        # would silently start pointing at a different mutant.
+        Should-BeCollection -Expected @('a.ps1:Get-Thing:6 -> 7', 'a.ps1:3:6 -> 7') `
+            -Actual (Get-PSMutationEquivalentKey -Result ([pscustomobject]@{
+                    Id = 9; File = 'a.ps1'; Line = 3; Function = 'Get-Thing'; Description = '6 -> 7' }))
+    }
+
+    It 'gives a FILE-SCOPE mutant a stable name instead of only a line' {
+        # #179. A mutant outside any function has no function to be named by, and used to keep
+        # only the line form -- which moves whenever anything above it is edited. This repo's own
+        # declaration churned 154 -> 167 -> 181 in one day from two unrelated edits, the second
+        # comment-only.
+        Should-BeCollection -Expected @('a.ps1:<script-body>:0 -> 1', 'a.ps1:12:0 -> 1') `
+            -Actual (Get-PSMutationEquivalentKey -Result ([pscustomobject]@{
+                    Id = 4; File = 'a.ps1'; Line = 12; Function = ''; Description = '0 -> 1' }))
+    }
+
+    It 'puts the stable form FIRST, because the stablest key wins' {
+        # Order is load-bearing: Get-PSMutationDeclaredKey returns the first key a config
+        # declares, so a config carrying both forms must resolve to the one that does not churn.
+        $keys = Get-PSMutationEquivalentKey -Result ([pscustomobject]@{
+                Id = 4; File = 'a.ps1'; Line = 12; Function = ''; Description = '0 -> 1' })
+        @($keys)[0] | Should-Be 'a.ps1:<script-body>:0 -> 1'
+    }
+
+    It 'still accepts a line-keyed declaration, so existing configs keep working' {
+        # A fix for key churn that invalidated every existing key would be a poor trade.
+        Get-PSMutationDeclaredKey -Result ([pscustomobject]@{
+                Id = 4; File = 'a.ps1'; Line = 12; Function = ''; Description = '0 -> 1' }) `
+            -Declared @{ 'a.ps1:12:0 -> 1' = 'because' } | Should-Be 'a.ps1:12:0 -> 1'
+    }
+
+    It 'prefers the script-body key when a config declares both forms' {
+        Get-PSMutationDeclaredKey -Result ([pscustomobject]@{
+                Id = 4; File = 'a.ps1'; Line = 12; Function = ''; Description = '0 -> 1' }) `
+            -Declared @{ 'a.ps1:12:0 -> 1' = 'old'; 'a.ps1:<script-body>:0 -> 1' = 'new' } |
+            Should-Be 'a.ps1:<script-body>:0 -> 1'
     }
 }
 
@@ -855,8 +888,18 @@ Describe 'Get-PSMutationEquivalentKey and Get-PSMutationDeclaredKey' {
             Should-BeCollection @('a.ps1:Get-Thing:1 -> 2', 'a.ps1:7:1 -> 2')
     }
 
-    It 'offers only the line form for a mutant at file scope' {
-        Get-PSMutationEquivalentKey -Result $script:atTop | Should-BeCollection @('a.ps1:3:1 -> 2')
+    It 'names a mutant at file scope with the script-body synthetic, not only a line' {
+        # NO angle brackets in the test NAME, deliberately. Pester expands <...> in a title as a
+        # -ForEach data placeholder, so `<script-body>` is read as `$script-body` and the test
+        # fails to compile with "Unexpected token '-body'". The assertion below carries the real
+        # spelling; the title cannot.
+        # Reversed by #179. It used to offer the line form alone, on the reasoning that code
+        # outside a function has no name -- true, and the consequence was that the one such
+        # declaration in this repo churned 154 -> 167 -> 181 in a single day, the last move from
+        # an edit that changed no code at all. A synthetic name it can keep is worth more than
+        # an honest absence that drifts.
+        Should-BeCollection -Expected @('a.ps1:<script-body>:1 -> 2', 'a.ps1:3:1 -> 2') `
+            -Actual (Get-PSMutationEquivalentKey -Result $script:atTop)
     }
 
     It 'accepts a declaration written the old way' {

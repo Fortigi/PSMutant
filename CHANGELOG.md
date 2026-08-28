@@ -13,39 +13,33 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### For consumers
 
-**The PowerShell floor is 7.0, lowered from 7.2, and it is executed rather than declared.** The
-7.2 was set in the first commit and never touched, while CI ran whatever the runners shipped --
-several minors newer -- so the number consumers were told had never been run, in either direction.
-Nothing in `src/` reaches past 7.0: every type literal predates .NET Core 3.1, `Test-Json` is called
-through its 6.1 parameter set rather than the `-Path` form that arrived in 7.4, and `[SHA256]` uses
-the instance API rather than .NET 5's `HashData`.
+**An equivalence declaration for code outside any function no longer churns.** Such a mutant had no
+function to name it, so it kept only the `file:LINE:change` form -- and a line moves whenever
+anything above it is edited. This repo's own was re-keyed twice in one day, `154 -> 167 -> 181`, the
+second time by a comment-only edit that changed no code. That is how a declaration stops being a
+claim anyone has checked: the number gets updated, the argument does not get re-read.
 
-A gate now downloads **every supported host, one leg per minor from 7.0 up**, and requires each to
-produce the *same mutant verdicts* the launching host measured -- not merely the same score, since
-two hosts can agree on a percentage while disagreeing about which mutants died. The legs run on
-Windows: the old .NET runtimes need system libraries a current Linux image no longer carries, so a
-Linux leg would fail for reasons that are not about this module.
+File-scope mutants now also answer to `file:<script-body>:change`. Existing line-keyed declarations
+keep working, and where both are present the stable one wins.
+
+**Both version floors are executed now, not merely declared.** `PowerShellVersion` was 7.2, set in
+the first commit and never revisited; the Pester floor said 5.0.0. CI ran whatever the runners
+shipped and one Pester, so neither number had ever been tried.
+
+Pointed at them, one was wrong in each direction. **PowerShell is lowered to 7.0** -- nothing in the
+source reaches past it. **Pester is raised to 5.2.0**: `New-PesterConfiguration` arrives there, and
+5.0/5.1 also return code-coverage results with no usable file or line, which `coveredLinesOnly`
+needs. If you are on 5.0.x or 5.1.x, PSMutant did not work for you before this release either; it
+now says so instead of failing with an assembly-version error that never mentions this module.
+
+Both are proven by gates that download or load every supported version, one leg per minor, each in
+its own process -- 7.0 through 7.5, and 5.2.2 through 6.1.0.
 
 **If you are on PowerShell 7.0 to 7.3, use Pester 5.x, not Pester 6.** Measured while building
 that gate: Pester 6.1.0 fails on PowerShell 7.2 with `Unable to find type [PesterConfiguration]`
 and works on 7.4, while its own manifest claims it needs only PowerShell 5.1. That is Pester's
 constraint rather than this module's, but PSMutant drives Pester, so it lands on you either way and
 is better said out loud than discovered.
-
-**The Pester floor is 5.2.0, not 5.0.0, and it is now executed rather than declared.** The
-manifest and README promised 5.0.0 and the gate ran exactly one version, so the number consumers
-were given had never once been tried. Pointed at it, the module fails: PSMutant calls
-`New-PesterConfiguration`, which **arrives in 5.2.0** -- measured across every installed version,
-not looked up -- and the baseline cannot do without it, because code coverage cannot be configured
-through the simple parameter set. Under 5.0.x and 5.1.x the command is not found, PowerShell
-autoloads `Pester` by NAME to the newest installed, and that collides with the `Pester.dll` already
-in the process.
-
-If you are on 5.0.x or 5.1.x, PSMutant did not work for you before this release either; it now says
-so instead of failing with an assembly-version error that never mentions this module. The gate runs
-**one leg per minor** from 5.2.2 to 6.1.0, each in its own process, so the floor is proven rather
-than asserted. Floor-plus-latest was considered and rejected: a defect arriving mid-range is
-invisible at both ends, which is exactly the shape of this one.
 
 **Several of these make a run that used to pass fail, and one makes a score go down. In every case
 the new answer is the honest one.**
@@ -55,9 +49,9 @@ the new answer is the honest one.**
 shared machine another local user can create that path first as a symlink to a directory they own:
 your `Remove-Item` of THEIR entry fails on the sticky bit, the failure is non-terminating, the run
 carries on, and your source is copied through the link. Reproduced with two real users on a current
-kernel -- `fs.protected_symlinks` does not help, because it guards only the FINAL path component and
-the planted link is an intermediate one. The sandbox is where your tests run from, so whoever
-controls it can substitute a file between the copy and the run.
+kernel -- `fs.protected_symlinks` guards only the FINAL path component, and the planted link is an
+intermediate one. The sandbox is where your tests run from, so whoever controls it can substitute a
+file between the copy and the run.
 
 Sandboxes now carry 128 bits from a cryptographic RNG, an existing path is **refused rather than
 cleared**, and what was created is checked to be a plain directory. The stale sweep still reclaims
@@ -72,12 +66,11 @@ had caught. Timeouts are their own outcome now, reported separately. If your sco
 upgrading it did not get worse -- it stopped counting the clock as a test.
 
 **Runs are about three times faster, and no score moves.** A fresh runspace was created and Pester
-imported into it for every mutant -- about 396 ms each, 219 s of an 801 s run spent re-importing a
-module that does not change. It is now built once and reused. And a mutant asks one question, does
-ANY test notice, so the covering suite stops at the first failure: a killed mutant's 2.03 s suite
-finishes in 0.34 s, while a survivor is unaffected by construction. Measured end to end on a real
-consumer repository, interleaved: **221 s -> 71 s** over 225 mutants, 225 killed, score 100 on both
-sides, every per-mutant verdict identical.
+imported into it for every mutant -- about 396 ms each, 219 s of an 801 s run re-importing a module
+that does not change. It is built once and reused now. And a mutant asks one question, does ANY test
+notice, so the covering suite stops at the first failure: a killed mutant's 2.03 s suite finishes in
+0.34 s, while a survivor is unaffected by construction. Measured interleaved on a real consumer
+repository: **221 s -> 71 s** over 225 mutants, every per-mutant verdict identical.
 
 The fail-fast half needs `SkipRemainingOnFailure`, which arrived in **Pester 5.3.0**, and is set
 only when the loaded Pester has it -- so 5.2.x simply misses that part of the speedup.
@@ -88,12 +81,11 @@ to it and to every other operator: a ternary compiles to no if-node, and a bare-
 offers no comparison, literal or negation to touch.
 
 A clause is forced to a SCRIPT BLOCK, not a bare value -- PowerShell matches with `$_ -eq <clause>`,
-so `1` forced to `$true` merely changes what is compared. `1 { "one" }` becomes `{ $true } { "one" }`,
+so `1` forced to `$true` only changes what is compared. `1 { "one" }` becomes `{ $true } { "one" }`,
 which always matches and shadows every later clause, or `{ $false } { "one" }`, which makes it dead.
-Shadowing is the fault worth catching: a clause that swallows the ones below it is a real bug no
-expression operator reaches. `default` is the one switch decision not on the AST -- only its BODY is
--- but the keyword is an ordinary token, so forcing it yields a switch whose fallback is dead. On a
-235-file consumer the operator goes from **4404** candidates to **4548**.
+A clause that swallows the ones below it is a real bug no expression operator reaches. `default` is
+the one switch decision not on the AST, but the keyword is an ordinary token, so forcing it yields a
+switch whose fallback is dead. On a 235-file consumer: **4404** candidates to **4548**.
 
 **An absolute `reportPath` is honoured instead of being rewritten.** `Join-Path` concatenates rather
 than letting a rooted right-hand side win, so `/var/artifacts/report.json` became
@@ -121,11 +113,11 @@ three list fields now share one normaliser, and `filesWithNoMutants`, `filesWith
 `skippedAsUncovered` are **declared in the report schema** for the first time and required on a full
 run -- their absence is why nothing caught this, since undeclared fields validate cleanly by design.
 
-**The coverage XML no longer piles up in your temp directory.** The baseline wrote Pester's coverage
-report to `$TMPDIR/psmut-coverage-<pid>.xml` and nothing deleted it: the startup sweep matched
-*directories* named `psmut-sandbox-*`, so it could not match that file by construction. 67 had
-accumulated on the machine this was found on. It now goes inside the sandbox, which is already
-removed when the run ends, and the sweep reclaims what older versions left behind.
+**The coverage XML no longer piles up in your temp directory.** The baseline wrote it to
+`$TMPDIR/psmut-coverage-<pid>.xml` and nothing deleted it: the startup sweep matched *directories*
+named `psmut-sandbox-*`, so it could not match that file by construction -- 67 had accumulated on the
+machine this was found on. It now goes inside the sandbox, which is already removed when the run
+ends, and the sweep reclaims what older versions left behind.
 
 **A report that cannot be written now fails the run.** Writing the JSON failed non-terminatingly, so
 an unwritable path left the run reporting success with no artefact behind it. That is the shape of
@@ -216,7 +208,6 @@ Nothing is emitted outside a recognised CI.
   before the loop starts, where it can still be acted on, and recorded as `filesWithoutTestMapping`
   in the report -- because the console line is suppressed by `-Quiet`, which is how CI runs it.
 
-
 - **Config paths get a resolver, like every other config value.** Four failures shared one
   missing concept, and each used to fail in its own place with a message naming neither the key
   nor the cause. `reportPath` is documented optional and was mandatory in practice --
@@ -230,7 +221,6 @@ Nothing is emitted outside a recognised CI.
   when `sandboxSubtrees` still names this module's own -- was diagnosed as "Baseline suite is
   not green", an affirmatively false statement about a green suite; it is now caught **before**
   the baseline, naming the paths and the setting that decides them.
-
 
 - **A score now answers for what the coverage filter removed.** Uncovered candidates are
   dropped per file before the run, silently, and that is the **default** path. A file added to
@@ -251,7 +241,6 @@ Nothing is emitted outside a recognised CI.
   **widened** vocabulary rather than a renamed one. A rename fails loudly at the baseline,
   which compares against the literal `Passed` before any mutant runs; a third state coexisting
   with it would leave the baseline green while every mutant returning it scored as killed.
-
 
 - **A report that cannot be written now fails the run instead of reporting success.** The
   directory creation and the write were both non-terminating, so an ordinary `reportPath`
@@ -420,7 +409,6 @@ Nothing is emitted outside a recognised CI.
   refuses. The wipe existed only because the name was per-process and therefore reused; it is also
   exactly what the attack rode on.
 - The complexity gate now runs against PSComplexity **0.5.0**, up from 0.3.0.
-
 
 - **The suite now has to give the same answer in a different order.** This project runs its own
   tests in two orders -- alphabetically by hand, in config order under the mutation baseline -- and
