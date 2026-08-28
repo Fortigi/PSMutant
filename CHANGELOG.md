@@ -289,6 +289,51 @@ scored. Nothing is emitted outside a recognised CI.
   developer shell defaults to `Continue`. Under `Stop` a dying `BeforeAll` becomes terminating, so
   Pester attaches the error to the container rather than the test and `$test.ErrorRecord` is empty
   -- a difference in control flow, not in formatting.
+- **A failing baseline no longer prints a dangling `Some.Test -- .`** Three separate things were
+  wrong in one line, and only the first was the one guessed at.
+
+  `ErrorRecord` is a **collection**, not one record -- a test can fail for several reasons and
+  Pester hands back a `List`. Reading `.Exception.Message` off the list works only by PowerShell's
+  member enumeration, which yields the inner value for a one-element list and nothing for zero or
+  many. It is now read as the collection it is.
+
+  The **first non-empty** line is taken rather than simply the first, so a message that opens with
+  a blank line is not reported as an empty reason.
+
+  And when there is genuinely nothing to say, the test is named **alone**. That case is real: when
+  a `BeforeAll` dies under `ErrorActionPreference = Stop` -- which is how CI runs the suite and how
+  a developer machine usually does not -- Pester marks every test in the block Failed and attaches
+  the error to the CONTAINER, so the test carries no error record at all. The container's record
+  holds Pester's own break/continue guard text, which says nothing about the consumer's failure, so
+  it is deliberately not reached for. `Some.Test -- ` reads as a reason that was lost; `Some.Test`
+  reads as one that never existed, which is the truth.
+
+  The behaviour predates this change -- `main` produces the same dangling output -- and was found
+  by one of the new consumer-shaped fixtures going red on both CI legs while passing locally.
+
+- **The end-to-end counts are asserted exactly** (#36). They were open inequalities --
+  `Total | Should-BeGreaterThan 0` -- over a fixture that is fully determined and produces the
+  same three mutants on every run, so they could not tell 3 from 30 or from 1. That suite is the
+  last line of defence against a run producing plausible-looking but wrong counts. The mutant SET
+  is pinned too: three mutants of the wrong operator on the wrong lines sum to three just as well.
+- **Two shared-state defects in the suite are closed** (#43). `Operators.Tests`' `guards` Context
+  read `$script:returns` from its sibling Context and so could not run alone -- verified on main,
+  a run filtered to `guards` failed on a `$null` unrelated to what it asserts. And `Runner.Tests`
+  carried an assertion that could not fail: a local was declared, never assigned, then asserted
+  null. Removing it exposed the real problem underneath -- `$script:seenTests` is written by a
+  sibling test, so the surviving assertion could pass on the previous test's value with the mock
+  never firing. Both tests now clear it first.
+- **Two consumer-shaped fixtures** (#35), where every previous one had this module's own flat
+  `src/` + `tests/` shape. A NESTED source tree, which is where the sandbox path mapping is
+  actually exercised -- a flat layout has no separator in the relative part and cannot assert the
+  display path comes back `src/Domain/Calc.ps1` with forward slashes. And a MODULE-SHAPED consumer
+  whose test imports a manifest at the repo root, outside `sandboxSubtrees`.
+
+  The second came out differently from what #35 assumed, which is why it was worth running rather
+  than reasoning about: the issue expected a silent, vacuous score and proposed a new feature to
+  detect it. Measured, the run already refuses loudly -- `Assert-PSMutationBaselineGreen` throws
+  and names the failing test and its message. The tests pin a guard that was already right, and
+  the proposed feature is not needed.
 
 - `Invoke-PSMutationBaseline` takes `-SandboxRoot` and writes coverage there. Mandatory rather than
   defaulted to temp: the sandbox is the one directory a run owns and disposes of, and a default
