@@ -233,6 +233,24 @@ scored. Nothing is emitted outside a recognised CI.
   variable, which is read at run time and stays data whatever it contains.
 
 ### Internal
+- **The mutate file is read once per FILE, not twice per mutant** (#101). It was read in the loop
+  to splice against and again inside `Invoke-PSMutant` to restore from -- the same unchanged bytes
+  off disk twice, producing two strings equal by construction, for every one of a file's mutants
+  (125 for the largest file in this repo's sibling). `Invoke-PSMutant` now takes the original text
+  rather than fetching it.
+
+  On Linux the four operations totalled about 0.16 ms per mutant, which is not where the time goes;
+  #101 reports a far larger cost on Windows, which this removes either way. The reason it is worth
+  doing regardless is that the cache is a **correctness** property: a loop that re-reads would
+  splice the next mutant onto whatever is on disk, so a restore that did not happen -- a process
+  killed between the write and the restore -- would stack mutants and produce a score describing
+  code that never existed. A test pins that, because re-reading returns the same bytes and is
+  otherwise invisible; the mutation gate said so.
+
+  The per-mutant **restore** write is deliberately kept. It is redundant between two mutants of one
+  file, since the next writes the whole file anyway, but it is what makes `Invoke-PSMutant`
+  self-contained: a mutant that throws leaves the sandbox as it found it.
+
 - **The mutant runspace is warm.** `Get-PSMutationWarmShell` builds one runspace with Pester in it
   and hands it to every mutant, rebuilding after a fixed number of uses and unconditionally after a
   timeout -- `Stop()` leaves a runspace unusable. Nothing about a mutant is cached: the covering
