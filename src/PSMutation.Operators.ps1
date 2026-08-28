@@ -277,37 +277,134 @@ function Get-PSMutationBoundaryCandidate {
     Get-PSMutationSwapCandidate -Ast $Ast -File $File -Ranges $Ranges -Map $script:PSMutationBoundaryMap -Operator 'ConditionalBoundary'
 }
 
-function Get-PSMutationConditionCandidate {
-    <#
-    .SYNOPSIS
-        Force an if/elseif condition to $true and to $false.
-    .DESCRIPTION
-        The operator that reaches decisions no EXPRESSION operator can touch. A guard
-        like `if ($SyncUsers) { ... }` or `if ($Ref.Value) { return ... }` contains no
-        comparison, no literal and no negation, so every other operator emits nothing and
-        the file scores a vacuous 100%. Forcing the condition asks the only question that
-        matters about it: does any test notice which way this decision went?
+function New-PSMutationForcedCandidate {
+    # Emit the $true and $false forcings of one decision extent. Shared by the three
+    # constructs below so the loop guard, the already-forced guard and the operator name
+    # cannot drift between them.
+    #
+    # -Forced takes the two spellings rather than assuming '$true'/'$false': a switch clause
+    # is a script block, so forcing it means '{ $true }', and comparing the extent against a
+    # bare '$true' there would never match and would emit an unkillable identical-source
+    # mutant.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure factory: returns candidate objects, changes no system state.')]
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Extent,
+        [Parameter(Mandatory)] [string]$File,
+        [object[]]$Ranges = @(),
+        [Parameter(Mandatory)] [string[]]$Forced
+    )
+    if (Test-PSMutationInLoop -Extent $Extent -Ranges $Ranges) { return }
+    foreach ($to in $Forced) {
+        # A condition that already IS the forced value would splice to identical source: an
+        # unkillable mutant that can only ever inflate the survivor list. Skip it rather than
+        # declare it equivalent later. Whitespace-collapsed, because '{ $true }' and '{$true}'
+        # are the same decision written two ways and only one of them would match a literal.
+        if (($Extent.Text -replace '\s+', ' ').Trim() -eq $to) { continue }
+        New-PSMutationCandidate -Extent $Extent -File $File -Original $Extent.Text -Mutated $to -Operator 'ConditionForcing'
+    }
+}
 
-        Loop conditions are excluded by the shared no-mutate zone -- forcing `while (X)`
-        to $true is an unconditional hang, not a fault worth reporting.
-    #>
+function Get-PSMutationIfConditionCandidate {
+    # if / elseif: force each clause condition.
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
     $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true)
     foreach ($n in $nodes) {
         foreach ($clause in $n.Clauses) {
-            $cond = $clause.Item1
-            if (Test-PSMutationInLoop -Extent $cond.Extent -Ranges $Ranges) { continue }
-            foreach ($forced in '$true', '$false') {
-                # A condition that already IS the forced value would splice to identical
-                # source: an unkillable mutant that can only ever inflate the survivor
-                # list. Skip it rather than declare it equivalent later.
-                if ($cond.Extent.Text -eq $forced) { continue }
-                New-PSMutationCandidate -Extent $cond.Extent -File $File -Original $cond.Extent.Text -Mutated $forced -Operator 'ConditionForcing'
-            }
+            New-PSMutationForcedCandidate -Extent $clause.Item1.Extent -File $File -Ranges $Ranges -Forced '$true', '$false'
         }
     }
+}
+
+function Get-PSMutationTernaryConditionCandidate {
+    # `$c ? $a : $b`: force the condition, exactly as for an if.
+    #
+    # A ternary compiles to no IfStatementAst at all, so the operator was blind to it while a
+    # reader sees an obvious branch -- and every expression operator is blind too when the
+    # condition is a bare variable.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TernaryExpressionAst] }, $true)
+    foreach ($n in $nodes) {
+        New-PSMutationForcedCandidate -Extent $n.Condition.Extent -File $File -Ranges $Ranges -Forced '$true', '$false'
+    }
+}
+
+function Get-PSMutationSwitchConditionCandidate {
+    <#
+    .SYNOPSIS
+        Force a switch clause whose condition is a SCRIPT BLOCK to always and never match.
+    .DESCRIPTION
+        Script-block clauses only, and that is a measured decision rather than a shortcut.
+
+        PowerShell matches a switch clause with `$_ -eq <clause>`, so forcing a VALUE clause to
+        $true does not mean "always match" the way it does for an if -- it changes what the clause
+        matches against. Measured:
+
+            switch ($x) { 1 { 'one' } default { 'none' } }   forced to $true
+              x = 1     one   -> none      (stopped matching)
+              x = $true none  -> one       (started matching)
+
+        That is a value substitution with murky semantics, and as a mutant it is as likely to be
+        equivalent as informative -- which inflates a survivor list rather than teaching anything.
+        NumberLiteral and StringLiteral already perturb those clause values on their own terms.
+
+        A script-block clause is evaluated as a condition, so forcing it behaves exactly like an
+        if -- `{ $true }` always matches and shadows every later clause, `{ $false }` never does:
+
+            switch ($x) { { $_ -gt 5 } { 'big' } default { 'small' } }
+              x = 1   small -> big    (forced { $true })
+              x = 9   big   -> small  (forced { $false })
+
+        Making a VALUE clause always-match needs rewriting it INTO a script block, which is a
+        different and larger mutation than forcing an extent; the `default` clause has no
+        condition to force at all and is a candidate for statement removal instead. Both are
+        deliberately left out, and issue #46 records them as the remaining half.
+    #>
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
+    foreach ($n in $nodes) {
+        foreach ($clause in $n.Clauses) {
+            $cond = $clause.Item1
+            if ($cond -isnot [System.Management.Automation.Language.ScriptBlockExpressionAst]) { continue }
+            New-PSMutationForcedCandidate -Extent $cond.Extent -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
+        }
+    }
+}
+
+function Get-PSMutationConditionCandidate {
+    <#
+    .SYNOPSIS
+        Force every decision this module can reach to always and never take its branch.
+    .DESCRIPTION
+        The operator that reaches decisions no EXPRESSION operator can touch. A guard like
+        `if ($SyncUsers) { ... }` or `if ($Ref.Value) { return ... }` contains no comparison, no
+        literal and no negation, so every other operator emits nothing and the file scores a
+        vacuous 100%. Forcing the condition asks the only question that matters about it: does any
+        test notice which way this decision went?
+
+        Three constructs, one operator name. It used to be `if`/`elseif` alone, which meant a
+        `switch` -- the idiomatic PowerShell multi-way decision, and precisely the shape where a
+        wrong branch is a real bug -- and a ternary were invisible to every operator. A consumer
+        whose code leans on either would see ConditionForcing report almost nothing and reasonably
+        conclude their code was well covered.
+
+        Loop conditions are excluded by the shared no-mutate zone -- forcing `while (X)` to $true
+        is an unconditional hang, not a fault worth reporting.
+    #>
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    Get-PSMutationIfConditionCandidate -Ast $Ast -File $File -Ranges $Ranges
+    Get-PSMutationTernaryConditionCandidate -Ast $Ast -File $File -Ranges $Ranges
+    Get-PSMutationSwitchConditionCandidate -Ast $Ast -File $File -Ranges $Ranges
 }
 
 function Get-PSMutationReturnCandidate {
