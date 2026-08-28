@@ -20,8 +20,8 @@ even if a run is interrupted.
 Install-Module PSMutant -Scope CurrentUser
 ```
 
-Requires PowerShell 7.2+ and Pester 5.2+. Both floors are executed by a CI gate rather than
-declared -- one leg per supported minor of each. On PowerShell 7.2 or 7.3 use Pester 5.x:
+Requires PowerShell 7.0+ and Pester 5.2+. Both floors are executed by a CI gate rather than
+declared -- one leg per supported minor of each. On PowerShell 7.0 to 7.3 use Pester 5.x:
 Pester 6 fails there with `Unable to find type [PesterConfiguration]`, which is Pester's
 constraint rather than this module's.
 
