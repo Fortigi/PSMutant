@@ -70,7 +70,7 @@ Describe 'Assert-PSMutationPester' {
         # Pester 4 has no code-coverage API and a different Should surface, so without
         # this the run dies much later, inside the baseline, with an unrelated error.
         $script:available = @([pscustomobject]@{ Version = [version]'4.10.1' })
-        { Assert-PSMutationPester } | Should-Throw -ExceptionMessage '*Pester 5+ is required*'
+        { Assert-PSMutationPester } | Should-Throw -ExceptionMessage '*Pester 5.2.0 or later is required*'
     }
 
     It 'refuses when the LOADED Pester is too old, even though a newer one is installed' {
@@ -79,16 +79,28 @@ Describe 'Assert-PSMutationPester' {
         # Refusing names the real problem while the session can still be restarted.
         $script:loaded = @([pscustomobject]@{ Version = [version]'4.10.1' })
         $script:available = @([pscustomobject]@{ Version = [version]'6.1.0' })
-        { Assert-PSMutationPester } | Should-Throw -ExceptionMessage '*Pester 5+ is required*'
+        { Assert-PSMutationPester } | Should-Throw -ExceptionMessage '*Pester 5.2.0 or later is required*'
         Should-NotInvoke Import-Module
     }
 
     It 'accepts a loaded Pester of exactly the minimum version' {
-        # -lt, not -le. 5.0.0 is the documented floor, so the boundary value itself has
-        # to pass -- rejecting it would refuse the very version the manifest asks for.
-        $script:loaded = @([pscustomobject]@{ Version = [version]'5.0.0' })
+        # -lt, not -le. 5.2.0 is the documented floor, so the boundary value itself has to pass
+        # -- rejecting it would refuse the very version the manifest asks for.
+        #
+        # The floor moved from 5.0.0 in #161, and it moved because it was measured rather than
+        # declared: New-PesterConfiguration arrives in 5.2.0 and this module cannot work without
+        # it, so the two versions below the new floor never worked at all.
+        $script:loaded = @([pscustomobject]@{ Version = [version]'5.2.0' })
         Assert-PSMutationPester
         Should-NotInvoke Import-Module
+    }
+
+    It 'refuses the version that used to be the documented floor' {
+        # The other half, and the point of #161: 5.1.0 satisfied the old promise and does not
+        # work. It now fails with a message naming the requirement, rather than an assembly
+        # version error that never mentions this module.
+        $script:loaded = @([pscustomobject]@{ Version = [version]'5.1.0' })
+        { Assert-PSMutationPester } | Should-Throw -ExceptionMessage '*Pester 5.2.0 or later is required*'
     }
 
     It 'judges by the newest module loaded when the session holds more than one' {
