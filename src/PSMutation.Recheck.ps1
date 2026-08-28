@@ -228,7 +228,7 @@ function Get-PSMutationRecheckSummaryLine {
         [string]$ReportPath
     )
     $lines = [System.Collections.Generic.List[object]]::new()
-    $role = if ($Summary.StillSurviving -eq 0) { 'Good' } else { 'Warn' }
+    $role = $Summary.StillSurviving -eq 0 ? 'Good' : 'Warn'
     $lines.Add((New-PSMutationLine -Role 'Rule' -Text "`n----------------------------------------------"))
     $lines.Add((New-PSMutationLine -Role $role `
                 -Text ("  Recheck: {0} of {1} previous survivor(s) now killed" -f $Summary.NowKilled, $Summary.Rechecked)))
