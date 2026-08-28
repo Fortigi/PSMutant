@@ -13,6 +13,31 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### For consumers
 
+**`ConditionForcing` now reaches the ternary operator and script-block `switch` clauses.** It
+looked for one node type -- `IfStatementAst` -- so `$x = $cond ? $a : $b` was invisible to it, and
+to every other operator too: a ternary compiles to no if-node at all, and when its condition is a
+bare variable there is no comparison, literal or negation for an expression operator to touch. The
+same was true of a `switch` clause written as a script block, which is a condition in every sense
+that matters.
+
+Both are forced to `$true` and `$false` exactly as an `if` is, both respect the loop-condition
+no-mutate zone, and both skip a condition that already IS the value it would be forced to.
+
+**Value `switch` clauses are deliberately not forced, and this is worth reading if you use
+`switch`.** PowerShell matches a clause with `$_ -eq <clause>`, so forcing `1` to `$true` does not
+mean "always match" the way it does for an `if` -- measured, `switch ($x) { 1 {...} }` forced to
+`$true` stops matching `x = 1` and starts matching `x = $true`. That is a value substitution with
+murky semantics, as likely to be equivalent as informative, and `NumberLiteral` and `StringLiteral`
+already perturb those values on their own terms. Making a value clause always-match means rewriting
+it INTO a script block, which is a different and larger mutation; the `default` clause has no
+condition to force at all. Both remain open in #46.
+
+Being straight about the reach: neither this module's source nor its sibling's contains a ternary or
+a script-block clause anywhere -- across about six thousand lines of both, the operator produces
+exactly the same 940 mutants before and after. The change adds nothing to either self-gate. It is
+here for consumers whose code uses those constructs, where today the operator reports nothing at
+all.
+
 **An absolute `reportPath` is honoured instead of being rewritten.** PowerShell's `Join-Path`
 concatenates rather than letting a rooted right-hand side win, so a config asking for
 `/var/artifacts/report.json` got `<SourceRoot>/var/artifacts/report.json` -- the report written
@@ -243,6 +268,13 @@ scored. Nothing is emitted outside a recognised CI.
   variable, which is read at run time and stays data whatever it contains.
 
 ### Internal
+- `Get-PSMutationConditionCandidate` is now a dispatcher over three small walkers -- if, ternary,
+  script-block switch clause -- sharing `New-PSMutationForcedCandidate` so the loop guard, the
+  already-forced guard and the operator name cannot drift between them. The shared helper takes the
+  two forced spellings rather than assuming `$true`/`$false`, because a switch clause is a script
+  block and forcing it means `{ $true }`; comparing a script-block extent against a bare `$true`
+  would never match and would emit an unkillable identical-source mutant.
+
 - **The mutate file is read once per FILE, not twice per mutant** (#101). It was read in the loop
   to splice against and again inside `Invoke-PSMutant` to restore from -- the same unchanged bytes
   off disk twice, producing two strings equal by construction, for every one of a file's mutants
