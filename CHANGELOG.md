@@ -23,6 +23,35 @@ It counts the list your config names, never a directory listing. A run cannot kn
 config never mentioned, so it reports what it was pointed at rather than guessing what it might have
 missed; the fraction is yours to compute against your own file count.
 
+### Internal
+
+**The sandbox isolation layer is now mutation-tested.** `src/PSMutation.Sandbox.ps1` -- the file
+enforcing the promise that a hard kill cannot leave a mutant in tracked source -- was the one source
+file the self-mutation gate did not measure, because its covering suite could not be named in the
+config: `AllTests` is the union of every file under `tests/`, and the sweep tests delete other
+processes' sandboxes by design, including the one the measuring run is using.
+
+Splitting the destructive tests into `tests/SandboxSweep.Tests.ps1`, which is deliberately mapped by
+nothing, unblocked it. The file produces **61 mutants, not the 9 last estimated**, and ten of them
+survived the suite that had always passed against it. All ten are now killed; none needed an
+equivalence declaration.
+
+Four of the ten are worth naming, because each is a way a test can look like a test and assert
+nothing:
+
+- **A wildcard assertion on the FIRST operand of a `+` chain cannot kill `+ -> -`.** PowerShell
+  fails a string subtraction by trying to convert to `Int32`, and the conversion error quotes the
+  whole left operand back -- so `Should-Throw -ExceptionMessage '*already there*'` matched a message
+  that was never built. Assert text from the LAST operand instead.
+- **`-WhatIf` propagates into nested cmdlets.** With the outer `ShouldProcess` forced true, the inner
+  `Remove-Item` is itself in WhatIf mode and still deletes nothing, so "the tree survived" proves
+  only that PowerShell propagated the preference. Mock the removal and assert it is never reached.
+- **`Remove-Item -ErrorAction SilentlyContinue` is a silent no-op on a missing path**, which made the
+  `Test-Path` guard in front of it unfalsifiable from outside. Same fix.
+- **The middle arm of a three-arm `-or` needs its own case.** `../victim/x` is caught by the
+  `StartsWith('../')` arm, so only a path whose way back is exactly `..` -- a config entry naming the
+  repo's parent -- distinguishes `-or` from `-and` there.
+
 ## [0.4.0] - 2026-08-28
 
 > Renamed from an unreleased 0.3.3. That version was prepared but never tagged and never
