@@ -409,3 +409,82 @@ Describe 'Get-PSMutantManifestNotesFault' {
             Should-BeLikeString '*-Apply*'
     }
 }
+
+Describe 'Get-PSMutantRewrittenManifest' {
+    # This function had NO tests, which is how #171 shipped: a pattern that reads correctly
+    # against a manifest whose ReleaseNotes hold no apostrophe, and corrupts the file the
+    # moment they do. The corruption only appears on the SECOND -Apply, because it is the
+    # value written by the first that arms it.
+    BeforeAll {
+        $script:Shell = @"
+@{
+    ModuleVersion = '0.4.0'
+    PrivateData = @{
+        PSData = @{
+            ReleaseNotes = 'PLACEHOLDER'
+            Tags = @('mutation')
+        }
+    }
+}
+"@
+        function Test-ManifestSyntax {
+            param([string]$Text)
+            $e = $null
+            $null = [System.Management.Automation.Language.Parser]::ParseInput($Text, [ref]$null, [ref]$e)
+            return @($e).Count -eq 0
+        }
+        function Get-NotesFromManifest {
+            param([string]$Text)
+            $f = Join-Path $TestDrive "m-$([guid]::NewGuid().ToString('N')).psd1"
+            Set-Content -Path $f -Value $Text -Encoding utf8
+            return [string](Import-PowerShellDataFile $f).PrivateData.PSData.ReleaseNotes
+        }
+    }
+
+    # Each of the three below rewrites the manifest TWICE, and that is the whole point rather
+    # than thoroughness. A single rewrite over a pristine manifest passes with the broken
+    # pattern too, because the old value holds no doubled quote to trip it -- verified by
+    # reverting the fix, where a one-shot version of these tests stayed green. It is the value
+    # the FIRST write leaves behind that arms the second.
+
+    It 'survives a re-apply when the notes put a quoted word before a brace' {
+        # `{ 'one' }` escapes to `{ ''one'' }`, and the second quote of that pair followed by
+        # ` }` satisfied the old `(?=\s*(\r?\n|\}))`. The match ended INSIDE the stored value,
+        # the new one was spliced in there, and the tail survived as bare tokens.
+        $notes = "forcing 1 { 'one' } is the case"
+        $once = Get-PSMutantRewrittenManifest -ManifestText $script:Shell -Notes $notes
+        $twice = Get-PSMutantRewrittenManifest -ManifestText $once -Notes $notes
+        Test-ManifestSyntax -Text $twice | Should-BeTrue
+        Get-NotesFromManifest -Text $twice | Should-Be $notes
+    }
+
+    It 'survives a re-apply when the notes end a LINE with a quoted word' {
+        # The other half of the same trigger, and the likelier one in ordinary prose: a phrase
+        # like `'strict'` closing a line escapes to `''strict''` followed by a newline, which
+        # satisfied the other arm of that lookahead.
+        $notes = "the mode is called 'strict'`nand the next line follows"
+        $once = Get-PSMutantRewrittenManifest -ManifestText $script:Shell -Notes $notes
+        $twice = Get-PSMutantRewrittenManifest -ManifestText $once -Notes $notes
+        Test-ManifestSyntax -Text $twice | Should-BeTrue
+        Get-NotesFromManifest -Text $twice | Should-Be $notes
+    }
+
+    It 'is idempotent, not merely parseable, on a re-apply' {
+        # Parsing is the floor, not the bar. A pattern could recover a valid manifest while
+        # still having replaced the wrong span, so pin that the second write is a no-op.
+        $notes = "forcing 1 { 'one' } is the case"
+        $once = Get-PSMutantRewrittenManifest -ManifestText $script:Shell -Notes $notes
+        Get-PSMutantRewrittenManifest -ManifestText $once -Notes $notes | Should-Be $once
+    }
+
+    It 'replaces only the ReleaseNotes value and leaves the rest of the manifest alone' {
+        $out = Get-PSMutantRewrittenManifest -ManifestText $script:Shell -Notes 'plain'
+        $out | Should-BeLikeString "*ModuleVersion = '0.4.0'*"
+        $out | Should-BeLikeString "*Tags = @('mutation')*"
+    }
+
+    It 'throws when there is no single-quoted ReleaseNotes value to replace' {
+        { Get-PSMutantRewrittenManifest -ManifestText '@{ ModuleVersion = "1.0" }' -Notes 'x' } |
+            Should-Throw -ExceptionMessage '*no single-quoted ReleaseNotes value*'
+    }
+}
