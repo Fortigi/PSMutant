@@ -282,14 +282,27 @@ scored. Nothing is emitted outside a recognised CI.
   variable, which is read at run time and stays data whatever it contains.
 
 ### Internal
-- **A failing baseline no longer reports an empty reason.** `Invoke-PSMutationBaseline` took the
-  first line of a Pester failure message; a message that begins with a blank line -- which they do
-  on the CI runners and did not on the machine the code was written on -- made that `''`, so the
-  gate printed `Failed: Some.Test -- .` That is the bare test name the field exists to improve on:
-  a `-Quiet` gate prints one line, and a name with no reason sends the reader to reproduce a
-  failure that is not happening on their machine. It now takes the first NON-EMPTY line, and falls
-  back to the whole message rather than to `''`. Found by one of the new end-to-end fixtures going
-  red on both CI legs.
+- **A failing baseline no longer prints a dangling `Some.Test -- .`** Three separate things were
+  wrong in one line, and only the first was the one guessed at.
+
+  `ErrorRecord` is a **collection**, not one record -- a test can fail for several reasons and
+  Pester hands back a `List`. Reading `.Exception.Message` off the list works only by PowerShell's
+  member enumeration, which yields the inner value for a one-element list and nothing for zero or
+  many. It is now read as the collection it is.
+
+  The **first non-empty** line is taken rather than simply the first, so a message that opens with
+  a blank line is not reported as an empty reason.
+
+  And when there is genuinely nothing to say, the test is named **alone**. That case is real: when
+  a `BeforeAll` dies under `ErrorActionPreference = Stop` -- which is how CI runs the suite and how
+  a developer machine usually does not -- Pester marks every test in the block Failed and attaches
+  the error to the CONTAINER, so the test carries no error record at all. The container's record
+  holds Pester's own break/continue guard text, which says nothing about the consumer's failure, so
+  it is deliberately not reached for. `Some.Test -- ` reads as a reason that was lost; `Some.Test`
+  reads as one that never existed, which is the truth.
+
+  The behaviour predates this change -- `main` produces the same dangling output -- and was found
+  by one of the new consumer-shaped fixtures going red on both CI legs while passing locally.
 
 - **The end-to-end counts are asserted exactly** (#36). They were open inequalities --
   `Total | Should-BeGreaterThan 0` -- over a fixture that is fully determined and produces the

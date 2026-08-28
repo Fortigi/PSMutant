@@ -523,9 +523,15 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
         $r.FailedTest[0] | Should-Be 'Solo.Test -- only this line'
     }
 
-    It 'falls back to the whole message when every line is blank' {
-        # Something beats nothing: an all-whitespace message is degenerate, but reporting '' for it
-        # puts the gate back to a bare test name -- the exact shape the line above removes.
+    It 'names the test ALONE when there is no reason to give' {
+        # A dangling "Some.Test -- " reads as a reason that was lost; the bare name reads as one
+        # that never existed, which is the truth. This happens for real: when a BeforeAll dies
+        # under ErrorActionPreference = Stop -- which is how CI runs the suite and how a developer
+        # machine usually does not -- Pester marks every test in the block Failed and attaches the
+        # error to the CONTAINER, so the test carries no error record at all.
+        #
+        # The container's record is deliberately not reached for: it holds Pester's own
+        # break/continue guard text, which says nothing about the consumer's failure.
         Mock Invoke-Pester {
             [pscustomobject]@{
                 Result       = 'Failed'
@@ -541,7 +547,27 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
 
         $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
 
-        $r.FailedTest[0] | Should-BeLikeString 'Some.Test -- *'
+        $r.FailedTest[0] | Should-Be 'Some.Test'
+    }
+
+    It 'names the test alone when Pester attaches no error record at all' {
+        # The shape that actually occurs, rather than the degenerate all-blank message above: an
+        # EMPTY ErrorRecord collection. ErrorRecord is a List, and reading .Exception.Message off
+        # the list works only by member enumeration -- which yields the inner value for one element
+        # and nothing for zero or many. That is why this is read as a collection.
+        Mock Invoke-Pester {
+            [pscustomobject]@{
+                Result       = 'Failed'
+                CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
+                Failed       = @(
+                    [pscustomobject]@{ ExpandedPath = 'Blocked.Test'; ErrorRecord = @() }
+                )
+            }
+        }
+
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
+
+        $r.FailedTest[0] | Should-Be 'Blocked.Test'
     }
 }
 
