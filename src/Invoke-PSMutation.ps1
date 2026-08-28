@@ -195,7 +195,32 @@ function Invoke-PSMutation {
         Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Detail' `
                 -Text "  Mutants to evaluate: $($cands.Count)`n")
 
-        $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests
+        # FINALLY, not catch, and the difference is the whole feature. Ctrl-C and a cancelled CI
+        # job raise a pipeline STOP, which a catch block never sees -- measured: a catch beside
+        # this one does not run, a finally does. Written with a catch, the partial report would
+        # appear for a crash and be missing for the interruption people actually hit.
+        #
+        # $done is the flag rather than testing $results, because the loop returning normally
+        # with zero rows is a legitimate outcome (a config whose files contribute no covered
+        # candidates) and must write the ordinary empty report, not a partial one.
+        $partial = [System.Collections.Generic.List[object]]::new()
+        $done = $false
+        try {
+            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial
+            $done = $true
+        }
+        finally {
+            if (-not $done) {
+                $written = Write-PSMutationPartialReport -Results @($partial) -Planned $cands.Count `
+                    -ReportPath $reportPath -Operators $ops -SourceHashes $hashes -Provenance (& $provenance)
+                # Printed rather than returned: the run is being torn down, so there is no caller
+                # left to hand a value to, and a file written where nobody was told about it is
+                # only marginally better than no file.
+                Write-PSMutationOutput -Quiet:$false -Lines (New-PSMutationLine -Role 'Muted' `
+                        -Text ("`n  Interrupted after {0} of {1} mutant(s). Wrote a PARTIAL report to {2} -- counts only, no score." -f `
+                                $partial.Count, $cands.Count, $written))
+            }
+        }
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
         # totalSeconds records how long the run took to start rather than to finish.
         $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate

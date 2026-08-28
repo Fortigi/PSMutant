@@ -114,6 +114,91 @@ Describe 'Invoke-PSMutation' {
         Should-Invoke Remove-PSMutationSandbox -Exactly 1
     }
 
+    It 'writes a PARTIAL report when the run is interrupted, rather than nothing' {
+        # A run is long enough that losing one to Ctrl-C or a cancelled CI job is an ordinary
+        # event, and everything used to be discarded: the rows lived in a list inside the loop
+        # and the report was written only after the last mutant. A cancelled job produced no
+        # picture at all.
+        Mock Invoke-PSMutationLoop {
+            # Rows reach the caller through the SINK, not the return value -- which is the whole
+            # mechanism. A loop that throws returns nothing, so anything it had already
+            # evaluated is only recoverable because the accumulator belongs to the caller.
+            $Sink.Add([pscustomobject]@{ Id = 'm1'; Status = 'Killed'; File = 'a.ps1' })
+            $Sink.Add([pscustomobject]@{ Id = 'm2'; Status = 'Survived'; File = 'a.ps1' })
+            throw 'interrupted'
+        }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should-Throw
+
+        $path = Join-Path $script:root 'reports/run.json'
+        Test-Path $path | Should-BeTrue -Because 'an interrupted run must still say what it got through'
+        $doc = Get-Content $path -Raw | ConvertFrom-Json
+        $doc.mode | Should-Be 'Partial'
+        $doc.evaluated | Should-Be 2
+        $doc.mutants.Count | Should-Be 2
+    }
+
+    It 'never puts a SCORE on an interrupted run' {
+        # The point of the separate mode. `evaluated` of `planned` is progress: the loop
+        # evaluates in candidate order, so an interrupted run has seen whichever files sort
+        # earliest, and a percentage over those is not a measurement of anything. Asserted
+        # here as well as in the schema because the schema only refuses a document somebody
+        # thought to validate.
+        Mock Invoke-PSMutationLoop {
+            $Sink.Add([pscustomobject]@{ Id = 'm1'; Status = 'Killed'; File = 'a.ps1' })
+            throw 'interrupted'
+        }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should-Throw
+
+        $doc = Get-Content (Join-Path $script:root 'reports/run.json') -Raw | ConvertFrom-Json
+        $doc.PSObject.Properties.Name | Should-NotContainCollection 'mutationScore'
+        $doc.PSObject.Properties.Name | Should-NotContainCollection 'thresholds'
+    }
+
+    It 'writes the ORDINARY report when a run legitimately evaluates nothing' {
+        # The case a naive "did we get any rows" check would misread. A config whose files
+        # contribute no covered candidates completes normally and must produce a full report
+        # with a score, not a partial one -- so the flag is "did the loop return", never "is
+        # the sink empty".
+        # The comma is load-bearing and the real function has it for the same reason: a
+        # PowerShell function returning an empty collection unrolls it to NOTHING, so a mock
+        # written `@()` hands back $null and tests a shape the loop cannot produce. That is
+        # #158 in miniature.
+        Mock Invoke-PSMutationLoop { , @() }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+
+        $doc = Get-Content (Join-Path $script:root 'reports/run.json') -Raw | ConvertFrom-Json
+        Should-BeNull -Actual $doc.mode -Because 'a completed run is a full report however few mutants it had'
+        $doc.PSObject.Properties.Name | Should-ContainCollection 'mutationScore'
+    }
+
+    It 'does not even REACH the partial writer when the run completes' {
+        # Asserted on the call, not on the file, and the difference is why this test exists.
+        # The full report is written straight after the loop and OVERWRITES whatever the
+        # interrupted path left, so a partial written by mistake on the success path is
+        # invisible on disk -- measured: forcing the completion flag false leaves every
+        # file-based assertion above passing.
+        Mock Write-PSMutationPartialReport { 'unused' }
+        Mock Invoke-PSMutationLoop { , @() }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        Should-Invoke Write-PSMutationPartialReport -Exactly 0
+    }
+
+    It 'says it was interrupted even under -Quiet' {
+        # -Quiet exists so a CI log is not filled with progress lines. This is not progress:
+        # it is the only notice that a file was written somewhere, in the one situation where
+        # nobody is watching a return value because the run is being torn down. Silenced, the
+        # partial report is a file nobody is told about.
+        Mock Invoke-PSMutationLoop { $Sink.Add([pscustomobject]@{ Id = 'm1'; Status = 'Killed' }); throw 'interrupted' }
+        Mock Write-PSMutationOutput { }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should-Throw
+        # Both halves in one filter, because either alone passes for the wrong reason: the text
+        # alone is satisfied by a call that -Quiet then swallows, and the flag alone is satisfied
+        # by any of the several other unsilenced writes this run makes.
+        Should-Invoke Write-PSMutationOutput -Times 1 -ParameterFilter {
+            $Quiet -eq $false -and (($Lines | ForEach-Object { $_.Text }) -join ' ') -like '*PARTIAL report*'
+        }
+    }
+
     It 'checks Pester and sweeps stale sandboxes before it starts' {
         Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
         Should-Invoke Assert-PSMutationPester -Exactly 1

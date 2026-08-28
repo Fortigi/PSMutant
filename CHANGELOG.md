@@ -1,6 +1,36 @@
 ## [Unreleased]
 
 ### For consumers
+
+**An interrupted run now writes a partial report instead of nothing.** Ctrl-C, a cancelled CI job
+or a killed agent used to discard the whole run: every row lived in a list inside the loop and the
+report was written only after the last mutant. On a large repo a run is long enough that losing one
+is an ordinary event, not an exceptional one.
+
+The document is marked `"mode": "Partial"` and carries `evaluated` and `planned`. It is **counts,
+never a score**, for the same reason a recheck report is: the loop evaluates in candidate order, so
+an interrupted run has seen whichever files sort earliest -- not a sample of anything. The schema
+forbids `mutationScore` on it rather than trusting a writer never to add one.
+
+**A schema failure on a full report now names the field that is actually missing.** The full/recheck
+split was keyed on the presence of `mode`, so a full report missing any one disclosure failed the
+`else` arm while the validator reported the `if` arm's requirement:
+
+```
+Required properties ["mode"] are not present at ''
+```
+
+`mode` is the marker whose *absence* identifies a full report, so the message named the one field
+whose presence would turn the document into a different kind of report -- following it made things
+worse. The discriminator is now keyed on `mutationScore`, and the same document reports:
+
+```
+Required properties ["skippedAsUncovered"] are not present at ''
+```
+
+Measured both ways against `Test-Json`. The same documents are accepted and refused either way; only
+the diagnosis changes.
+
 **The report says how many files the score was computed over.** `filesMutated` joins
 `skippedAsUncovered` and `declaredEquivalent` in the document and in the schema, for the reason
 those two already exist: 100% across eight files and 100% across nine are the same number, and only
@@ -18,6 +48,11 @@ config never mentioned, so it reports what it was pointed at rather than guessin
 missed; the fraction is yours to compute against your own file count.
 
 ### Internal
+
+**Schema `description` fields say what a field IS, not why it exists.** The rationale moved to the
+code and to this file. `filesMutated` shipped last release with 862 characters of design argument in
+its description, which every consumer validating a document had to read past.
+
 **The sandbox isolation layer is now mutation-tested.** `src/PSMutation.Sandbox.ps1` -- the file
 enforcing the promise that a hard kill cannot leave a mutant in tracked source -- was the one source
 file the self-mutation gate did not measure, because its covering suite could not be named in the
@@ -651,6 +686,7 @@ including 0%.
 entry rather than notes written for a consumer. Use 0.3.1.
 
 ### Changed
+
 - **The module exports one function.** `Get-PSMutationCandidate` and `Set-PSMutationText` are no
   longer public ([#48]). Between them they trafficked a nine-field `[pscustomobject]` that
   nothing declared, tested as a contract or versioned -- discoverable only by running the
@@ -798,6 +834,7 @@ entry rather than notes written for a consumer. Use 0.3.1.
   had -- and corrected when [#45] moved that constant.
 
 ### Added
+
 - **The config format and the report format are published as JSON Schemas** ([#84]).
   `schemas/v1/config.schema.json` defines every key `-ConfigFile` understands, what it means and
   what it must hold -- the definition a PSMutant config is written against. Name it with a
@@ -860,7 +897,27 @@ entry rather than notes written for a consumer. Use 0.3.1.
   ISO-8601 `generatedAt` string and hands back a `[datetime]`, so the text is only visible in
   the file itself. The file is the contract, and that is what the tests assert against.
 
+- **Three opt-in operators that reach decisions no expression operator can touch**
+  ([#5]). Code whose logic lives in structure rather than in an expression produced
+  ZERO mutants and therefore a vacuous 100% -- a phase guard (`if ($SyncUsers) { ... }`)
+  or a reference-fallback chain (`if ($Ref.Value) { return ... }`) holds no comparison,
+  no literal and no negation, so nothing in the default set could perturb it.
+  - `ConditionForcing` -- an `if`/`elseif` condition forced to `$true` and to `$false`.
+    This is the one that reaches the bare guards above. Loop conditions are excluded:
+    forcing `while (X)` to `$true` is an unconditional hang, not a finding.
+  - `ConditionalBoundary` -- `-gt` <-> `-ge`, `-lt` <-> `-le`. The classic off-by-one,
+    which `BinaryOperator` cannot produce because it maps `-gt` to `-le` (a negation,
+    not a boundary shift).
+  - `ReturnValue` -- `return <expr>` -> `return $null`, for a result nothing asserts on.
+
+  All three are **opt-in**, like `StringLiteral`: switching one on roughly doubles the
+  mutant count and lowers the score, so a repo gating on `thresholds.break` would go red
+  purely from upgrading. Adding an operator also renumbers mutants, so an existing report
+  can no longer seed a `-RecheckFrom` run -- the operator set is recorded in the report,
+  and the mismatch is refused rather than guessed at.
+
 ### Fixed
+
 - **A config value of the wrong type is now refused, instead of quietly breaking the run**
   ([#83]). `Assert-PSMutationConfig` checked key *names* and never types, so
   `"timeoutFactor": "four"` validated -- and then the timeout arithmetic yielded **nothing**,
@@ -1011,6 +1068,7 @@ entry rather than notes written for a consumer. Use 0.3.1.
   would have quietly substituted the default for it.
 
 ### Internal
+
 - **Output has a seam: deciding what to say is separated from saying it** ([#47], [#60], [#61]).
   Twenty `Write-Host` calls were spread across four files, each picking its own
   `-ForegroundColor`. There is **one** now, in `Write-PSMutationOutput`, and
@@ -1223,26 +1281,6 @@ entry rather than notes written for a consumer. Use 0.3.1.
   than the one asked for, which is the class of failure #16 was. All four pins now live
   in one `env:` block, and the install step skips what the cache already provided and
   then asserts every required version is present.
-
-### Added
-- **Three opt-in operators that reach decisions no expression operator can touch**
-  ([#5]). Code whose logic lives in structure rather than in an expression produced
-  ZERO mutants and therefore a vacuous 100% -- a phase guard (`if ($SyncUsers) { ... }`)
-  or a reference-fallback chain (`if ($Ref.Value) { return ... }`) holds no comparison,
-  no literal and no negation, so nothing in the default set could perturb it.
-  - `ConditionForcing` -- an `if`/`elseif` condition forced to `$true` and to `$false`.
-    This is the one that reaches the bare guards above. Loop conditions are excluded:
-    forcing `while (X)` to `$true` is an unconditional hang, not a finding.
-  - `ConditionalBoundary` -- `-gt` <-> `-ge`, `-lt` <-> `-le`. The classic off-by-one,
-    which `BinaryOperator` cannot produce because it maps `-gt` to `-le` (a negation,
-    not a boundary shift).
-  - `ReturnValue` -- `return <expr>` -> `return $null`, for a result nothing asserts on.
-
-  All three are **opt-in**, like `StringLiteral`: switching one on roughly doubles the
-  mutant count and lowers the score, so a repo gating on `thresholds.break` would go red
-  purely from upgrading. Adding an operator also renumbers mutants, so an existing report
-  can no longer seed a `-RecheckFrom` run -- the operator set is recorded in the report,
-  and the mismatch is refused rather than guessed at.
 
 ## [0.2.2] - 2026-08-18
 ### Fixed

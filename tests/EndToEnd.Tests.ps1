@@ -596,6 +596,51 @@ Describe 'the published report schema' {
         Should-BeTrue -Actual (Test-AgainstSchema -Json $script:recheckText)
     }
 
+    It 'accepts a PARTIAL report and refuses one carrying a score' {
+        # The third shape. Same promise as a recheck -- counts, never a score -- so the schema
+        # forbids the number rather than trusting a writer never to add it.
+        $partial = $script:recheckText | ConvertFrom-Json
+        $partial.PSObject.Properties.Remove('recheckedFrom')
+        $partial.PSObject.Properties.Remove('priorSurvivors')
+        $partial.PSObject.Properties.Remove('rechecked')
+        $partial.PSObject.Properties.Remove('nowKilled')
+        $partial.mode = 'Partial'
+        $partial | Add-Member -NotePropertyName evaluated -NotePropertyValue 2
+        $partial | Add-Member -NotePropertyName planned -NotePropertyValue 7
+        Should-BeTrue -Actual (Test-AgainstSchema -Json ($partial | ConvertTo-Json -Depth 12))
+
+        # The score fixture is built from the FULL report rather than from the partial one, and
+        # that is what makes the assertion mean anything. A partial document simply lacks the
+        # full-run disclosures, so a score added to it is already refused for missing those --
+        # measured: delete the Partial rule entirely and the naive version of this test still
+        # passes. Starting from a document that IS otherwise a valid full report leaves the
+        # Partial rule as the only thing that can refuse it.
+        $scored = $script:fullText | ConvertFrom-Json
+        $scored | Add-Member -NotePropertyName mode -NotePropertyValue 'Partial'
+        $scored | Add-Member -NotePropertyName evaluated -NotePropertyValue 2
+        $scored | Add-Member -NotePropertyName planned -NotePropertyValue 7
+        Should-BeFalse -Actual (Test-AgainstSchema -Json ($scored | ConvertTo-Json -Depth 12)) `
+            -Because 'a percentage over whichever mutants happened to run first is not a score'
+    }
+
+    It 'names the field that is actually missing, not the one that would change the shape' {
+        # The discriminator is keyed on mutationScore rather than on the presence of `mode`,
+        # and this is why. Keyed the other way, a full report missing any one disclosure failed
+        # the else-arm while the implementation reported the if-arm's requirement -- so the
+        # message read 'Required properties ["mode"] are not present', naming the one field
+        # whose presence would turn the document into a recheck. Following it made things
+        # worse, and it cost real time here.
+        $bad = $script:fullText -replace '(?m)^\s*"skippedAsUncovered":\s*\d+,
+?
+', ''
+        $bad | Should-NotBe $script:fullText -Because 'the fixture must actually differ, or this asserts nothing'
+        $message = ''
+        try { Test-Json -Json $bad -Schema $script:schema -ErrorAction Stop | Out-Null }
+        catch { $message = $_.Exception.Message }
+        $message | Should-MatchString 'skippedAsUncovered'
+        $message | Should-NotMatchString 'mode'
+    }
+
     It 'refuses a recheck report that carries a mutation score' {
         # The safety property, and the reason this schema is worth shipping rather than
         # merely writing down. A recheck measures a subset, so a score in one is a partial
