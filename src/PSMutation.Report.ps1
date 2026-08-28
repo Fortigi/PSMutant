@@ -190,7 +190,7 @@ function Get-PSMutationScore {
         else { $survived++ }
     }
     $total = $Results.Count - $excluded
-    $score = if ($total -gt 0) { [math]::Round(100.0 * $killed / $total, 1) } else { 0 }
+    $score = $total -gt 0 ? [math]::Round(100.0 * $killed / $total, 1) : 0
     return [pscustomobject]@{
         Score = $score; Killed = $killed; Survived = $survived; Total = $total
         TimedOut = $timedOut

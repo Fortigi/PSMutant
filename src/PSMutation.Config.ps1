@@ -83,7 +83,7 @@ function Get-PSMutationConfigKey {
     [CmdletBinding()]
     param([string]$Section = 'config')
     $schema = Get-PSMutationConfigSchema | ConvertFrom-Json
-    $node = if ($Section -eq 'thresholds') { $schema.properties.thresholds } else { $schema }
+    $node = $Section -eq 'thresholds' ? $schema.properties.thresholds : $schema
     return [string[]]@($node.properties.PSObject.Properties.Name)
 }
 
@@ -114,7 +114,7 @@ function Get-PSMutationEditDistance {
     for ($i = 1; $i -le $n; $i++) {
         $curr[0] = $i
         for ($j = 1; $j -le $m; $j++) {
-            $cost = if ($From[$i - 1] -eq $To[$j - 1]) { 0 } else { 1 }
+            $cost = $From[$i - 1] -eq $To[$j - 1] ? 0 : 1
             $curr[$j] = [math]::Min([math]::Min($prev[$j] + 1, $curr[$j - 1] + 1), $prev[$j - 1] + $cost)
         }
         $prev = $curr.Clone()
@@ -161,7 +161,7 @@ function Get-PSMutationUnknownKeyMessage {
     if ($Name.StartsWith('_') -or $Name -eq '$schema') { return $null }
     if ($Known -contains $Name) { return $null }
     $near = Get-PSMutationNearestName -Name $Name -Candidates $Known
-    $hint = if ($near) { " Did you mean '$near'?" } else { '' }
+    $hint = $near ? " Did you mean '$near'?" : ''
     return "Unknown $Where key '$Name'.$hint Valid keys: $(($Known | Sort-Object) -join ', ')."
 }
 
@@ -593,8 +593,8 @@ function Get-PSMutationScoreBand {
     [OutputType([hashtable])]
     [CmdletBinding()]
     param($Cfg)
-    $high = if ($null -ne $Cfg.thresholds.high) { $Cfg.thresholds.high } else { 85 }
-    $low = if ($null -ne $Cfg.thresholds.low) { $Cfg.thresholds.low } else { 70 }
+    $high = $null -ne $Cfg.thresholds.high ? $Cfg.thresholds.high : 85
+    $low = $null -ne $Cfg.thresholds.low ? $Cfg.thresholds.low : 70
     return @{ High = [double]$high; Low = [double]$low }
 }
 
@@ -610,8 +610,8 @@ function Get-PSMutationTimeout {
     [OutputType([int])]
     [CmdletBinding()]
     param($Cfg, [Parameter(Mandatory)] [double]$BaselineSeconds)
-    $factor = if ($Cfg.timeoutFactor) { $Cfg.timeoutFactor } else { 4 }
-    $floor = if ($Cfg.timeoutFloorSeconds) { $Cfg.timeoutFloorSeconds } else { 15 }
+    $factor = $Cfg.timeoutFactor ? $Cfg.timeoutFactor : 4
+    $floor = $Cfg.timeoutFloorSeconds ? $Cfg.timeoutFloorSeconds : 15
     $budget = [int][math]::Max($floor, $BaselineSeconds * $factor)
 
     # Refuse a budget the unmutated suite could not itself meet. Below that line every
