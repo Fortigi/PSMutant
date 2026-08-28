@@ -260,6 +260,92 @@ function Get-PSMutantCompatPinFault {
     return $null
 }
 
+function Get-PSMutantVersionMinor {
+    # 'MAJOR.MINOR' for a version string, or $null when it is not one.
+    #
+    # Its own function because every tier below groups by it, and because a gallery feed answers
+    # with prerelease strings like '6.2.0-beta1' that [version] refuses outright -- taking the part
+    # before the dash keeps one bad entry from failing the whole check.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$Version)
+    if ($Version.Split('-')[0] -match '^(\d+)\.(\d+)') { return "$($Matches[1]).$($Matches[2])" }
+    return $null
+}
+
+function Get-PSMutantVersionListFault {
+    <#
+    .SYNOPSIS
+        Every way a per-minor compatibility list has fallen behind what has been released.
+    #>
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$Name,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Ours,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Available,
+        # Minors deliberately not covered, each of which must still exist and still be uncovered.
+        [AllowEmptyCollection()] [string[]]$ExemptMinor = @()
+    )
+    # A single pin is stale when something newer exists. A LIST is stale in three ways, and they are
+    # three different decisions -- bumping a patch is mechanical, adding a minor is a small choice,
+    # and a whole new major may not run at all. Flattening them into "something is newer" would put
+    # the same weight on all three, and the one that matters would be read as noise.
+    $faults = [System.Collections.Generic.List[string]]::new()
+    if (-not $Ours) { return [string[]]@("$Name has no compatibility versions pinned.") }
+    # "Could not look" is not "nothing newer", for the same reason it is not in Get-PSMutantStalePinFault:
+    # a checker that reads an unreachable feed as good news stops being able to fail.
+    if (-not $Available) {
+        return [string[]]@("$Name compatibility versions could not be checked; the feed did not answer, so freshness is unknown.")
+    }
+
+    $ourMinors = @($Ours | ForEach-Object { Get-PSMutantVersionMinor -Version $_ } | Where-Object { $_ })
+
+    # The promise is open-ended UPWARD and bounded downward, so everything below the floor is out of
+    # scope rather than uncovered. Without this the first run reported Pester 3.0 through 4.10 and
+    # two whole majors as gaps -- versions the module never claimed and which predate the assertion
+    # style the suite is written in.
+    #
+    # The floor is the lowest leg rather than a separate pin, because the list IS the compatibility
+    # claim everywhere else in this repo, and a second source for the same number is a second thing
+    # to keep in step. It cannot drift silently: tests/Release.Tests.ps1 asserts the floor's minor is
+    # present, and for PowerShell ties it to the manifest's own PowerShellVersion.
+    $floor = @($ourMinors | Sort-Object { [version]$_ })[0]
+    $availMinors = @($Available | ForEach-Object { Get-PSMutantVersionMinor -Version $_ } |
+            Where-Object { $_ -and [version]$_ -ge [version]$floor } | Sort-Object -Unique)
+
+    # Tier 1 -- a leg that is no longer the newest patch of its own minor. The rule for these lists
+    # is the newest patch of every minor, with no exception, so this needs no judgement to act on.
+    foreach ($leg in $Ours) {
+        $minor = Get-PSMutantVersionMinor -Version $leg
+        $newest = @($Available | Where-Object { (Get-PSMutantVersionMinor -Version $_) -eq $minor } |
+                Sort-Object { [version]($_.Split('-')[0]) })[-1]
+        if ($newest -and [version]($newest.Split('-')[0]) -gt [version]($leg.Split('-')[0])) {
+            $faults.Add("PATCH: $Name leg $leg is superseded by $newest.")
+        }
+    }
+    # Tier 2 -- a released minor no leg covers. The promise has no upper bound, so this is a version
+    # already claimed and not proven.
+    foreach ($m in $availMinors) {
+        if ($m -in $ourMinors -or $m -in $ExemptMinor) { continue }
+        $faults.Add("MINOR: $Name $m has been released and no leg covers it.")
+    }
+    # Tier 3 -- a whole major nobody covers. Stated separately because it is the one that may not be
+    # a bump at all: a major is where a construct disappears rather than appears.
+    $ourMajors = @($ourMinors | ForEach-Object { $_.Split('.')[0] } | Sort-Object -Unique)
+    foreach ($maj in @($availMinors | ForEach-Object { $_.Split('.')[0] } | Sort-Object -Unique)) {
+        if ($maj -in $ourMajors) { continue }
+        $faults.Add("MAJOR: $Name $maj.x exists and nothing tests it. Decide whether the supported range still means what it says.")
+    }
+    # An exemption is a claim, and a claim that stopped describing anything is how a list quietly
+    # widens. Same rule as a stale equivalence declaration: it fails rather than being ignored.
+    foreach ($ex in $ExemptMinor) {
+        if ($ex -notin $availMinors) { $faults.Add("EXEMPTION: $Name $ex is exempted but has never been released.") }
+        elseif ($ex -in $ourMinors) { $faults.Add("EXEMPTION: $Name $ex is exempted and also covered by a leg; one of the two is wrong.") }
+    }
+    return $faults.ToArray()
+}
+
 function Get-PSMutantStalePinFault {
     <#
     .SYNOPSIS
