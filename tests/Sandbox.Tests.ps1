@@ -337,3 +337,54 @@ Describe 'Clear-PSMutationStaleSandbox' {
         finally { if (-not $preExisting) { Remove-Item $live -Recurse -Force -ErrorAction SilentlyContinue } }
     }
 }
+
+Describe 'the sweep reclaims the coverage files older versions left in temp' {
+    # Transitional, and deliberately so. The coverage XML now lives inside the sandbox and goes
+    # with it, but every machine that ran an earlier version still has "psmut-coverage-<pid>.xml"
+    # files that nothing could ever match: the sweep looked only at DIRECTORIES named
+    # psmut-sandbox-*. Refusing to recognise them would orphan them permanently.
+    It 'reads the process id out of a legacy coverage file name' {
+        Get-PSMutationSandboxOwnerId -Name 'psmut-coverage-4321.xml' | Should-Be 4321
+    }
+
+    It 'still ignores a name the runner never produced' {
+        # The other half: the parser widening must not start claiming other people's files.
+        Get-PSMutationSandboxOwnerId -Name 'psmut-coverage-notapid.xml' | Should-BeNull
+        Get-PSMutationSandboxOwnerId -Name 'coverage-4321.xml' | Should-BeNull
+        Get-PSMutationSandboxOwnerId -Name 'psmut-coverage-4321.txt' | Should-BeNull
+    }
+
+    It 'sweeps an abandoned coverage FILE, not just directories' {
+        # The sweep used to take -Directory only, which is why these accumulated. A file left by a
+        # process that is gone is reclaimable on exactly the same terms as a sandbox.
+        $temp = [System.IO.Path]::GetTempPath()
+        $dead = 999002   # no such process
+        $orphan = Join-Path $temp "psmut-coverage-$dead.xml"
+        '<coverage/>' | Set-Content -LiteralPath $orphan -Encoding utf8
+        try {
+            Clear-PSMutationStaleSandbox
+            Test-Path -LiteralPath $orphan | Should-BeFalse
+        }
+        finally { Remove-Item -LiteralPath $orphan -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'SPARES a coverage file whose owning process is still alive' {
+        # Two runs on one machine must not delete each other's working files, which is the whole
+        # reason the sweep asks about the owner rather than just the name.
+        $temp = [System.IO.Path]::GetTempPath()
+        $mine = Join-Path $temp "psmut-coverage-$PID.xml"
+        $existed = Test-Path -LiteralPath $mine
+        '<coverage/>' | Set-Content -LiteralPath $mine -Encoding utf8
+        try {
+            # Our OWN id is treated as reclaimable by design -- a leftover from a previous process
+            # that happened to get this id -- so a live FOREIGN owner is the case to prove. Use the
+            # container's init process, which is alive and is not us.
+            $live = Join-Path $temp 'psmut-coverage-1.xml'
+            '<coverage/>' | Set-Content -LiteralPath $live -Encoding utf8
+            Clear-PSMutationStaleSandbox
+            Test-Path -LiteralPath $live | Should-BeTrue
+            Remove-Item -LiteralPath $live -Force -ErrorAction SilentlyContinue
+        }
+        finally { if (-not $existed) { Remove-Item -LiteralPath $mine -Force -ErrorAction SilentlyContinue } }
+    }
+}
