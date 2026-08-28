@@ -14,7 +14,7 @@
     as a kill, so every mutant "dies" and the run reports a perfect, entirely fake 100%.
 #>
 
-$script:PSMutationPesterRequired = 'Pester 5+ is required. Install-Module Pester -MinimumVersion 5.0.0 -Force -Scope CurrentUser'
+$script:PSMutationPesterRequired = 'Pester 5.2.0 or later is required. Install-Module Pester -MinimumVersion 5.2.0 -Force -Scope CurrentUser'
 
 function Get-PSMutationLoadedPester {
     <#
@@ -40,7 +40,7 @@ function Assert-PSMutationPester {
     .SYNOPSIS
         Make sure a usable Pester is available, WITHOUT pulling in a second one.
     .DESCRIPTION
-        `Import-Module Pester -MinimumVersion 5.0.0` is not the no-op it looks like when
+        `Import-Module Pester -MinimumVersion 5.2.0` is not the no-op it looks like when
         a satisfying Pester is already loaded: PowerShell re-resolves the name against
         PSModulePath, picks the NEWEST version installed, and on a machine that has two
         it collides with the Pester.dll already in the process -- which is fatal, and
@@ -48,20 +48,33 @@ function Assert-PSMutationPester {
 
         So an already-loaded Pester is checked and accepted as it is, and the import
         only happens when nothing is loaded at all. That is also what lets the module
-        honour the >= 5.0.0 in its manifest: it runs under the caller's Pester rather
+        honour the >= 5.2.0 in its manifest: it runs under the caller's Pester rather
         than choosing one for them.
+
+        THE FLOOR IS 5.2.0 BECAUSE THAT IS WHERE `New-PesterConfiguration` ARRIVES, and this
+        module cannot work without it -- the baseline needs code coverage configured, which the
+        simple parameter set cannot express. Measured across every installed version rather
+        than looked up:
+
+            5.0.0 False   5.1.0 False   5.2.0 True   5.3.0 True   ... 6.1.0 True
+
+        It said 5.0.0 until #161, and the number had never been executed. Pointed at it, the
+        module failed -- under 5.0.x and 5.1.x the command is not found, PowerShell autoloads
+        `Pester` by NAME to the newest installed, and that collides with the Pester.dll already
+        in the process. The promise was corrected to the version that works rather than the gate
+        being trimmed to protect the promise.
     #>
     [CmdletBinding()]
     param()
     $loaded = Get-PSMutationLoadedPester
     if ($loaded) {
-        if ($loaded.Version -lt [version]'5.0.0') { throw $script:PSMutationPesterRequired }
+        if ($loaded.Version -lt [version]'5.2.0') { throw $script:PSMutationPesterRequired }
         return
     }
-    if (-not (Get-Module Pester -ListAvailable | Where-Object Version -ge '5.0.0')) {
+    if (-not (Get-Module Pester -ListAvailable | Where-Object Version -ge '5.2.0')) {
         throw $script:PSMutationPesterRequired
     }
-    Import-Module Pester -MinimumVersion 5.0.0
+    Import-Module Pester -MinimumVersion 5.2.0
 }
 
 function Get-PSMutationPesterPath {
@@ -234,11 +247,11 @@ function Get-PSMutationWarmPesterScript {
 
         It is set only when the loaded Pester HAS it. `SkipRemainingOnFailure` arrived in **Pester
         5.3.0** (2021-08-17) -- measured, not looked up: 5.2.0 does not carry the property and 5.3.0
-        does. So the guard exists for **Pester 5.0.0 to 5.2.x** and nothing else; from 5.3.0 onward
+        does. So the guard exists for **Pester 5.2.x** and nothing else; from 5.3.0 onward
         every consumer takes the fast path whatever their version.
 
         That window is narrow and old, and the guard is kept anyway because this module promises to
-        run under whatever Pester >= 5.0.0 the consumer already has. Assigning a property that does
+        run under whatever Pester >= 5.2.0 the consumer already has. Assigning a property that does
         not exist would fail the whole run for a speed optimisation, which is a bad trade in the
         direction that matters: the point of the promise is that PSMutant bends to the consumer's
         Pester rather than the other way round.

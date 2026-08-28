@@ -65,7 +65,7 @@ jobs:
       - name: Load pinned versions
         shell: pwsh
         run: |
-          $required = 'PESTER_VERSION', 'PESTER_COMPAT_VERSION', 'PSSA_VERSION',
+          $required = 'PESTER_VERSION', 'PESTER_COMPAT_VERSIONS', 'PSSA_VERSION',
                       'PSCOMPLEXITY_VERSION', 'CONVERTTOSARIF_VERSION', 'PSSA_PATHS'
           $pins = @{}
           foreach ($line in Get-Content .github/pins.env) {
@@ -93,7 +93,10 @@ jobs:
           path: |
             ~/.local/share/powershell/Modules
             ~/Documents/PowerShell/Modules
-          key: psmodules-${{ runner.os }}-pester${{ env.PESTER_VERSION }}-${{ env.PESTER_COMPAT_VERSION }}-pssa${{ env.PSSA_VERSION }}-psc${{ env.PSCOMPLEXITY_VERSION }}
+          # Hashed over the whole pins file rather than spelled out version by version. The
+          # compatibility pin is a LIST now and would put spaces in the key; hashing also means a
+          # pin this key forgot to name can no longer serve a stale cache.
+          key: psmodules-${{ runner.os }}-${{ hashFiles('.github/pins.env') }}
 
       # Install only what the cache did not restore. Every gate below asserts the exact
       # version it needs, so a partially-populated cache cannot silently change what ran.
@@ -102,17 +105,31 @@ jobs:
         run: |
           $wanted = @(
             @{ Name = 'Pester';           Version = $env:PESTER_VERSION }
-            @{ Name = 'Pester';           Version = $env:PESTER_COMPAT_VERSION }
             @{ Name = 'PSScriptAnalyzer'; Version = $env:PSSA_VERSION }
             @{ Name = 'PSComplexity';     Version = $env:PSCOMPLEXITY_VERSION }
           )
+          # One Pester per compatibility leg. The estate version is usually among them; the
+          # install-only-if-missing guard below makes the overlap free.
+          foreach ($v in ($env:PESTER_COMPAT_VERSIONS -split ' ' | Where-Object { $_ })) {
+            $wanted += @{ Name = 'Pester'; Version = $v }
+          }
           foreach ($m in $wanted) {
             if (Get-Module -ListAvailable -Name $m.Name | Where-Object { $_.Version -eq [version]$m.Version }) {
               Write-Host "cached   $($m.Name) $($m.Version)"
               continue
             }
             Write-Host "install  $($m.Name) $($m.Version)"
-            Install-Module $m.Name -RequiredVersion $m.Version -Force -Scope CurrentUser
+            # -SkipPublisherCheck because Pester's signing certificate is NOT the same across the
+            # range these legs cover: installing 5.2.2 while 6.1.0 is present makes Install-Module
+            # refuse over an authenticode issuer mismatch (DigiCert Assured ID Root CA against
+            # DigiCert Trusted Root G4), and the assert below then reports the version as "not
+            # available after install" -- naming the symptom rather than the cause. Hit on the
+            # first Windows run of the multi-version gate.
+            #
+            # It skips the match against the ALREADY-INSTALLED copy, which is a hijack check for a
+            # module resolved by NAME. Every version here is pinned exactly, comes from the
+            # gallery, and is asserted present afterwards, so that is not the risk being run.
+            Install-Module $m.Name -RequiredVersion $m.Version -Force -Scope CurrentUser -SkipPublisherCheck
           }
           # Fail here rather than three steps later with a confusing version error.
           foreach ($m in $wanted) {
@@ -224,7 +241,10 @@ jobs:
       # Before issue #16 this reported a silent, perfect, entirely fake 100%.
       - name: Pester compatibility guard (runs under the version the suite does not use)
         shell: pwsh
-        run: ./tools/Test-PSMutantPesterCompatibility.ps1 -PesterVersion $env:PESTER_COMPAT_VERSION
+        # No argument: the script reads PESTER_COMPAT_VERSIONS from the environment or straight
+        # from pins.env, so running it by hand is the same run. It refuses an empty list rather
+        # than reporting a pass over zero versions.
+        run: ./tools/Test-PSMutantPesterCompatibility.ps1
 
   # One check named `test`, green only when EVERY matrix leg was green.
   #
