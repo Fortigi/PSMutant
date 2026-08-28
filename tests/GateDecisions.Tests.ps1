@@ -322,29 +322,130 @@ Describe 'a pin is watched, not just written down' {
     }
 }
 
-Describe 'the compatibility pin is judged on difference, not freshness' {
+Describe 'the compatibility legs are judged on reach, not freshness' {
     # "Is there a newer version" is the WRONG QUESTION here, and asking it was a real mistake:
-    # the first version of the watcher reported 5.8.0 as stale against 6.1.0. Taking that
-    # advice would have made the compatibility guard run under the same Pester as the suite --
-    # proving nothing about the manifest's >= 5.0.0 promise, while looking more up to date.
+    # the first version of the watcher reported 5.8.0 as stale against 6.1.0. Taking that advice
+    # would have made the compatibility guard run under the same Pester as the suite, proving
+    # nothing about the range the manifest promises while looking more up to date.
+    #
+    # The pin became a LIST in #161, and the invariant moved with it: not "differs from the
+    # estate pin" -- the newest leg legitimately IS the estate version -- but "still reaches
+    # below it, and covers the declared floor".
 
-    It 'refuses a compat pin equal to the estate pin' {
-        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion '6.1.0' |
-            Should-MatchString 'prove nothing'
+    It 'accepts the list this repo actually ships' {
+        Should-BeNull -Actual (Get-PSMutantCompatPinFault -EstateVersion '6.1.0' `
+                -CompatVersion @('5.2.2', '5.3.3', '5.8.0', '6.1.0') -FloorVersion '5.2.0')
     }
 
-    It 'refuses a compat pin NEWER than the estate pin' {
-        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion '7.0.0' |
-            Should-MatchString ([regex]::Escape('is newer than'))
+    It 'refuses a list with no leg older than the estate pin' {
+        # The list creeping up until every leg matches the suite's own Pester. It would pass
+        # every other gate and prove nothing.
+        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion @('6.1.0') -FloorVersion '5.2.0' |
+            Should-MatchString 'proves nothing'
     }
 
-    It 'accepts a compat pin that is deliberately older' {
-        # The kept case, and the configuration this repo actually ships: 5.8.0 against 6.1.0.
-        Should-BeNull -Actual (Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion '5.8.0')
+    It 'refuses a list that does not cover the declared floor' {
+        # #161 itself: the number consumers are given was never executed. A leg has to cover the
+        # floor's MINOR -- the exact patch is free to advance under the newest-patch rule.
+        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion @('5.8.0') -FloorVersion '5.2.0' |
+            Should-MatchString 'no leg on Pester 5.2'
     }
 
-    It 'refuses either pin being absent' {
-        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion '' |
+    It 'accepts a leg on the floor MINOR with a different patch' {
+        # The other half of that pair, so the test above pins "covers the minor" rather than
+        # "equals the floor exactly" -- which would freeze the one leg the rule says should move.
+        Should-BeNull -Actual (Get-PSMutantCompatPinFault -EstateVersion '6.1.0' `
+                -CompatVersion @('5.2.9', '6.1.0') -FloorVersion '5.2.0')
+    }
+
+    It 'refuses a duplicated leg' {
+        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion @('5.2.2', '5.2.2') -FloorVersion '5.2.0' |
+            Should-MatchString 'twice'
+    }
+
+    It 'refuses an empty list' {
+        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion @() -FloorVersion '5.2.0' |
             Should-MatchString 'must both be set'
+    }
+
+    It 'refuses a missing floor rather than skipping the floor check' {
+        Get-PSMutantCompatPinFault -EstateVersion '6.1.0' -CompatVersion @('5.2.2') -FloorVersion '' |
+            Should-MatchString 'floor is not set'
+    }
+}
+
+Describe 'Get-PSMutantPesterFloor' {
+    # The floor is READ from the guard that enforces it, not repeated. #161 is what happens when
+    # the manifest, the README and the code each carry their own copy and nothing compares them.
+
+    It 'reads the version the guard actually enforces' {
+        Get-PSMutantPesterFloor -Line @(
+            "    if (`$loaded.Version -lt [version]'5.2.0') { throw `$x }") | Should-Be '5.2.0'
+    }
+
+    It 'follows the guard when it moves, rather than pinning a number here' {
+        Get-PSMutantPesterFloor -Line @(
+            "    if (`$loaded.Version -lt [version]'7.9.1') { throw `$x }") | Should-Be '7.9.1'
+    }
+
+    It 'returns null when no guard is present, so the caller refuses rather than guesses' {
+        Should-BeNull -Actual (Get-PSMutantPesterFloor -Line @('# nothing here', '$x = 1'))
+    }
+}
+
+Describe 'the shipped pins.env is itself a claim, so it is asserted here' {
+    # The gate proves whatever PESTER_COMPAT_VERSIONS names, so the LIST IS the compatibility
+    # claim. A leg silently dropped narrows the promise without narrowing what the README says,
+    # and the run stays green -- the shape this project refuses everywhere else.
+    BeforeAll {
+        $script:repoRoot = Split-Path -Parent $PSScriptRoot
+        $script:pinLines = Get-Content -LiteralPath (Join-Path $script:repoRoot '.github/pins.env')
+    }
+
+    It 'declares every key the workflows require' {
+        # The workflows assert this at run time; asserting it here means a missing pin fails in
+        # the suite rather than five minutes into a job.
+        foreach ($k in 'PESTER_VERSION', 'PESTER_COMPAT_VERSIONS', 'PSSA_VERSION',
+            'PSCOMPLEXITY_VERSION', 'CONVERTTOSARIF_VERSION', 'PSSA_PATHS') {
+            Get-PSMutantPinValue -Line $script:pinLines -Name $k |
+                Should-NotBeNull -Because "pins.env must define $k"
+        }
+    }
+
+    It 'lists a leg for every supported Pester minor, from the floor upward' {
+        # Minors, not exact patches: a patch may be superseded and the pin bumped, but a whole
+        # minor disappearing means a range nobody tests any more. No exact-version assertion
+        # here for the same reason -- every leg is the newest patch of its minor, including the
+        # floor's, so pinning one exactly would freeze the single leg the rule says should move.
+        $versions = @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PESTER_COMPAT_VERSIONS') -split ' ' |
+                Where-Object { $_ })
+        $minors = @($versions | ForEach-Object { $v = [version]$_; "$($v.Major).$($v.Minor)" })
+        foreach ($m in '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8', '5.9', '6.0', '6.1') {
+            $minors | Should-ContainCollection $m -Because "no leg covers Pester $m"
+        }
+    }
+
+    It 'starts the legs at the floor the module actually enforces' {
+        # The two must agree, and #161 is what happens when they do not: the promise said 5.0.0,
+        # the code needed 5.2.0, and nothing compared them. Read from the guard rather than
+        # repeated, so this fails when either side moves alone.
+        $floor = [version](Get-PSMutantPesterFloor -Line (
+                Get-Content -LiteralPath (Join-Path $script:repoRoot 'src/PSMutation.Pester.ps1')))
+        $versions = @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PESTER_COMPAT_VERSIONS') -split ' ' |
+                Where-Object { $_ })
+        $lowest = @($versions | ForEach-Object { [version]$_ } | Sort-Object)[0]
+        "$($lowest.Major).$($lowest.Minor)" | Should-Be "$($floor.Major).$($floor.Minor)"
+    }
+
+    It 'is free of a fault by its own rule' {
+        # The rule is unit-tested above against fixtures; this runs it over what actually ships,
+        # which is the part a fixture cannot certify.
+        $floor = Get-PSMutantPesterFloor -Line (
+            Get-Content -LiteralPath (Join-Path $script:repoRoot 'src/PSMutation.Pester.ps1'))
+        Should-BeNull -Actual (Get-PSMutantCompatPinFault `
+                -EstateVersion (Get-PSMutantPinValue -Line $script:pinLines -Name 'PESTER_VERSION') `
+                -CompatVersion @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PESTER_COMPAT_VERSIONS') -split ' ' |
+                    Where-Object { $_ }) `
+                -FloorVersion $floor)
     }
 }

@@ -437,7 +437,7 @@ Describe 'the manifest does not choose a Pester' {
         # dependency stays discoverable -- otherwise this trades a wrong import for a
         # silent one.
         (Import-PowerShellDataFile $script:manifestPath).Description |
-            Should-BeLikeString '*Pester 5.0.0 or later*'
+            Should-BeLikeString '*Pester 5.2.0 or later*'
     }
 
     It 'loads no Pester at all when imported into a clean session' {
