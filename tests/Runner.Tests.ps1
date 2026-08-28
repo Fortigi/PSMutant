@@ -126,6 +126,7 @@ Describe 'Invoke-PSMutationLoop' {
         # The paired case below covers the fallback. This is the mapping actually
         # being honoured -- get it wrong and every mutant runs the entire suite,
         # which is correct but turns a minutes-long run into an hours-long one.
+        $script:seenTests = $null
         Mock Invoke-PSMutant { $script:seenTests = $CoveringTests; 'Killed' }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
@@ -179,7 +180,11 @@ Describe 'Invoke-PSMutationLoop' {
         # An unmapped file must still be evaluated against SOMETHING; running zero
         # tests would mark every one of its mutants Survived and quietly tank the
         # score for a config typo.
-        $seen = $null
+        # CLEARED first, and that is the assertion's whole validity. $script:seenTests is written
+        # by the sibling test above, so without this the check below can pass on the PREVIOUS
+        # test's value -- with the mock never firing at all, which is exactly the case it exists
+        # to catch.
+        $script:seenTests = $null
         Mock Invoke-PSMutant { $script:seenTests = $CoveringTests; 'Killed' }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
@@ -189,7 +194,6 @@ Describe 'Invoke-PSMutationLoop' {
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
         $script:seenTests | Should-BeCollection @('all-tests.ps1')
         $r[0].Status     | Should-Be 'Killed'
-        Should-BeNull -Actual $seen
     }
 }
 

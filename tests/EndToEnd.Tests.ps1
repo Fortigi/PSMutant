@@ -68,12 +68,34 @@ AfterAll {
 }
 
 Describe 'Invoke-PSMutation end-to-end' {
-    It 'evaluates at least one mutant' {
-        $script:result.Total | Should-BeGreaterThan 0
+    It 'evaluates exactly the mutants this fixture determines' {
+        # EXACT, not "more than zero". The fixture is fully determined -- two functions, two
+        # operators, coveredLinesOnly on -- and produces the same three mutants on every run and
+        # on both platforms; the compatibility guard prints the identical figures from an
+        # identical fixture on every CI run.
+        #
+        # As inequalities these could not tell 3 mutants from 30 or from 1, which is the failure
+        # class this suite is the last line of defence against: a run producing plausible-looking
+        # but wrong counts. Losing the coverage filter, or double-counting a file, moves these
+        # numbers and moved nothing before.
+        $script:result.Total | Should-Be 3
+        $script:result.Killed | Should-Be 1
+        $script:result.Survived | Should-Be 2
+        $script:result.Score | Should-Be 33.3
     }
-    It 'kills mutants that the covering test catches (score > 0)' {
-        $script:result.Killed | Should-BeGreaterThan 0
-        $script:result.Score | Should-BeGreaterThan 0
+
+    It 'produces exactly the mutant rows the fixture determines' {
+        # The counts above can be right while the SET is wrong -- three mutants of the wrong
+        # operator, or on the wrong lines, sum to three just as well. This pins what they are.
+        $report = Get-Content (Join-Path $script:proj 'reports/e2e.json') -Raw | ConvertFrom-Json
+        $rows = @($report.mutants | Sort-Object id | ForEach-Object {
+                "{0}:{1}:{2}:{3}:{4}" -f $_.id, $_.line, $_.operator, $_.description, $_.status
+            })
+        $rows | Should-BeCollection @(
+            '1:1:BinaryOperator:-gt -> -le:Killed'
+            '2:2:BooleanLiteral:$true -> $false:Survived'
+            '3:2:BooleanLiteral:$false -> $true:Survived'
+        )
     }
     It 'returns a consistent summary' {
         ($script:result.Killed + $script:result.Survived) | Should-Be $script:result.Total
@@ -688,5 +710,127 @@ Describe 'the published config schema' {
         $json = '{ "$schema": "./schemas/v1/config.schema.json", "mutate": ["a"], "tests": { "a": ["t"] } }'
         Should-BeTrue -Actual (Test-Json -Json $json -Schema $script:cfgSchemaText -ErrorAction Stop)
         Should-BeNull -Actual (Assert-PSMutationConfig -Cfg ($json | ConvertFrom-Json))
+    }
+}
+
+Describe 'a consumer-shaped repository, which is not this one' {
+    # Every other fixture here has PSMutant's own shape: a flat src/ + tests/ where the test
+    # dot-sources the source file. Two consumer shapes were never exercised, and they are the two
+    # where the sandbox's path handling actually gets tested.
+
+    BeforeAll {
+        $script:nested = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-nested-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:nested 'src/Domain') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:nested 'tests/Domain') -Force | Out-Null
+        @'
+function Get-Sign { param($n) if ($n -gt 0) { return 'pos' } else { return 'neg' } }
+'@ | Set-Content (Join-Path $script:nested 'src/Domain/Calc.ps1') -Encoding utf8
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent (Split-Path -Parent $PSScriptRoot)) 'src' 'Domain' 'Calc.ps1') }
+Describe 'Get-Sign' {
+    It 'is pos' { Get-Sign 5 | Should -Be 'pos' }
+    It 'is neg' { Get-Sign -5 | Should -Be 'neg' }
+}
+'@ | Set-Content (Join-Path $script:nested 'tests/Domain/Calc.Tests.ps1') -Encoding utf8
+        $cfg = [ordered]@{
+            sandboxSubtrees  = @('src', 'tests')
+            mutate           = @('src/Domain/Calc.ps1')
+            tests            = @{ 'src/Domain/Calc.ps1' = @('tests/Domain/Calc.Tests.ps1') }
+            coveredLinesOnly = $true
+            operators        = @('BinaryOperator')
+            thresholds       = @{ high = 85; low = 70 }
+            reportPath       = 'reports/nested.json'
+        }
+        $cf = Join-Path $script:nested 'c.json'
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $cf -Encoding utf8
+        $script:nestedResult = Invoke-PSMutation -ConfigFile $cf -SourceRoot $script:nested -Quiet
+        $script:nestedReport = Get-Content (Join-Path $script:nested 'reports/nested.json') -Raw | ConvertFrom-Json
+    }
+
+    AfterAll { Remove-Item $script:nested -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'mutates a NESTED source tree' {
+        # src/Domain/Calc.ps1 rather than src/calc.ps1. This is where the sandbox path mapping is
+        # actually exercised: a flat layout maps a single path segment and cannot tell a correct
+        # relative mapping from one that happens to work.
+        $script:nestedResult.Total | Should-Be 1
+        $script:nestedResult.Killed | Should-Be 1
+    }
+
+    It 'reports the nested path relative, with forward slashes, on every platform' {
+        # The display path is what a consumer matches against -- in a report, in a CI annotation,
+        # in an equivalence declaration. A backslash here is a key a Linux run can never match,
+        # and this is the assertion a flat fixture cannot make at all because it has no separator
+        # in the relative part.
+        @($script:nestedReport.mutants)[0].file | Should-Be 'src/Domain/Calc.ps1'
+        @($script:nestedReport.sourceHashes.PSObject.Properties.Name) | Should-BeCollection @('src/Domain/Calc.ps1')
+    }
+}
+
+Describe 'a module-shaped consumer whose manifest is outside sandboxSubtrees' {
+    # The documented trap: only sandboxSubtrees are copied, so a test that imports a manifest at
+    # the repo root finds nothing in the sandbox. It is recorded in this repo as folklore -- in
+    # tests/Recheck.Tests.ps1's header and in CLAUDE.md -- and nothing asserted the behaviour.
+    #
+    # What the assertion turned out to be is NOT what issue #35 assumed. It expected a silent,
+    # vacuous score; measured, Assert-PSMutationBaselineGreen already refuses the run and NAMES
+    # the failing test. So this pins a guard that is already right rather than asking for the new
+    # feature the issue proposed -- which is the better outcome, and only checkable by running it.
+
+    BeforeAll {
+        $script:modProj = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-mod-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:modProj 'src') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:modProj 'tests') -Force | Out-Null
+        # Manifest and root module at the REPO ROOT -- outside the copied subtrees.
+        "@{ RootModule = 'Their.psm1'; ModuleVersion = '1.0.0'; FunctionsToExport = @('Get-Sign') }" |
+            Set-Content (Join-Path $script:modProj 'Their.psd1') -Encoding utf8
+        @'
+. (Join-Path $PSScriptRoot 'src' 'calc.ps1')
+Export-ModuleMember -Function Get-Sign
+'@ | Set-Content (Join-Path $script:modProj 'Their.psm1') -Encoding utf8
+        @'
+function Get-Sign { param($n) if ($n -gt 0) { return 'pos' } else { return 'neg' } }
+'@ | Set-Content (Join-Path $script:modProj 'src/calc.ps1') -Encoding utf8
+        @'
+BeforeAll { Import-Module (Join-Path (Split-Path -Parent $PSScriptRoot) 'Their.psd1') -Force }
+Describe 'Get-Sign' { It 'is pos' { Get-Sign 5 | Should -Be 'pos' } }
+'@ | Set-Content (Join-Path $script:modProj 'tests/calc.Tests.ps1') -Encoding utf8
+        $cfg = [ordered]@{
+            sandboxSubtrees  = @('src', 'tests')
+            mutate           = @('src/calc.ps1')
+            tests            = @{ 'src/calc.ps1' = @('tests/calc.Tests.ps1') }
+            coveredLinesOnly = $true
+            operators        = @('BinaryOperator')
+            thresholds       = @{ high = 85; low = 70 }
+            reportPath       = 'reports/mod.json'
+        }
+        $script:modConfig = Join-Path $script:modProj 'c.json'
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:modConfig -Encoding utf8
+    }
+
+    AfterAll { Remove-Item $script:modProj -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'REFUSES the run rather than scoring it' {
+        # The failure this shape must never produce is a score. Every mutant would "die" for the
+        # reason the suite was already broken, and the consumer would read a perfect number over
+        # tests that never ran.
+        { Invoke-PSMutation -ConfigFile $script:modConfig -SourceRoot $script:modProj -Quiet } |
+            Should-Throw -ExceptionMessage '*Baseline suite is not green*'
+    }
+
+    It 'names the test that failed, so the cause is findable' {
+        # A bare "not green" sends the reader to reproduce a failure that by definition is not
+        # happening on the machine they are standing on -- their suite passes outside the sandbox.
+        # The named test plus its message is what points at the missing manifest.
+        $message = $null
+        try { Invoke-PSMutation -ConfigFile $script:modConfig -SourceRoot $script:modProj -Quiet }
+        catch { $message = $_.Exception.Message }
+        $message | Should-BeLikeString '*Get-Sign.is pos*'
+        $message | Should-BeLikeString "*'Get-Sign' is not recognized*"
+    }
+
+    It 'writes no report for a run it refused' {
+        # A report from a refused run is an artefact claiming a measurement nobody made.
+        Test-Path (Join-Path $script:modProj 'reports/mod.json') | Should-BeFalse
     }
 }
