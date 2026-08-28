@@ -337,3 +337,57 @@ Describe 'Clear-PSMutationStaleSandbox' {
         finally { if (-not $preExisting) { Remove-Item $live -Recurse -Force -ErrorAction SilentlyContinue } }
     }
 }
+
+Describe 'the sweep reclaims the coverage files older versions left in temp' {
+    # Transitional, and deliberately so. The coverage XML now lives inside the sandbox and goes
+    # with it, but every machine that ran an earlier version still has "psmut-coverage-<pid>.xml"
+    # files that nothing could ever match: the sweep looked only at DIRECTORIES named
+    # psmut-sandbox-*. Refusing to recognise them would orphan them permanently.
+    It 'reads the process id out of a legacy coverage file name' {
+        Get-PSMutationSandboxOwnerId -Name 'psmut-coverage-4321.xml' | Should-Be 4321
+    }
+
+    It 'still ignores a name the runner never produced' {
+        # The other half: the parser widening must not start claiming other people's files.
+        Get-PSMutationSandboxOwnerId -Name 'psmut-coverage-notapid.xml' | Should-BeNull
+        Get-PSMutationSandboxOwnerId -Name 'coverage-4321.xml' | Should-BeNull
+        Get-PSMutationSandboxOwnerId -Name 'psmut-coverage-4321.txt' | Should-BeNull
+    }
+
+    It 'sweeps an abandoned coverage FILE, not just directories' {
+        # The sweep used to take -Directory only, which is why these accumulated. A file left by a
+        # process that is gone is reclaimable on exactly the same terms as a sandbox.
+        $temp = [System.IO.Path]::GetTempPath()
+        $dead = 999002   # no such process
+        $orphan = Join-Path $temp "psmut-coverage-$dead.xml"
+        '<coverage/>' | Set-Content -LiteralPath $orphan -Encoding utf8
+        try {
+            Clear-PSMutationStaleSandbox
+            Test-Path -LiteralPath $orphan | Should-BeFalse
+        }
+        finally { Remove-Item -LiteralPath $orphan -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'SPARES a coverage file whose owning process is still alive' {
+        # A REAL second process, for the reason the sandbox version of this test gives: the
+        # predicate resolves ownership from the id in the name and treats OUR id as reclaimable by
+        # design, so a file named for $PID is one the sweep is entitled to delete.
+        #
+        # The first draft hard-coded id 1 as "something alive". That is true on Linux and false on
+        # Windows, where 1 is not a normal process -- the sweep then found no owner, called the
+        # file abandoned, deleted it, and the assertion failed on the Windows leg only. Exactly the
+        # platform-assumption failure this repo's guidance warns about, and it cost a red CI run.
+        $proc = Start-Process -FilePath 'pwsh' -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 30' -PassThru
+        $temp = [System.IO.Path]::GetTempPath()
+        $live = Join-Path $temp "psmut-coverage-$($proc.Id).xml"
+        try {
+            '<coverage/>' | Set-Content -LiteralPath $live -Encoding utf8
+            Clear-PSMutationStaleSandbox
+            Test-Path -LiteralPath $live | Should-BeTrue
+        }
+        finally {
+            Remove-Item -LiteralPath $live -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
+    }
+}

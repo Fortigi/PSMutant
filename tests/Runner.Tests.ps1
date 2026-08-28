@@ -23,9 +23,17 @@ function Test-Fixture {
     return $false
 }
 '@ | Set-Content $script:fixture
+
+    # Stands in for the sandbox, which is where the baseline's coverage XML now goes. A real
+    # directory rather than temp itself, so a test can assert the file lands INSIDE it.
+    $script:coverageDir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-cov-$([System.Guid]::NewGuid().ToString('N'))"
+    New-Item -ItemType Directory -Path $script:coverageDir -Force | Out-Null
 }
 
-AfterAll { Remove-Item $script:fixture -ErrorAction SilentlyContinue }
+AfterAll {
+    Remove-Item $script:fixture -ErrorAction SilentlyContinue
+    Remove-Item $script:coverageDir -Recurse -Force -ErrorAction SilentlyContinue
+}
 
 Describe 'Test-PSMutantCovered' {
     It 'is true when the candidate line was executed' {
@@ -206,7 +214,7 @@ Describe 'Invoke-PSMutationBaseline' {
             }
         }
 
-        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
 
         $r.Passed | Should-BeTrue
         $key = [System.IO.Path]::GetFullPath($script:fixture)
@@ -226,7 +234,7 @@ Describe 'Invoke-PSMutationBaseline' {
             [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
         }
 
-        Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) | Out-Null
+        Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir | Out-Null
 
         Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter {
             $Configuration.Run.PassThru.Value -eq $true -and $Configuration.CodeCoverage.Enabled.Value -eq $true
@@ -245,7 +253,7 @@ Describe 'Invoke-PSMutationBaseline' {
                     CodeCoverage = [pscustomobject]@{ CommandsExecuted = @([pscustomobject]@{ File = $leaf; Line = 1 }) }
                 }
             }
-            $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
+            $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
             @($r.CoveredLines.Keys)[0] | Should-Be ([System.IO.Path]::GetFullPath($leaf))
         }
         finally { Pop-Location }
@@ -258,7 +266,7 @@ Describe 'Invoke-PSMutationBaseline' {
             [pscustomobject]@{ Result = 'Failed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
         }
 
-        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
 
         $r.Passed | Should-BeFalse
         $r.CoveredLines.Count | Should-Be 0
@@ -387,6 +395,43 @@ Describe 'Invoke-PSBoundedPester' {
     }
 }
 
+Describe 'the baseline coverage XML' {
+    It 'points Pester at the sandbox, not at shared temp' {
+        # It used to be "psmut-coverage-$PID.xml" in temp, and nothing ever deleted it: the startup
+        # sweep matched DIRECTORIES named psmut-sandbox-*, so it could not match this file by
+        # construction, and they accumulated for the life of the machine -- 67 of them on the box
+        # this was found on. Inside the sandbox it is removed by the cleanup that already exists.
+        #
+        # Invoke-Pester is MOCKED, as everywhere else in this Describe. The first draft of this
+        # test let the real one run, and -TestPath @('tests') is the whole suite -- which contains
+        # EndToEnd.Tests.ps1, which starts real mutation runs of its own. The suite went from 33
+        # seconds to not finishing.
+        Mock Invoke-Pester {
+            [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
+        }
+
+        Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir | Out-Null
+
+        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter {
+            $Configuration.CodeCoverage.OutputPath.Value -eq (Join-Path $script:coverageDir 'coverage.xml')
+        }
+    }
+
+    It 'no longer names the file after the process, anywhere' {
+        # The other half. Asserting only where it DOES point would pass just as well if the path
+        # were built from both -- and the whole complaint is the temp-shaped name.
+        Mock Invoke-Pester {
+            [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
+        }
+
+        Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir | Out-Null
+
+        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter {
+            $Configuration.CodeCoverage.OutputPath.Value -notlike '*psmut-coverage-*'
+        }
+    }
+}
+
 Describe 'Invoke-PSMutationBaseline, on a red suite' {
     It 'carries the first line of each failure, without a stray carriage return' {
         # Two claims on one fixture, because the line does two things. A Pester message is an
@@ -413,7 +458,7 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
             }
         }
 
-        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture)
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
 
         $r.Passed | Should-BeFalse
         @($r.FailedTest).Count | Should-Be 1
