@@ -1,6 +1,6 @@
 # Code scanning for PowerShell. CodeQL does NOT support PowerShell, so we use
 # PSScriptAnalyzer (the PowerShell static analyzer), convert its findings to SARIF, and
-# upload them to GitHub code scanning — the same "code_scanning" gate another repository gets
+# upload them to GitHub code scanning — the same "code_scanning" gate any repository can have
 # from CodeQL, with a tool that actually understands the language.
 name: Code scanning
 

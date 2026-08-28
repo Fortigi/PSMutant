@@ -468,7 +468,7 @@ invocations over 259k nodes -- where one indexing pass would serve all of them.
 
 **Measure reach on a consumer, not on this repo.** Neither this module's source nor PSComplexity's
 contains a single ternary, and between them they hold exactly one `switch` -- so neither is any use
-for judging whether an operator matters. another repository, 238 files: 2137 `if` statements, 18 `switch`
+for judging whether an operator matters. A 238-file consumer holds 2137 `if` statements, 18 `switch`
 statements, 59 value clauses against 3 script-block ones. The value clauses are where nearly every
 switch decision lives, and measuring that is what turned this from a leftover into the substantive
 half.
@@ -645,7 +645,7 @@ lets the self-mutation gate stay in the single digits of minutes.
 - **Version**: bump `ModuleVersion` in `PSMutant.psd1` in the PR. `publish.yml` refuses
   to publish when the git tag and `ModuleVersion` disagree. Bugfix → patch, new surface
   → minor.
-- `CHANGELOG.md` is maintained by hand here (unlike another repository, where automation owns
+- `CHANGELOG.md` is maintained by hand here (unlike some projects, where automation owns
   it).
 - **ASCII only** in `src/`, `tests/` and `tools/`. Non-ASCII without a BOM trips
   `PSUseBOMForUnicodeEncodedFile` and fails the lint gate.
