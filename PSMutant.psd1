@@ -40,7 +40,17 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**Runs are about three times faster, and no score moves.** Two costs went, both paid on every
+            ReleaseNotes = '**An absolute `reportPath` is honoured instead of being rewritten.** PowerShell''s `Join-Path`
+concatenates rather than letting a rooted right-hand side win, so a config asking for
+`/var/artifacts/report.json` got `<SourceRoot>/var/artifacts/report.json` -- the report written
+somewhere you did not ask for, with no error, and inside the tree this module otherwise takes care
+never to write to. A CI step pointing its report at an artifacts directory outside the checkout
+found nothing to upload, and the run left a directory chain behind in the repository it had just
+mutated. A relative path still resolves against `-SourceRoot`, and `../shared/report.json` -- which
+was never broken -- still climbs above it. `recheckPath` is derived from the same value and is fixed
+with it.
+
+**Runs are about three times faster, and no score moves.** Two costs went, both paid on every
 mutant. A fresh runspace was created and Pester imported into it for each one -- measured at about
 396 ms, which over a real 801 s run was 219 s, 27%, spent re-importing a module that does not change
 between mutants. The runspace is now built once and reused. And a mutant only ever asks one question
