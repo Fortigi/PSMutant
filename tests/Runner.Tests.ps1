@@ -388,10 +388,16 @@ Describe 'Invoke-PSBoundedPester' {
         # The real non-terminating case is proven in tests/Mutant.Tests.ps1. Here the
         # child merely sleeps, so the deadline is reached in seconds rather than by
         # spinning a mutated loop -- same branch, a fraction of the wall clock.
+        #
+        # ONE second, not two, and the second matters more than it looks. This file is the
+        # covering suite for src/PSMutation.Runner.ps1, so every one of that file's 70 mutants
+        # re-runs this test and waits out the deadline: at two seconds that was ~140s of a 277s
+        # self-mutation run spent sleeping. One is the floor -- TimeoutSeconds is [int] and zero
+        # expires immediately, which is a different branch the config gate refuses outright.
         Mock Get-PSMutationWarmPesterScript { 'param($tests) Start-Sleep -Seconds 30' }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $outcome = Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 2
+        $outcome = Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 1
         $sw.Stop()
 
         $outcome | Should-Be 'TimedOut'
