@@ -369,22 +369,25 @@ Describe 'the sweep reclaims the coverage files older versions left in temp' {
     }
 
     It 'SPARES a coverage file whose owning process is still alive' {
-        # Two runs on one machine must not delete each other's working files, which is the whole
-        # reason the sweep asks about the owner rather than just the name.
+        # A REAL second process, for the reason the sandbox version of this test gives: the
+        # predicate resolves ownership from the id in the name and treats OUR id as reclaimable by
+        # design, so a file named for $PID is one the sweep is entitled to delete.
+        #
+        # The first draft hard-coded id 1 as "something alive". That is true on Linux and false on
+        # Windows, where 1 is not a normal process -- the sweep then found no owner, called the
+        # file abandoned, deleted it, and the assertion failed on the Windows leg only. Exactly the
+        # platform-assumption failure this repo's guidance warns about, and it cost a red CI run.
+        $proc = Start-Process -FilePath 'pwsh' -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 30' -PassThru
         $temp = [System.IO.Path]::GetTempPath()
-        $mine = Join-Path $temp "psmut-coverage-$PID.xml"
-        $existed = Test-Path -LiteralPath $mine
-        '<coverage/>' | Set-Content -LiteralPath $mine -Encoding utf8
+        $live = Join-Path $temp "psmut-coverage-$($proc.Id).xml"
         try {
-            # Our OWN id is treated as reclaimable by design -- a leftover from a previous process
-            # that happened to get this id -- so a live FOREIGN owner is the case to prove. Use the
-            # container's init process, which is alive and is not us.
-            $live = Join-Path $temp 'psmut-coverage-1.xml'
             '<coverage/>' | Set-Content -LiteralPath $live -Encoding utf8
             Clear-PSMutationStaleSandbox
             Test-Path -LiteralPath $live | Should-BeTrue
-            Remove-Item -LiteralPath $live -Force -ErrorAction SilentlyContinue
         }
-        finally { if (-not $existed) { Remove-Item -LiteralPath $mine -Force -ErrorAction SilentlyContinue } }
+        finally {
+            Remove-Item -LiteralPath $live -Force -ErrorAction SilentlyContinue
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
     }
 }
