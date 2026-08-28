@@ -5,7 +5,7 @@ All notable changes to PSMutant are documented here. Format follows
 
 ## [Unreleased]
 
-## [0.4.0] - 2026-08-26
+## [0.4.0] - 2026-08-28
 
 > Renamed from an unreleased 0.3.3. That version was prepared but never tagged and never
 > published -- the gallery went 0.3.2 straight to here -- so nothing pins it and nothing needs a
