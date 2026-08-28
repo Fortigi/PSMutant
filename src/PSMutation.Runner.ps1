@@ -84,18 +84,39 @@ function Invoke-PSMutationBaseline {
         # carriage return, which travels into an exception message and prints as a stray line
         # break in the middle of the gate's one line of output.
         FailedTest      = @($result.Failed | ForEach-Object {
-                # The first NON-EMPTY line, not simply the first. A Pester failure message can
-                # begin with a blank line -- it does on the CI runners and did not on the machine
-                # this was written on -- and taking [0] then yields '', so the gate printed
-                # "Failed: Some.Test -- ." That is the bare test name this whole field exists to
-                # improve on: a run reported by a -Quiet gate prints one line, and a name with no
-                # reason sends the reader to reproduce a failure that is not happening on their
-                # machine. Falls back to the whole message rather than to '' when every line is
-                # blank, because something is always better than nothing here.
-                $lines = @($_.ErrorRecord.Exception.Message -split "\r?\n" |
+                # ErrorRecord is a COLLECTION, not one record -- a test can fail for more than
+                # one reason, and Pester hands back a List. Reading `.Exception.Message` off the
+                # list itself works only by PowerShell's member enumeration, which yields the
+                # inner value for a ONE-element list and NOTHING for a longer one. So the reason
+                # came back '' exactly when a test had several errors, and the gate printed
+                # "Failed: Some.Test -- ."
+                #
+                # That is the bare test name this whole field exists to improve on: a run reported
+                # by a -Quiet gate prints one line, and a name with no reason sends the reader to
+                # reproduce a failure that by definition is not happening on their machine.
+                #
+                # It reproduces under ErrorActionPreference = Stop, which is what CI sets and a
+                # developer machine usually does not -- so it was invisible locally and red on
+                # both legs. Taking [0] is the FIRST reason, matching the first-line rule below:
+                # later errors are usually cascade from it.
+                $record = @($_.ErrorRecord)[0]
+                # And the first NON-EMPTY line of that record. A Pester message is an expectation,
+                # then the actual, then a stack; index 1 would report "at <ScriptBlock>" as the
+                # reason, which is a fact about nothing, and a leading blank line would report ''.
+                $lines = @($record.Exception.Message -split "\r?\n" |
                         Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-                $why = if ($lines.Count -gt 0) { $lines[0].Trim() } else { [string]$_.ErrorRecord.Exception.Message }
-                "$($_.ExpandedPath) -- $why"
+                $why = ''
+                if ($lines.Count -gt 0) { $why = $lines[0].Trim() }
+                # NO dangling separator when there is nothing to say. A test can carry no error
+                # record at all -- when a BeforeAll dies under ErrorActionPreference = Stop, Pester
+                # marks every test in the block Failed and attaches the error to the CONTAINER, not
+                # to the test. The name alone is then the honest answer; "Some.Test -- ." reads as
+                # a reason that was lost rather than one that never existed.
+                #
+                # The container-level record is deliberately NOT reached for. In that case it holds
+                # Pester's own break/continue guard text, which says nothing about the consumer's
+                # failure -- the same "fact about nothing" the first-line rule above avoids.
+                if ($why) { "$($_.ExpandedPath) -- $why" } else { [string]$_.ExpandedPath }
             })
     }
 }
