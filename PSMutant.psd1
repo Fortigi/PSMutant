@@ -50,6 +50,20 @@ mutated. A relative path still resolves against `-SourceRoot`, and `../shared/re
 was never broken -- still climbs above it. `recheckPath` is derived from the same value and is fixed
 with it.
 
+**The coverage XML no longer piles up in your temp directory.** The baseline wrote Pester''s
+coverage report to `$TMPDIR/psmut-coverage-<pid>.xml`, and nothing ever deleted it: the startup
+sweep matched *directories* named `psmut-sandbox-*`, so it could not match that file by
+construction. They accumulated for the life of the machine -- 67 of them on the box this was found
+on. The file is never read back; it exists only because Pester writes one somewhere and its default
+is a `coverage.xml` in your working tree.
+
+It now goes inside the sandbox, which is already removed when the run ends, so the cleanup is the
+one that already exists rather than a second one to keep in step. The startup sweep also reclaims
+the files older versions left behind, so upgrading clears them rather than orphaning them. As a side
+effect it removes another predictable write into world-writable temp -- the same shape as the
+sandbox path, lesser because the content is coverage data rather than source, but there was no
+reason to keep one after removing the other.
+
 **Runs are about three times faster, and no score moves.** Two costs went, both paid on every
 mutant. A fresh runspace was created and Pester imported into it for each one -- measured at about
 396 ms, which over a real 801 s run was 219 s, 27%, spent re-importing a module that does not change

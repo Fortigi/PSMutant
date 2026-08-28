@@ -177,6 +177,13 @@ function Get-PSMutationSandboxOwnerId {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string]$Name)
     if ($Name -match '^psmut-sandbox-(\d+)(-[0-9a-f]+)?$') { return [int]$Matches[1] }
+    # The other artefact a run used to leave named after its process: Pester's coverage XML, which
+    # older versions wrote to temp as "psmut-coverage-<pid>.xml". Nothing ever deleted it -- the
+    # sweep looked only at DIRECTORIES named psmut-sandbox-*, so it could not match by construction,
+    # and they accumulated for the life of the machine. The coverage file now lives inside the
+    # sandbox and goes with it, so this arm is TRANSITIONAL: it exists to reclaim what earlier
+    # versions left behind, and can be deleted once no machine plausibly still has any.
+    if ($Name -match '^psmut-coverage-(\d+)\.xml$') { return [int]$Matches[1] }
     return          # emits nothing, so the caller's variable is $null
 }
 
@@ -225,7 +232,13 @@ function Clear-PSMutationStaleSandbox {
     [CmdletBinding(SupportsShouldProcess, ConfirmImpact = 'Low')]
     param()
     if ($PSCmdlet.ShouldProcess('temp', 'Clear stale mutation sandboxes')) {
-        Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter 'psmut-sandbox-*' -ErrorAction SilentlyContinue |
+        # Directories AND files. The coverage XML older versions left in temp is a file, and a
+        # sweep restricted to directories is what let 67 of them pile up on the machine this was
+        # found on. Both shapes are named after the process that made them, so one ownership test
+        # answers for both -- Test-PSMutationSandboxAbandoned reads Name and CreationTime, which a
+        # FileInfo carries exactly as a DirectoryInfo does.
+        @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter 'psmut-sandbox-*' -ErrorAction SilentlyContinue) +
+        @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -File -Filter 'psmut-coverage-*.xml' -ErrorAction SilentlyContinue) |
             # A reparse point is skipped rather than swept. Temp is world-writable, so anyone can
             # leave a symlink named like a sandbox; recursively removing one asks the sweep to
             # follow a path an attacker chose. Nothing this module creates is ever a link, so
