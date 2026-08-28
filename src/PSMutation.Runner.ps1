@@ -27,7 +27,11 @@ function Invoke-PSMutationBaseline {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string[]]$TestPath,
-        [Parameter(Mandatory)] [string[]]$MutateFiles
+        [Parameter(Mandatory)] [string[]]$MutateFiles,
+        # Where Pester's coverage XML goes. Mandatory rather than defaulted to temp: the sandbox is
+        # the one directory this run owns and disposes of, and a default would put the file back in
+        # shared temp for any caller who forgot.
+        [Parameter(Mandatory)] [string]$SandboxRoot
     )
 
     $cfg = New-PesterConfiguration
@@ -36,9 +40,21 @@ function Invoke-PSMutationBaseline {
     $cfg.Output.Verbosity = 'None'
     $cfg.CodeCoverage.Enabled = $true
     $cfg.CodeCoverage.Path = $MutateFiles
-    # Read coverage from the result object; steer the XML to temp so we don't
-    # litter a coverage.xml in the working tree (Pester's default output path).
-    $cfg.CodeCoverage.OutputPath = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-coverage-$PID.xml"
+    # Coverage is read from the RESULT OBJECT below; this file is never opened. The path exists
+    # only because Pester writes one somewhere, and its default is a coverage.xml in the working
+    # tree -- which is the thing to avoid.
+    #
+    # It goes in the SANDBOX, not temp. In temp it was "psmut-coverage-$PID.xml", which nothing
+    # ever deleted: the startup sweep matches directories named psmut-sandbox-*, so it could not
+    # match this file by construction, and they accumulated for the life of the machine -- 67 of
+    # them on the box this was found on. The sandbox is already removed in the run's finally, so
+    # putting it there makes the cleanup the one that already exists rather than a second one to
+    # keep in step.
+    #
+    # It also stops a predictable write into world-writable temp, which is the same shape as the
+    # sandbox path that was fixed in #95 -- lesser, because the content is coverage data rather
+    # than source, but there is no reason to keep one after removing the other.
+    $cfg.CodeCoverage.OutputPath = Join-Path $SandboxRoot 'coverage.xml'
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $result = Invoke-Pester -Configuration $cfg
