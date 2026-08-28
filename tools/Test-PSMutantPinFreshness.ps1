@@ -27,12 +27,10 @@ if (-not (Test-Path -LiteralPath $PinsPath)) { throw "Cannot check pins: '$PinsP
 
 $pins = Get-Content -LiteralPath $PinsPath
 # Gallery name -> pins.env key. BOTH Pester keys are watched and they are different decisions:
-# PESTER_VERSION is the estate pin, PESTER_COMPAT_VERSION is the OTHER version the
-# compatibility guard runs under, and it is deliberately old. They go stale independently, and
-# the compat pin going stale is the one that would quietly stop proving the >= 5.0.0 promise.
-# PESTER_COMPAT_VERSION is deliberately absent: it is the version the suite does NOT use, and
-# "is there a newer one" is the wrong question for a pin whose purpose is to be behind. Its
-# invariant -- that it differs from the estate pin, and is older -- is checked separately below.
+# PESTER_VERSION is the estate pin. PESTER_COMPAT_VERSIONS is deliberately absent from this
+# list: those legs are the versions the suite does NOT use, and "is there a newer one" is the
+# wrong question for pins whose purpose is to be behind. Their invariant -- that the list still
+# reaches below the estate pin, and covers the declared floor -- is checked separately below.
 $watched = @(
     @{ Name = 'Pester';           Key = 'PESTER_VERSION' }
     @{ Name = 'PSScriptAnalyzer'; Key = 'PSSA_VERSION' }
@@ -59,10 +57,14 @@ foreach ($w in $watched) {
     if ($fault) { $faults.Add($fault) }
 }
 
-# The compatibility pin, on its own terms.
+# The compatibility legs, on their own terms. The floor comes from the module's own guard rather
+# than a number repeated here: a copy would be one more place for the promise to drift from what
+# the code enforces, which is the drift #161 was filed about.
+$floor = Get-PSMutantPesterFloor -Line (Get-Content -LiteralPath (Join-Path $repo 'src/PSMutation.Pester.ps1'))
 $compat = Get-PSMutantCompatPinFault `
     -EstateVersion (Get-PSMutantPinValue -Line $pins -Name 'PESTER_VERSION') `
-    -CompatVersion (Get-PSMutantPinValue -Line $pins -Name 'PESTER_COMPAT_VERSION')
+    -CompatVersion @((Get-PSMutantPinValue -Line $pins -Name 'PESTER_COMPAT_VERSIONS') -split ' ' | Where-Object { $_ }) `
+    -FloorVersion $floor
 if ($compat) { $faults.Add($compat) }
 
 return [string[]]@($faults)

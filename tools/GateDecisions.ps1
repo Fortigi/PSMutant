@@ -142,35 +142,78 @@ function Get-PSMutantUnloadedFile {
     return $unloaded
 }
 
+function Get-PSMutantPesterFloor {
+    <#
+    .SYNOPSIS
+        The Pester floor the module actually ENFORCES, read from its own guard.
+    .DESCRIPTION
+        Read rather than repeated. The floor appears in the manifest description, the README and
+        this guard, and #161 is what happens when those drift: the promise said 5.0.0, the code
+        needed 5.2.0, and nothing compared them. A gate that hard-coded the number here would be
+        a fourth copy to keep in step.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$Line)
+    foreach ($l in $Line) {
+        if ($l -match "\`$loaded\.Version -lt \[version\]'([0-9]+\.[0-9]+\.[0-9]+)'") { return $Matches[1] }
+    }
+    return $null
+}
+
 function Get-PSMutantCompatPinFault {
     <#
     .SYNOPSIS
-        The fault, if any, in the deliberately-old compatibility pin.
+        The fault, if any, in the compatibility LEG LIST.
+    .DESCRIPTION
+        This used to guard a single deliberately-old pin, and its invariant was difference: the
+        compat version had to be OLDER than the estate version, or the guard ran under the same
+        Pester as the suite and proved nothing while looking more up to date.
+
+        It is a list now (#161), one leg per supported minor, and the invariant moves with it.
+        Freshness is still the wrong question -- most of these are meant to be behind -- but
+        "differs from the estate pin" no longer describes it either, because the newest leg
+        legitimately IS the estate version. What has to stay true is that the list still reaches
+        BELOW the estate pin: a list that crept up until every leg matched the suite's own Pester
+        would pass every gate and prove nothing about the range the manifest promises.
+
+        The floor is checked here rather than assumed, for the reason #161 exists: the number
+        consumers are given must be one the legs actually execute.
     #>
     [OutputType([string])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [AllowEmptyString()] [string]$EstateVersion,
-        [Parameter(Mandatory)] [AllowEmptyString()] [string]$CompatVersion
+        [Parameter(Mandatory)] [AllowEmptyString()] [AllowEmptyCollection()] [string[]]$CompatVersion,
+        # The floor the manifest promises. A leg must cover its MINOR -- not its exact patch,
+        # which is free to advance under the newest-patch-per-minor rule.
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$FloorVersion
     )
-    # "Is there a newer version" is the WRONG QUESTION for this pin, and asking it was a real
-    # mistake caught by running the watcher: it reported 5.8.0 as stale against 6.1.0. The
-    # compatibility guard exists to run a real mutation under the Pester the suite does NOT
-    # use, proving the manifest's >= 5.0.0 promise. Bumped to the newest, it would equal the
-    # estate pin and prove nothing -- while looking more up to date.
-    #
-    # So the invariant is difference, not freshness.
-    if ([string]::IsNullOrWhiteSpace($EstateVersion) -or [string]::IsNullOrWhiteSpace($CompatVersion)) {
-        return 'PESTER_VERSION and PESTER_COMPAT_VERSION must both be set: the compatibility guard runs under the one the suite does not.'
+    $legs = @($CompatVersion | Where-Object { $_ })
+    if ([string]::IsNullOrWhiteSpace($EstateVersion) -or $legs.Count -eq 0) {
+        return 'PESTER_VERSION and PESTER_COMPAT_VERSIONS must both be set: a compatibility gate over zero versions passes every time.'
     }
-    if ([version]$CompatVersion -eq [version]$EstateVersion) {
-        return ("PESTER_COMPAT_VERSION ($CompatVersion) equals PESTER_VERSION. The compatibility " +
-            'guard would then run under the same Pester as the suite and prove nothing about the ' +
-            "manifest's >= 5.0.0 promise -- while looking more up to date than a pin that works.")
+    $seen = @{}
+    foreach ($leg in $legs) {
+        if ($seen.ContainsKey($leg)) {
+            return "PESTER_COMPAT_VERSIONS lists $leg twice. A repeated leg costs a whole run and proves nothing the first did not."
+        }
+        $seen[$leg] = $true
     }
-    if ([version]$CompatVersion -gt [version]$EstateVersion) {
-        return ("PESTER_COMPAT_VERSION ($CompatVersion) is newer than PESTER_VERSION ($EstateVersion). " +
-            'The guard is meant to prove the module works under an OLDER Pester than the estate uses.')
+    if (-not (@($legs | Where-Object { [version]$_ -lt [version]$EstateVersion }).Count)) {
+        return ("PESTER_COMPAT_VERSIONS has no leg older than PESTER_VERSION ($EstateVersion). " +
+            'Every leg would then run under a Pester at least as new as the suite uses, which ' +
+            "proves nothing about the range the manifest promises.")
+    }
+    if ([string]::IsNullOrWhiteSpace($FloorVersion)) {
+        return 'The Pester floor is not set, so nothing can check that a leg covers it.'
+    }
+    $floor = [version]$FloorVersion
+    $minors = @($legs | ForEach-Object { $v = [version]$_; "$($v.Major).$($v.Minor)" })
+    if ($minors -notcontains "$($floor.Major).$($floor.Minor)") {
+        return ("PESTER_COMPAT_VERSIONS has no leg on Pester $($floor.Major).$($floor.Minor), which is the floor " +
+            'the manifest promises. The number consumers are given has to be one the legs execute -- ' +
+            'that it was not is exactly what #161 was filed about.')
     }
     return $null
 }

@@ -5,7 +5,7 @@
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
     Copyright         = '(c) Fortigi. MIT licensed.'
-    Description       = 'Mutation testing for PowerShell. Injects small faults (flip -eq to -ne, $true to $false, N to N+1, drop -not) into your scripts using the PowerShell AST and reports how many your Pester suite catches - the metric line coverage cannot give you. Runs mutants in a throwaway sandbox so your source is never modified. Requires Pester 5.0.0 or later AT RUN TIME, and deliberately does not declare it as a RequiredModule: PSMutant runs under whichever Pester >= 5 you have loaded rather than importing one for you. Install Pester yourself if you do not already have it.'
+    Description       = 'Mutation testing for PowerShell. Injects small faults (flip -eq to -ne, $true to $false, N to N+1, drop -not) into your scripts using the PowerShell AST and reports how many your Pester suite catches - the metric line coverage cannot give you. Runs mutants in a throwaway sandbox so your source is never modified. Requires Pester 5.2.0 or later AT RUN TIME, and deliberately does not declare it as a RequiredModule: PSMutant runs under whichever Pester >= 5.2.0 you have loaded rather than importing one for you. Install Pester yourself if you do not already have it.'
     PowerShellVersion = '7.2'
 
     # One function. Get-PSMutationCandidate and Set-PSMutationText used to be exported too,
@@ -40,7 +40,22 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**Several of these make a run that used to pass fail, and one makes a score go down. In every case
+            ReleaseNotes = '**The Pester floor is 5.2.0, not 5.0.0, and it is now executed rather than declared.** The
+manifest and README promised 5.0.0 and the gate ran exactly one version, so the number consumers
+were given had never once been tried. Pointed at it, the module fails: PSMutant calls
+`New-PesterConfiguration`, which **arrives in 5.2.0** -- measured across every installed version,
+not looked up -- and the baseline cannot do without it, because code coverage cannot be configured
+through the simple parameter set. Under 5.0.x and 5.1.x the command is not found, PowerShell
+autoloads `Pester` by NAME to the newest installed, and that collides with the `Pester.dll` already
+in the process.
+
+If you are on 5.0.x or 5.1.x, PSMutant did not work for you before this release either; it now says
+so instead of failing with an assembly-version error that never mentions this module. The gate runs
+**one leg per minor** from 5.2.2 to 6.1.0, each in its own process, so the floor is proven rather
+than asserted. Floor-plus-latest was considered and rejected: a defect arriving mid-range is
+invisible at both ends, which is exactly the shape of this one.
+
+**Several of these make a run that used to pass fail, and one makes a score go down. In every case
 the new answer is the honest one.**
 
 **SECURITY -- the mutation sandbox no longer uses a predictable path.** It was
@@ -73,7 +88,7 @@ consumer repository, interleaved: **221 s -> 71 s** over 225 mutants, 225 killed
 sides, every per-mutant verdict identical.
 
 The fail-fast half needs `SkipRemainingOnFailure`, which arrived in **Pester 5.3.0**, and is set
-only when the loaded Pester has it -- so 5.0.0 to 5.2.x simply misses that part of the speedup.
+only when the loaded Pester has it -- so 5.2.x simply misses that part of the speedup.
 
 **`ConditionForcing` now reaches the ternary operator and every `switch` clause, `default`
 included.** It looked for one node type, `IfStatementAst`, so `$x = $cond ? $a : $b` was invisible
