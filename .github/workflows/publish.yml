@@ -76,6 +76,12 @@ jobs:
           $cfg.Run.Path = './tests'
           $cfg.Run.PassThru = $true
           $cfg.Output.Verbosity = 'Normal'
+          # Set here for the same reason ci.yml sets it: Pester 6 keeps the classic Should
+          # syntax working, so without this the suite may drift back into a mix one test at a
+          # time. A publish gate that permits what the merge gate forbids is the weaker of the
+          # two in the direction that matters -- it is the last one to run before something
+          # irreversible. Found by the parity gate on its first run here.
+          $cfg.Should.DisableV5 = $true
           $r = Invoke-Pester -Configuration $cfg
           # FailedCount alone cannot see a test file that failed to PARSE: it contributes
           # zero tests and zero failures, so the run reads green while a whole file never
