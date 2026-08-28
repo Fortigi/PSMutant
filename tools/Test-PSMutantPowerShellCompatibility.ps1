@@ -189,6 +189,14 @@ function Install-PSMutantRuntime {
 }
 
 if ($Child) {
+    # FIRST, and load-bearing: it is how the caller tells a host that NEVER STARTED from a module
+    # that misbehaved. PowerShell 7.0 and 7.1 are built on .NET Core 3.1 and .NET 5 and need
+    # libssl 1.1, which a current Linux distribution no longer ships -- they die with "No usable
+    # version of libssl was found" before executing a single line of this file, and the process
+    # exit code alone is indistinguishable from a real difference. Borrowed from the sibling's
+    # equivalent gate, which had it and this one did not.
+    Write-Output "STARTED $($PSVersionTable.PSVersion)"
+
     # ABSENT is a distinct answer from broken, exactly as in the Pester gate.
     if (-not (Get-Module Pester -ListAvailable | Where-Object { $_.Version -eq [version]$PesterVersion })) {
         Write-Output "MISSING: Pester $PesterVersion is not installed where PowerShell $($PSVersionTable.PSVersion) can see it."
@@ -283,9 +291,17 @@ try {
             $faults.Add("PowerShell ${v}: could not be downloaded or unpacked -- $($_.Exception.Message)")
             continue
         }
-        & $exe -NoProfile -File $PSCommandPath -Version $v -FixtureRoot $root `
-            -PesterVersion $PesterVersion -Expected $expected -Child
-        switch ($LASTEXITCODE) {
+        # Captured rather than streamed, so the STARTED marker can be looked for. Written out
+        # afterwards either way: a leg that fails is exactly when its output is wanted.
+        $out = & $exe -NoProfile -File $PSCommandPath -Version $v -FixtureRoot $root `
+            -PesterVersion $PesterVersion -Expected $expected -Child 2>&1
+        $code = $LASTEXITCODE
+        $out | ForEach-Object { Write-Output "  $_" }
+        if (-not (@($out) -match '^STARTED ')) {
+            $faults.Add("PowerShell ${v}: the host never started, so nothing was proven about this module. On Linux this is usually a missing system library the old runtime needs.")
+            continue
+        }
+        switch ($code) {
             0 { }
             3 { $faults.Add("PowerShell ${v}: Pester $PesterVersion not visible from that host; the gate could not run.") }
             4 { $faults.Add("PowerShell ${v}: the FIXTURE does not run there, so nothing was proven about this module.") }
