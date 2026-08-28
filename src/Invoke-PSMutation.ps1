@@ -144,7 +144,7 @@ function Invoke-PSMutation {
         # tests rather than a true one about the config.
         $missing = Get-PSMutationMissingSandboxPath -Paths (@($t.Mutate) + @($t.AllTests)) -Subtrees $subtrees
         if ($missing) { throw $missing }
-        $baseline = Invoke-PSMutationBaseline -TestPath $t.AllTests -MutateFiles $t.Mutate
+        $baseline = Invoke-PSMutationBaseline -TestPath $t.AllTests -MutateFiles $t.Mutate -SandboxRoot $sandbox
         Assert-PSMutationBaselineGreen -Baseline $baseline
         $timeout = Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds $baseline.DurationSeconds
         Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Good' `
