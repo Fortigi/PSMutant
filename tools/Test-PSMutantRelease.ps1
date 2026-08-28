@@ -380,7 +380,7 @@ if ($MyInvocation.InvocationName -ne '.') {
     # warn on every release -- the section is always longer -- and quote a number that has
     # nothing to do with what shipped.
     if ($bounded.Length -lt $consumer.Length) {
-        Write-Host "::warning::Release notes for $version are $($notes.Length) characters; the gallery accepts 10600 when they come from a PowerShell manifest. Publishing an abridged $($bounded.Length) with a link to the full CHANGELOG entry."
+        Write-Host "::warning::Release notes for $version are $($consumer.Length) characters; the gallery accepts 10600 when they come from a PowerShell manifest. Publishing an abridged $($bounded.Length) with a link to the full CHANGELOG entry."
     }
 
     # The repo manifest is checked against the same string, so there is no unchecked second
