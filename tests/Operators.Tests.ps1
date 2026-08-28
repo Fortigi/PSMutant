@@ -244,10 +244,30 @@ function Invoke-Phase {
     if ($SyncUsers) { Write-Output 'ran' }
 }
 '@ | Set-Content $script:bareFixture -Encoding utf8
+
+        # The two constructs the operator used to be blind to, alongside the shapes it must
+        # still decline. `switch` is the idiomatic PowerShell multi-way decision and a ternary
+        # compiles to no if-node at all, so a consumer leaning on either saw ConditionForcing
+        # report almost nothing.
+        $script:decisionFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-decision-$PID.ps1"
+        @'
+function Get-Kind {
+    param($x, $mode)
+    $kind = switch ($x) {
+        1              { 'one' }
+        { $_ -gt 5 }   { 'big' }
+        { $mode }      { 'moded' }
+        default        { 'none' }
+    }
+    $label = $x ? 'set' : 'unset'
+    while ($x ? $true : $false) { break }
+    return "$kind/$label"
+}
+'@ | Set-Content $script:decisionFixture -Encoding utf8
     }
 
     AfterAll {
-        Remove-Item $script:structFixture, $script:bareFixture -ErrorAction SilentlyContinue
+        Remove-Item $script:structFixture, $script:bareFixture, $script:decisionFixture -ErrorAction SilentlyContinue
     }
 
     Context 'ConditionForcing' {
@@ -275,6 +295,60 @@ function Invoke-Phase {
             # Clauses after the first are where a fallback CHAIN lives, and precedence
             # between them is exactly the risk in a chain of reference lookups.
             @($script:forced | Where-Object Original -eq '$Ref.Name').Count | Should-Be 2
+        }
+
+        It 'forces a TERNARY condition, which compiles to no if-node at all' {
+            # A reader sees an obvious branch; the AST has no IfStatementAst, so the operator
+            # was blind to it -- and every expression operator is blind too when the condition
+            # is a bare variable, which is the usual shape.
+            $tern = @(Get-PSMutationCandidate -Path $script:decisionFixture -Operators @('ConditionForcing') |
+                    Where-Object { $_.Line -eq 9 })
+            @($tern).Count | Should-Be 2
+            ($tern.Mutated | Sort-Object) | Should-BeCollection @('$false', '$true')
+        }
+
+        It 'forces a SCRIPT-BLOCK switch clause, both ways' {
+            # A script-block clause is evaluated as a condition, so forcing it behaves exactly
+            # like an if: { $true } always matches and shadows every later clause, { $false }
+            # never matches.
+            $sb = @(Get-PSMutationCandidate -Path $script:decisionFixture -Operators @('ConditionForcing') |
+                    Where-Object Original -eq '{ $_ -gt 5 }')
+            @($sb).Count | Should-Be 2
+            ($sb.Mutated | Sort-Object) | Should-BeCollection @('{ $false }', '{ $true }')
+        }
+
+        It 'declines a VALUE switch clause, because forcing one does not force a decision' {
+            # Measured, not assumed. PowerShell matches a clause with `$_ -eq <clause>`, so
+            # forcing `1` to $true does not mean "always match" the way it does for an if:
+            #
+            #   switch ($x) { 1 { 'one' } default { 'none' } }  forced to $true
+            #     x = 1      one  -> none     (stopped matching)
+            #     x = $true  none -> one      (started matching)
+            #
+            # That is a value substitution with murky semantics, as likely to be equivalent as
+            # informative -- and NumberLiteral and StringLiteral already perturb those values on
+            # their own terms. Making a value clause always-match needs rewriting it INTO a
+            # script block, which is a different mutation; #46 records it as the remaining half.
+            @(Get-PSMutationCandidate -Path $script:decisionFixture -Operators @('ConditionForcing') |
+                    Where-Object Original -eq '1') | Should-BeCollection @()
+        }
+
+        It 'declines the DEFAULT clause, which has no condition to force' {
+            # It is not in Clauses at all -- SwitchStatementAst carries it separately -- so this
+            # pins that the walk does not reach for it. Removing the whole clause would be the
+            # analogous mutation, and that is statement removal rather than condition forcing.
+            @(Get-PSMutationCandidate -Path $script:decisionFixture -Operators @('ConditionForcing') |
+                    Where-Object Original -like '*default*') | Should-BeCollection @()
+        }
+
+        It 'leaves a ternary in a LOOP CONDITION alone' {
+            # The shared no-mutate zone, which the two new constructs have to respect exactly as
+            # the if does: forcing `while ($x ? $true : $false)` to $true is an unconditional
+            # hang, not a fault worth reporting. Line 10 is the while; line 9 is the assignment
+            # above it, and the test above proves that one IS forced -- so this is a pair, not a
+            # bare absence that would pass if the operator emitted nothing at all.
+            @(Get-PSMutationCandidate -Path $script:decisionFixture -Operators @('ConditionForcing') |
+                    Where-Object { $_.Line -eq 10 }) | Should-BeCollection @()
         }
 
         It 'skips a condition that is already the value it would be forced to' {
