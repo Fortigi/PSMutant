@@ -117,7 +117,7 @@ Describe 'Invoke-PSMutationLoop' {
         # Reachable two ways: a mutate file with no covered candidates, and a
         # -RecheckFrom run whose previous survivors are all dead. Both are ordinary
         # outcomes, so neither may throw.
-        $r = Invoke-PSMutationLoop -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
         @($r).Count | Should-Be 0
     }
@@ -134,7 +134,7 @@ Describe 'Invoke-PSMutationLoop' {
         }
         $map = @{ $script:fixture = @('specific.Tests.ps1') }
 
-        $r = Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile $map -AllTests @('all-tests.ps1') `
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile $map -AllTests @('all-tests.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
 
         $script:seenTests | Should-BeCollection @('specific.Tests.ps1')
@@ -150,7 +150,7 @@ Describe 'Invoke-PSMutationLoop' {
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
         }
 
-        Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
+        Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) | Out-Null
 
         # [[]1/1] escapes the bracket: in a wildcard a bare [1/1] is a character class.
@@ -170,7 +170,7 @@ Describe 'Invoke-PSMutationLoop' {
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
         }
 
-        Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
+        Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet | Out-Null
 
         Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Quiet }
@@ -190,7 +190,7 @@ Describe 'Invoke-PSMutationLoop' {
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
         }
-        $r = Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('all-tests.ps1') `
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('all-tests.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
         $script:seenTests | Should-BeCollection @('all-tests.ps1')
         $r[0].Status     | Should-Be 'Killed'
@@ -695,7 +695,7 @@ Describe 'the mutant row the report publishes' {
             Description = '-eq -> -ne'; StartOffset = 0; EndOffset = 1; Mutated = ' '
             Original = '-eq'
         }
-        $r = Invoke-PSMutationLoop -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
 
         # Function joined this list in #3, deliberately: an equivalence declaration keyed on
@@ -726,7 +726,7 @@ Describe 'the mutate file is read once per FILE, not twice per mutant' {
                 Description = "m$_"; StartOffset = 0; EndOffset = 1; Mutated = ' '
             }
         }
-        $r = Invoke-PSMutationLoop -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
 
         @($r).Count | Should-Be 5
@@ -763,7 +763,7 @@ Describe 'the mutate file is read once per FILE, not twice per mutant' {
             }
         }
         try {
-            $null = Invoke-PSMutationLoop -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
+            $null = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
                 -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
             # The second mutant must have been handed the original, not what was on disk by then.
             @($script:seenOriginals).Count | Should-Be 2

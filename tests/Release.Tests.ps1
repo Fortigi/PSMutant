@@ -310,6 +310,26 @@ Describe 'the real CHANGELOG, as the gallery will see it' {
         Should-NotBeNull -Actual $script:consumer
     }
 
+    It 'gives each release section at most one heading of a kind' {
+        # A merge or a rebase readily produces two '### For consumers' blocks under one release,
+        # because git resolves the two insertions independently and neither side is a textual
+        # conflict. The result is a document that reads as two separate changelogs stapled
+        # together, and Get-PSMutantConsumerNotes takes the FIRST block -- so the second one's
+        # entries are silently absent from what the gallery publishes.
+        #
+        # Happened three times while writing one feature, every time recovered by hand. Asserted
+        # over every release section, not just the current one, since a bad rebase lands wherever
+        # the conflict was.
+        $sections = [regex]::Matches($script:changelog, '(?ms)^## \[(?<name>[^\]]+)\][^\n]*\n(?<body>.*?)(?=^## \[|\z)')
+        @($sections).Count | Should-BeGreaterThan 0 -Because 'the fixture must find sections, or this asserts nothing'
+        foreach ($sec in $sections) {
+            $headings = @([regex]::Matches($sec.Groups['body'].Value, '(?m)^### (.+)$') |
+                    ForEach-Object { $_.Groups[1].Value.Trim() })
+            $dupes = @($headings | Group-Object | Where-Object Count -gt 1 | ForEach-Object Name)
+            $dupes -join ', ' | Should-Be '' -Because "release $($sec.Groups['name'].Value) repeats a heading"
+        }
+    }
+
     It 'carries no issue references a consumer cannot resolve' {
         # The specific defect on the 0.3.0 page: ten [#nn] links, undefined in the notes, so
         # they render as literal text pointing nowhere.

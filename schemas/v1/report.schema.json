@@ -27,10 +27,18 @@
     },
     "producedBy": {
       "type": "object",
-      "required": ["module", "version"],
+      "required": [
+        "module",
+        "version"
+      ],
       "properties": {
-        "module": { "type": "string" },
-        "version": { "type": "string", "description": "The ModuleVersion that produced the report." }
+        "module": {
+          "type": "string"
+        },
+        "version": {
+          "type": "string",
+          "description": "The ModuleVersion that produced the report."
+        }
       }
     },
     "generatedAt": {
@@ -40,57 +48,95 @@
     },
     "durations": {
       "type": "object",
-      "required": ["baselineSeconds", "totalSeconds", "perMutantTimeoutSeconds"],
+      "required": [
+        "baselineSeconds",
+        "totalSeconds",
+        "perMutantTimeoutSeconds"
+      ],
       "properties": {
-        "baselineSeconds": { "type": "number", "description": "How long the unmutated suite took." },
-        "totalSeconds": { "type": "number", "description": "The whole run, measured after the last mutant." },
+        "baselineSeconds": {
+          "type": "number",
+          "description": "How long the unmutated suite took."
+        },
+        "totalSeconds": {
+          "type": "number",
+          "description": "The whole run, measured after the last mutant."
+        },
         "perMutantTimeoutSeconds": {
-          "type": ["number", "null"],
+          "type": [
+            "number",
+            "null"
+          ],
           "description": "The deadline each mutant was given, recorded beside the baseline it was derived from -- which is what makes comparing them mean anything. A timeout expiry is scored as a kill, so a suite drifting toward this bound inflates the score before anything visibly breaks."
         }
       }
     },
     "operators": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "The operator set, SORTED. Recorded because mutant ids are AST-walk positions: they only refer to the same code for an identical source and an identical operator set."
     },
     "sourceHashes": {
-      "type": ["object", "null"],
-      "additionalProperties": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+      "type": [
+        "object",
+        "null"
+      ],
+      "additionalProperties": {
+        "type": "string",
+        "pattern": "^[0-9a-f]{64}$"
+      },
       "description": "SHA256 per mutated file, lowercase hex. With 'operators', this is what lets a later -RecheckFrom prove the ids in this report still mean what they meant."
     },
     "survivors": {
       "type": "array",
-      "items": { "$ref": "#/definitions/mutant" },
+      "items": {
+        "$ref": "#/definitions/mutant"
+      },
       "description": "The mutants no test killed. A subset of 'mutants', repeated here because it is the working list."
     },
     "mutants": {
       "type": "array",
-      "items": { "$ref": "#/definitions/mutant" },
+      "items": {
+        "$ref": "#/definitions/mutant"
+      },
       "description": "Every mutant evaluated in this run."
     },
-
     "mutationScore": {
       "type": "number",
       "description": "Full runs only. Percentage of killed over total, where total EXCLUDES declared equivalents."
     },
-    "total": { "type": "integer", "description": "Full runs only. Mutants counted in the score, excluding declared equivalents." },
-    "killed": { "type": "integer", "description": "Full runs only." },
-    "survived": { "type": "integer", "description": "Full runs only." },
-    "timedOut": { "type": "integer", "description": "Full runs only. Mutants that hit the per-mutant timeout. INCLUDED in killed, not beside it, so killed + survived still reconciles against total. Reported apart because a hang is not evidence the suite caught anything, and a rising count means the timeout is too tight or a suite too slow." },
+    "total": {
+      "type": "integer",
+      "description": "Full runs only. Mutants counted in the score, excluding declared equivalents."
+    },
+    "killed": {
+      "type": "integer",
+      "description": "Full runs only."
+    },
+    "survived": {
+      "type": "integer",
+      "description": "Full runs only."
+    },
+    "timedOut": {
+      "type": "integer",
+      "description": "Full runs only. Mutants that hit the per-mutant timeout. INCLUDED in killed, not beside it, so killed + survived still reconciles against total. Reported apart because a hang is not evidence the suite caught anything, and a rising count means the timeout is too tight or a suite too slow."
+    },
     "declaredEquivalent": {
       "type": "integer",
       "description": "Full runs only. How many mutants the config argued cannot change behaviour, and which are therefore absent from 'total'. A reader who cannot see this number cannot tell a real 100% from a declared one."
     },
     "staleEquivalents": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Full runs only. Equivalence declarations that are no longer true or no longer identify exactly one mutant. Non-empty means the run failed on them."
     },
     "filesMutated": {
       "type": "integer",
-      "description": "Full runs only, and OPTIONAL rather than required, unlike the disclosures beside it. Those were always written and merely undeclared, so requiring them invalidated no document that ever existed; this field is genuinely new, and requiring it would make every report produced before it fail validation -- which is the one thing schemaVersion 1 promises not to do, since it moves only when a field changes meaning or disappears, never when one is added. A consumer branches on its presence. How many files the config asked to mutate. The denominator the score was computed over: 100% across eight files and 100% across nine are the same number, and only one covers the ninth. It counts the CONFIGURED list, never a directory listing -- a run cannot know about a file the config never named, so this says what it was pointed at rather than what it might have missed."
+      "description": "Full runs only, and optional. How many files the config asked to mutate -- the configured list, not a directory listing. Absent from reports written before this field existed."
     },
     "skippedAsUncovered": {
       "type": "integer",
@@ -98,43 +144,94 @@
     },
     "filesWithNoMutants": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Full runs only. Files in 'mutate' that produced no candidate at all. Empty is the ordinary answer and is written as [], never as [null]."
     },
     "filesWithoutTestMapping": {
       "type": "array",
-      "items": { "type": "string" },
+      "items": {
+        "type": "string"
+      },
       "description": "Full runs only. Files in 'mutate' with no 'tests' entry, which therefore fall back to running the whole suite -- correct, but slow, and otherwise invisible. Empty is the ordinary answer and is written as [], never as [null]: these three fields were absent from this schema until #158, which is why a [null] here went unnoticed for two releases. Declaring 'items' is what makes that shape invalid rather than merely wrong."
     },
     "thresholds": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "Full runs only. The gate as configured; null when none was set, which means report-only.",
       "properties": {
-        "high": { "type": ["number", "null"] },
-        "low": { "type": ["number", "null"] },
-        "break": { "type": ["number", "null"], "description": "Unset means report-only: the run does not fail on the score." }
+        "high": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "low": {
+          "type": [
+            "number",
+            "null"
+          ]
+        },
+        "break": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Unset means report-only: the run does not fail on the score."
+        }
       }
     },
-
     "mode": {
-      "const": "Recheck",
-      "description": "Present only on a partial run. Its absence is what identifies a full report."
+      "enum": [
+        "Recheck",
+        "Partial"
+      ],
+      "description": "The kind of run this document reports. Absent on a full run. 'Recheck' re-ran a previous report's survivors; 'Partial' is a full run interrupted before it finished. Neither carries mutationScore."
     },
-    "note": { "type": "string", "description": "Recheck only. The caveat, restated in the artifact so a partial run cannot be read as a measurement." },
-    "recheckedFrom": { "type": ["string", "null"], "description": "Recheck only. The report this run took its survivors from." },
-    "priorSurvivors": { "type": "integer", "description": "Recheck only. How many survivors the source report held." },
-    "rechecked": { "type": "integer", "description": "Recheck only. How many were actually re-run: fewer than priorSurvivors, because declared equivalents are skipped." },
-    "nowKilled": { "type": "integer", "description": "Recheck only. How many of them a test now kills." }
+    "note": {
+      "type": "string",
+      "description": "Recheck only. The caveat, restated in the artifact so a partial run cannot be read as a measurement."
+    },
+    "recheckedFrom": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Recheck only. The report this run took its survivors from."
+    },
+    "priorSurvivors": {
+      "type": "integer",
+      "description": "Recheck only. How many survivors the source report held."
+    },
+    "rechecked": {
+      "type": "integer",
+      "description": "Recheck only. How many were actually re-run: fewer than priorSurvivors, because declared equivalents are skipped."
+    },
+    "nowKilled": {
+      "type": "integer",
+      "description": "Recheck only. How many of them a test now kills."
+    },
+    "evaluated": {
+      "type": "integer",
+      "description": "Partial runs only. Mutants evaluated before the run was interrupted."
+    },
+    "planned": {
+      "type": "integer",
+      "description": "Partial runs only. Mutants the run intended to evaluate."
+    }
   },
   "allOf": [
     {
-      "description": "A recheck carries counts and never a score. Forbidding 'mutationScore' is the point rather than a formality: a partial number quoted as a real one is the failure this tool exists to prevent, so the format makes it impossible to report one by accident. Written as a boolean-false property schema rather than as \"not\": PowerShell's Test-Json silently IGNORES the \"not\" keyword, so the obvious spelling of this rule is a clause that can never fail.",
-      "if": { "required": ["mode"] },
-      "then": {
-        "required": ["mode", "note", "priorSurvivors", "rechecked", "nowKilled"],
-        "properties": { "mutationScore": false }
+      "description": "A document carrying mutationScore is a full report and must carry the full-run disclosures beside it; one without a score must say which other kind of run it was.",
+      "if": {
+        "required": [
+          "mutationScore"
+        ]
       },
-      "else": {
+      "then": {
         "required": [
           "mutationScore",
           "total",
@@ -147,6 +244,58 @@
           "filesWithoutTestMapping",
           "thresholds"
         ]
+      },
+      "else": {
+        "required": [
+          "mode"
+        ]
+      }
+    },
+    {
+      "description": "A recheck carries counts and never a score. Written as a boolean-false property schema rather than \"not\", which PowerShell's Test-Json silently ignores.",
+      "if": {
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "const": "Recheck"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "note",
+          "priorSurvivors",
+          "rechecked",
+          "nowKilled"
+        ],
+        "properties": {
+          "mutationScore": false
+        }
+      }
+    },
+    {
+      "description": "An interrupted run carries what it evaluated and never a score, with the same boolean-false spelling and for the same reason.",
+      "if": {
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "const": "Partial"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "note",
+          "evaluated",
+          "planned"
+        ],
+        "properties": {
+          "mutationScore": false
+        }
       }
     }
   ],
@@ -154,23 +303,46 @@
     "mutant": {
       "type": "object",
       "description": "One evaluated mutant. Note that 'Id' is NOT contractual: it is a walk position, it has changed before, and its only consumer is this module's own -RecheckFrom.",
-      "required": ["Id", "Function", "File", "Line", "Operator", "Description", "Status"],
+      "required": [
+        "Id",
+        "Function",
+        "File",
+        "Line",
+        "Operator",
+        "Description",
+        "Status"
+      ],
       "properties": {
-        "Id": { "type": "integer" },
+        "Id": {
+          "type": "integer"
+        },
         "Function": {
-          "type": ["string", "null"],
+          "type": [
+            "string",
+            "null"
+          ],
           "description": "The enclosing function, or empty for code at file scope. Carried so an equivalence declaration can be keyed by function rather than by a line number, which moves whenever anything above it is edited."
         },
-        "File": { "type": "string", "description": "Repo-relative path to the mutated source." },
-        "Line": { "type": "integer" },
-        "Operator": { "type": "string" },
+        "File": {
+          "type": "string",
+          "description": "Repo-relative path to the mutated source."
+        },
+        "Line": {
+          "type": "integer"
+        },
+        "Operator": {
+          "type": "string"
+        },
         "Description": {
           "type": "string",
           "description": "<original> -> <mutated>, whitespace-collapsed and truncated. Derived from the source, never written by the operator."
         },
         "Status": {
           "type": "string",
-          "enum": ["Killed", "Survived"],
+          "enum": [
+            "Killed",
+            "Survived"
+          ],
           "description": "Killed means at least one covering test failed against the mutant. A mutant whose run timed out is counted Killed."
         }
       }

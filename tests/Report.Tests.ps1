@@ -1079,3 +1079,93 @@ Describe 'the score reports the denominator it was computed over' {
         finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe 'Write-PSMutationPartialReport' {
+    BeforeAll {
+        $script:pRoot = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-partial-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:pRoot -Force | Out-Null
+        $script:pProv = New-PSMutationProvenance -ModuleVersion '1.2.3' `
+            -BaselineSeconds 1 -TotalSeconds 2 -PerMutantTimeoutSeconds 30
+        function script:WritePartial {
+            param($Results = @(), [int]$Planned = 7)
+            $path = Join-Path $script:pRoot "p-$([System.Guid]::NewGuid().ToString('N')).json"
+            $null = Write-PSMutationPartialReport -Results $Results -Planned $Planned -ReportPath $path `
+                -Operators @('BinaryOperator') -SourceHashes @{ 'a.ps1' = 'h' } -Provenance $script:pProv
+            return (Get-Content $path -Raw | ConvertFrom-Json)
+        }
+    }
+    AfterAll { Remove-Item $script:pRoot -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'marks the document Partial so nothing reads it as a measurement' {
+        (script:WritePartial).mode | Should-Be 'Partial'
+    }
+
+    It 'reports evaluated AND planned, because one without the other is not progress' {
+        # A bare count cannot be read: 140 mutants is most of a 150-mutant run and a fraction
+        # of a 3000-mutant one. The denominator is what makes the number mean anything, and it
+        # is deliberately not divided out here -- see the next test.
+        $doc = script:WritePartial -Results @([pscustomobject]@{ Id = 'm1'; Status = 'Killed' }) -Planned 303
+        $doc.evaluated | Should-Be 1
+        $doc.planned   | Should-Be 303
+    }
+
+    It 'never writes a score, however tempting the arithmetic' {
+        # The whole reason for a separate mode. The loop evaluates in candidate order, so an
+        # interrupted run has seen whichever files sort earliest -- not a sample of anything.
+        $doc = script:WritePartial -Results @(
+            [pscustomobject]@{ Id = 'm1'; Status = 'Killed' }
+            [pscustomobject]@{ Id = 'm2'; Status = 'Survived' })
+        $doc.PSObject.Properties.Name | Should-NotContainCollection 'mutationScore'
+        $doc.PSObject.Properties.Name | Should-NotContainCollection 'thresholds'
+        $doc.PSObject.Properties.Name | Should-NotContainCollection 'killed'
+    }
+
+    It 'names the survivors it did find, so a follow-up has something to read' {
+        # Same field name as both other shapes. A report that calls this list anything else
+        # cannot seed a -RecheckFrom round: the compatibility gate accepts it, selection then
+        # finds nothing, and the run reports a confident "you are done".
+        $doc = script:WritePartial -Results @(
+            [pscustomobject]@{ Id = 'm1'; Status = 'Killed' }
+            [pscustomobject]@{ Id = 'm2'; Status = 'Survived' })
+        @($doc.survivors).Count | Should-Be 1
+        $doc.survivors[0].Id | Should-Be 'm2'
+    }
+
+    It 'carries the provenance block the other two shapes carry' {
+        # So a consumer reads provenance one way from any report rather than learning a third
+        # convention. Wiring a field into two writers and not the third is invisible until
+        # somebody opens the file.
+        $doc = script:WritePartial
+        $doc.generatedFrom          | Should-Be 'PSMutant'
+        $doc.schemaVersion          | Should-Be 1
+        $doc.producedBy.module      | Should-Be 'PSMutant'
+        $doc.durations.totalSeconds | Should-Be 2
+    }
+
+    It 'records the hashes and operators this partial was numbered against' {
+        # What a later run needs to prove the ids still mean the same mutants.
+        $doc = script:WritePartial
+        $doc.sourceHashes.'a.ps1' | Should-Be 'h'
+        @($doc.operators)         | Should-ContainCollection 'BinaryOperator'
+    }
+
+    It 'returns the path it wrote, so the caller can name it' {
+        # The caller is printing the only notice anybody gets that a file exists, in the middle
+        # of a run being torn down. A writer that returns nothing makes that message say
+        # "wrote a partial report to " and stop.
+        $path = Join-Path $script:pRoot "ret-$([System.Guid]::NewGuid().ToString('N')).json"
+        $returned = Write-PSMutationPartialReport -Results @() -Planned 3 -ReportPath $path `
+            -Operators @('BinaryOperator') -SourceHashes @{ 'a.ps1' = 'h' } -Provenance $script:pProv
+        $returned | Should-Be $path
+    }
+
+    It 'writes a document for a run interrupted before ANY mutant finished' {
+        # The earliest possible interruption, and the one a naive implementation drops: zero
+        # rows is still the answer to "what did it get through", and a caller that cancels
+        # immediately should find a file saying so rather than nothing.
+        $doc = script:WritePartial -Results @() -Planned 303
+        $doc.evaluated | Should-Be 0
+        $doc.planned   | Should-Be 303
+        @($doc.mutants).Count | Should-Be 0
+    }
+}

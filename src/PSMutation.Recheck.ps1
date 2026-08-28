@@ -281,7 +281,11 @@ function Invoke-PSMutationRecheckRun {
     Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Detail' `
             -Text "  Rechecking $($targets.Count) previous survivor(s)`n")
 
-    $results = Invoke-PSMutationLoop -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
+    # A recheck's own accumulator. It is not read on interruption -- a recheck already writes a
+    # counts-only report and re-running it is cheap -- but the loop takes the list rather than
+    # owning one, so there is nowhere else for the rows to go.
+    $rows = [System.Collections.Generic.List[object]]::new()
+    $results = Invoke-PSMutationLoop -Candidates $targets -Sink $rows -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
         -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -Quiet:$Quiet
     $recheckPath = Get-PSMutationRecheckReportPath -ReportPath $ReportPath
     # The prior report's own hashes and operator set travel with the new one, so the next

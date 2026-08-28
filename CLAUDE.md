@@ -1110,6 +1110,69 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   It cannot drift silently: the suite asserts a leg exists for every supported minor and ties the
   PowerShell floor to the manifest's own `PowerShellVersion`.
 
+- **An interrupted run writes what it got through, and `finally` is the only construct that sees
+  the interruption.** Ctrl-C and a cancelled CI job raise a pipeline STOP, not a terminating error:
+  measured in a runspace with `$ps.Stop()`, a `catch` beside the loop does **not** run and a
+  `finally` does. Written with a `catch`, the partial report would appear for a crash and be missing
+  for the interruption people actually hit -- which is the only one that happens often.
+
+  The rows reach the caller through a **caller-owned accumulator** (`-Sink`), because a loop that is
+  stopped returns nothing at all. Whatever it had evaluated is recoverable only because the list
+  never belonged to it. `-Sink` is MANDATORY for the reason `-UnitTable` is in the sibling: an
+  internal list used when none was supplied is a branch whose two arms produce identical output,
+  which no test can tell from its own absence. It also needs `[AllowEmptyCollection()]`, since a
+  mandatory parameter refuses an empty collection and the sink is always empty at call time --
+  without it the loop threw on every single call.
+
+  The flag is **"did the loop return"**, never "is the sink empty". A run whose files contribute no
+  covered candidates completes normally with zero rows and must write the ordinary report with a
+  score, not a partial one.
+
+  A partial report is `mode: "Partial"` with `evaluated` and `planned`, and **never a score**. The
+  loop evaluates in candidate order, so an interrupted run has seen whichever files sort earliest --
+  not a sample of anything. The schema forbids `mutationScore` there rather than trusting a writer.
+
+- **A conditional schema reports the arm it did NOT take, so key it on the common shape.** The
+  full/recheck split was `if` on the presence of `mode`; a full report missing any one disclosure
+  failed the `else` and the validator reported the `if`'s requirement -- `Required properties
+  ["mode"] are not present`, naming the one field whose presence would turn the document into a
+  different kind of report. Following the message made things worse.
+
+  Keyed on `mutationScore` instead, the same document reports the field that is actually missing.
+  Measured both ways against `Test-Json`; the same documents are accepted and refused either way,
+  only the diagnosis changes. This is the same defect CLAUDE.md already recorded one keyword along
+  -- *"prefer a type union to `oneOf`, which reports a failure in every branch"* -- and the note was
+  right about the principle while naming only one of the constructs that has it.
+
+  **A test that a rule REFUSES something must start from a document the other rules accept.** The
+  first version asserted that a partial carrying a score is refused, and it passed with the Partial
+  rule deleted entirely -- the fixture was missing the full-run disclosures, so arm zero refused it
+  first. Built from the real full report instead, the Partial rule is the only thing that can refuse
+  it, and deleting the rule fails the test.
+
+- **A schema `description` says what the field IS.** It is consumer-facing documentation shipped in
+  the package, read by people validating a document who cannot see this repo. Design rationale goes
+  in the code and the changelog. `filesMutated` shipped with 862 characters of argument in its
+  description before this was noticed.
+
+- **A regex carrying a LINE ENDING is a platform assumption, exactly like one carrying a path
+  separator.** A test fixture built with `-replace '...,\r?\n', ''` matched on Linux and matched
+  NOTHING on Windows, where the report is CRLF -- so the "broken" document handed to the validator
+  was byte-identical to the good one, and the test asserted that a valid report is valid. It was
+  green on Linux and only failed on the Windows leg.
+
+  Match the line's CONTENT and anchor with `(?m)...$`, never the terminator: `'(?m)^[ \t]*"field":
+  [ \t]*\d+,[ \t]*\r?$'` blanks the line on both platforms, and JSON does not care about the
+  empty line left behind. Probe a pattern against both endings before trusting it -- building the
+  same string twice, once with `\n` and once with `\r\n`, takes ten seconds and is the check that
+  would have caught this.
+
+  **What made it visible was the vacuity guard, not the assertion.** The test carried
+  `$bad | Should-NotBe $original -Because 'the fixture must actually differ, or this asserts
+  nothing'`, and that is the line that failed. Without it the test would have passed on both
+  platforms while checking nothing at all. Every test that builds a broken fixture by editing a
+  good one needs that guard.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked

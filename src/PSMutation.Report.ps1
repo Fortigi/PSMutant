@@ -435,6 +435,59 @@ function Write-PSMutationReport {
     return $summary
 }
 
+function Write-PSMutationPartialReport {
+    <#
+    .SYNOPSIS
+        Write what an INTERRUPTED run got through, marked so it cannot be read as a measurement.
+    .DESCRIPTION
+        A run accumulated its rows in memory and wrote the report only after the last mutant, so
+        Ctrl-C, a CI cancellation or a killed agent discarded the whole run. On a large repo a run
+        is long enough that this is an ordinary event, not an exceptional one -- and a cancelled
+        job then produces nothing at all, not even a partial picture.
+
+        The shape follows the recheck report rather than the full one, because it makes the same
+        promise: counts, never a score. `evaluated` of `planned` is PROGRESS. A ratio over the
+        mutants that happened to run first is not a measurement of anything -- the loop evaluates
+        in candidate order, so an interrupted run has seen whichever files sort earliest, and
+        quoting that as a percentage would be precisely the confident-number-over-a-subset failure
+        this module exists to prevent. The schema enforces it: `mutationScore` is forbidden here.
+    .OUTPUTS
+        The path written, so the caller can name it in the message it is already about to print.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
+        [Parameter(Mandatory)] [int]$Planned,
+        [Parameter(Mandatory)] [string]$ReportPath,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Operators,
+        [Parameter(Mandatory)] [hashtable]$SourceHashes,
+        [hashtable]$Provenance = @{}
+    )
+    $document = [pscustomobject]@{
+        generatedFrom = 'PSMutant'
+        # The same provenance block as both other shapes, so a consumer reads it one way from
+        # any report rather than learning a third convention.
+        schemaVersion = $Provenance.schemaVersion
+        producedBy    = $Provenance.producedBy
+        generatedAt   = $Provenance.generatedAt
+        durations     = $Provenance.durations
+        mode          = 'Partial'
+        note          = 'Interrupted before every mutant was evaluated. Not a mutation score: the mutants below are whichever ran first, not a sample of anything, so no percentage over them means what a score means. Re-run to completion for a number.'
+        evaluated     = $Results.Count
+        planned       = $Planned
+        # Present for the same reason the recheck report carries it: this is the list any
+        # follow-up reads, and a report that names it anything else cannot seed one.
+        survivors     = @($Results | Where-Object Status -eq 'Survived')
+        # Carried so a later run can prove this partial was numbered against the same source.
+        sourceHashes  = $SourceHashes
+        operators     = @($Operators | Sort-Object)
+        mutants       = $Results
+    }
+    Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath
+    return $ReportPath
+}
+
 function Get-PSMutationDeclarationCoverageFault {
     # WHOLE RUN: every declaration that matched no mutant, or matched more than one.
     #

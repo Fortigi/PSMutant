@@ -324,10 +324,23 @@ function Invoke-PSMutationLoop {
         [Parameter(Mandatory)] [hashtable]$TestsByFile,
         [Parameter(Mandatory)] [string[]]$AllTests,
         [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        # The caller's accumulator, so an INTERRUPTED run still has its rows.
+        #
+        # A run is long -- long enough that losing one to Ctrl-C or a cancelled CI job is an
+        # ordinary event rather than an exceptional one -- and every row lived in a local list
+        # that died with the loop. Handing the list in means the caller still holds whatever was
+        # evaluated after the loop stops, however it stopped.
+        #
+        # MANDATORY rather than optional-with-a-fallback. An internal list used when none was
+        # supplied would be a branch whose two arms produce identical output, which no test could
+        # tell from its own absence -- the same reason -UnitTable is mandatory in the sibling.
+        # AllowEmptyCollection because it is ALWAYS empty here: a mandatory parameter refuses an
+        # empty collection, so without this the loop threw on every single call.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]]$Sink,
         [string]$SandboxRoot,
         [switch]$Quiet
     )
-    $results = [System.Collections.Generic.List[object]]::new()
+    $results = $Sink
     # One read per FILE, not per mutant. A file contributes many candidates -- 125 for the largest
     # in this repo's sibling -- and every one of them re-read the same unchanged bytes to splice
     # against, then Invoke-PSMutant re-read them again to restore from.
