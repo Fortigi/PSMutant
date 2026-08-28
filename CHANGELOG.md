@@ -13,6 +13,20 @@ All notable changes to PSMutant are documented here. Format follows
 
 ### For consumers
 
+**The coverage XML no longer piles up in your temp directory.** The baseline wrote Pester's
+coverage report to `$TMPDIR/psmut-coverage-<pid>.xml`, and nothing ever deleted it: the startup
+sweep matched *directories* named `psmut-sandbox-*`, so it could not match that file by
+construction. They accumulated for the life of the machine -- 67 of them on the box this was found
+on. The file is never read back; it exists only because Pester writes one somewhere and its default
+is a `coverage.xml` in your working tree.
+
+It now goes inside the sandbox, which is already removed when the run ends, so the cleanup is the
+one that already exists rather than a second one to keep in step. The startup sweep also reclaims
+the files older versions left behind, so upgrading clears them rather than orphaning them. As a side
+effect it removes another predictable write into world-writable temp -- the same shape as the
+sandbox path, lesser because the content is coverage data rather than source, but there was no
+reason to keep one after removing the other.
+
 **Runs are about three times faster, and no score moves.** Two costs went, both paid on every
 mutant. A fresh runspace was created and Pester imported into it for each one -- measured at about
 396 ms, which over a real 801 s run was 219 s, 27%, spent re-importing a module that does not change
@@ -233,6 +247,14 @@ scored. Nothing is emitted outside a recognised CI.
   variable, which is read at run time and stays data whatever it contains.
 
 ### Internal
+- `Invoke-PSMutationBaseline` takes `-SandboxRoot` and writes coverage there. Mandatory rather than
+  defaulted to temp: the sandbox is the one directory a run owns and disposes of, and a default
+  would put the file back in shared temp for any caller who forgot.
+- `Get-PSMutationSandboxOwnerId` also reads the id out of a legacy `psmut-coverage-<pid>.xml` name,
+  and the sweep now looks at files as well as directories. Both arms are transitional and say so:
+  they exist to reclaim what earlier versions left, and can go once no machine plausibly still has
+  any.
+
 - **The mutate file is read once per FILE, not twice per mutant** (#101). It was read in the loop
   to splice against and again inside `Invoke-PSMutant` to restore from -- the same unchanged bytes
   off disk twice, producing two strings equal by construction, for every one of a file's mutants
