@@ -317,20 +317,27 @@ function Get-Kind {
             ($sb.Mutated | Sort-Object) | Should-BeCollection @('{ $false }', '{ $true }')
         }
 
-        It 'declines a VALUE switch clause, because forcing one does not force a decision' {
-            # Measured, not assumed. PowerShell matches a clause with `$_ -eq <clause>`, so
-            # forcing `1` to $true does not mean "always match" the way it does for an if:
+        It 'forces a VALUE switch clause to always match and to never match' {
+            # This replaces a test that asserted the opposite, and the reversal is the fix.
             #
-            #   switch ($x) { 1 { 'one' } default { 'none' } }  forced to $true
-            #     x = 1      one  -> none     (stopped matching)
-            #     x = $true  none -> one      (started matching)
-            #
-            # That is a value substitution with murky semantics, as likely to be equivalent as
-            # informative -- and NumberLiteral and StringLiteral already perturb those values on
-            # their own terms. Making a value clause always-match needs rewriting it INTO a
-            # script block, which is a different mutation; #46 records it as the remaining half.
+            # The earlier reading was that forcing a value clause could not force a decision --
+            # true of splicing a bare `$true` over `1`, which merely changes what the clause is
+            # compared against. Wrapping it in a SCRIPT BLOCK makes it a condition, and that is an
+            # ordinary offset splice like every other operator, not the syntax rewrite the issue
+            # and I both assumed it needed.
+            $vals = @(Get-PSMutationCandidate -Path $script:decisionFixture -Operators @('ConditionForcing') |
+                    Where-Object Original -eq '1')
+            @($vals).Count | Should-Be 2
+            ($vals.Mutated | Sort-Object) | Should-BeCollection @('{ $false }', '{ $true }')
+        }
+
+        It 'forces a value clause to a SCRIPT BLOCK, never to a bare $true' {
+            # The distinction the whole change turns on. PowerShell matches a clause with
+            # `$_ -eq <clause>`, so a bare `$true` spliced over `1` stops matching x=1 and starts
+            # matching x=$true -- a value substitution with murky semantics. The script-block form
+            # always matches, which is what forcing means everywhere else in this operator.
             @(Get-PSMutationCandidate -Path $script:decisionFixture -Operators @('ConditionForcing') |
-                    Where-Object Original -eq '1') | Should-BeCollection @()
+                    Where-Object { $_.Mutated -eq '$true' -and $_.Original -eq '1' }) | Should-BeCollection @()
         }
 
         It 'declines the DEFAULT clause, which has no condition to force' {

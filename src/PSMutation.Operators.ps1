@@ -338,33 +338,38 @@ function Get-PSMutationTernaryConditionCandidate {
 function Get-PSMutationSwitchConditionCandidate {
     <#
     .SYNOPSIS
-        Force a switch clause whose condition is a SCRIPT BLOCK to always and never match.
+        Force every switch clause to always match and to never match.
     .DESCRIPTION
-        Script-block clauses only, and that is a measured decision rather than a shortcut.
+        A clause condition is its own extent, so forcing it is the same offset splice every other
+        operator does -- for a VALUE clause as much as for a script-block one. `1 { 'one' }` becomes
+        `{ $true } { 'one' }`, which always matches and therefore shadows every later clause, or
+        `{ $false } { 'one' }`, which never matches and makes the clause dead:
 
-        PowerShell matches a switch clause with `$_ -eq <clause>`, so forcing a VALUE clause to
-        $true does not mean "always match" the way it does for an if -- it changes what the clause
-        matches against. Measured:
+            switch ($x) { 1 { 'one' } 'a' { 'letter' } default { 'none' } }
+              baseline           x=1 one    x='a' letter      x=99 none
+              1 -> { $true }     x=1 one    x='a' one letter  x=99 one     <- shadows, and falls through
+              1 -> { $false }    x=1 none   x='a' letter      x=99 none
 
-            switch ($x) { 1 { 'one' } default { 'none' } }   forced to $true
-              x = 1     one   -> none      (stopped matching)
-              x = $true none  -> one       (started matching)
+        The shadowing case is the fault worth catching: a `switch` is the idiomatic PowerShell
+        multi-way decision, and a clause that swallows the ones below it is a real bug that no
+        expression operator can reach. Measured on a consumer repository of 238 files: 59 value
+        clauses against 3 script-block ones, so this is where nearly all of a switch's decisions
+        live.
 
-        That is a value substitution with murky semantics, and as a mutant it is as likely to be
-        equivalent as informative -- which inflates a survivor list rather than teaching anything.
-        NumberLiteral and StringLiteral already perturb those clause values on their own terms.
+        Forced to a SCRIPT BLOCK, never to a bare `$true`. PowerShell matches a clause with
+        `$_ -eq <clause>`, so splicing a bare `$true` over `1` does not mean "always match" -- it
+        stops matching `x = 1` and starts matching `x = $true`, which is a value substitution with
+        murky semantics. Wrapping it in a script block makes the clause a CONDITION, which is what
+        forcing means everywhere else in this operator. NumberLiteral and StringLiteral already
+        perturb the literal values on their own terms.
 
-        A script-block clause is evaluated as a condition, so forcing it behaves exactly like an
-        if -- `{ $true }` always matches and shadows every later clause, `{ $false }` never does:
+        BOTH directions, as for an if and a ternary and for the same reason: a test that only ever
+        exercises the matching branch is killed by forcing the clause dead and never notices it
+        being forced live.
 
-            switch ($x) { { $_ -gt 5 } { 'big' } default { 'small' } }
-              x = 1   small -> big    (forced { $true })
-              x = 9   big   -> small  (forced { $false })
-
-        Making a VALUE clause always-match needs rewriting it INTO a script block, which is a
-        different and larger mutation than forcing an extent; the `default` clause has no
-        condition to force at all and is a candidate for statement removal instead. Both are
-        deliberately left out, and issue #46 records them as the remaining half.
+        The `default` clause is still not reached. It sits outside `Clauses` on the AST and has no
+        condition to force; removing it entirely is statement removal, an operator this module does
+        not have. That remains open on #172.
     #>
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
@@ -372,9 +377,7 @@ function Get-PSMutationSwitchConditionCandidate {
     $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
     foreach ($n in $nodes) {
         foreach ($clause in $n.Clauses) {
-            $cond = $clause.Item1
-            if ($cond -isnot [System.Management.Automation.Language.ScriptBlockExpressionAst]) { continue }
-            New-PSMutationForcedCandidate -Extent $cond.Extent -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
+            New-PSMutationForcedCandidate -Extent $clause.Item1.Extent -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
         }
     }
 }
