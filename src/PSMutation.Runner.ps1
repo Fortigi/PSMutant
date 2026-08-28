@@ -116,7 +116,7 @@ function Invoke-PSMutationBaseline {
                 # The container-level record is deliberately NOT reached for. In that case it holds
                 # Pester's own break/continue guard text, which says nothing about the consumer's
                 # failure -- the same "fact about nothing" the first-line rule above avoids.
-                if ($why) { "$($_.ExpandedPath) -- $why" } else { [string]$_.ExpandedPath }
+                $why ? "$($_.ExpandedPath) -- $why" : [string]$_.ExpandedPath
             })
     }
 }
@@ -306,8 +306,8 @@ function Get-PSMutationProgressLine {
     [CmdletBinding()]
     param([int]$Index, [int]$Total, $Result, [string]$DisplayFile)
     $survived = $Result.Status -eq 'Survived'
-    $glyph = if ($survived) { '.' } else { 'x' }
-    $role = if ($survived) { 'Warn' } else { 'Muted' }
+    $glyph = $survived ? '.' : 'x'
+    $role = $survived ? 'Warn' : 'Muted'
     return New-PSMutationLine -Role $role -Data $Result `
         -Text ("  [{0}/{1}] {2} {3}:{4} {5}" -f $Index, $Total, $glyph, $DisplayFile, $Result.Line, $Result.Description)
 }
@@ -342,7 +342,7 @@ function Invoke-PSMutationLoop {
         if (-not $originals.ContainsKey($c.File)) { $originals[$c.File] = [System.IO.File]::ReadAllText($c.File) }
         $content = $originals[$c.File]
         $mutated = Set-PSMutationText -Content $content -Candidate $c
-        $covering = if ($TestsByFile.ContainsKey($c.File)) { $TestsByFile[$c.File] } else { $AllTests }
+        $covering = $TestsByFile.ContainsKey($c.File) ? $TestsByFile[$c.File] : $AllTests
         $status = Invoke-PSMutant -Candidate $c -MutatedContent $mutated -OriginalContent $content `
             -CoveringTests $covering -TimeoutSeconds $TimeoutSeconds
         $display = ConvertFrom-PSMutationSandboxPath -Path $c.File -SandboxRoot $SandboxRoot

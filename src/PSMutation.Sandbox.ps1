@@ -76,7 +76,7 @@ function Assert-PSMutationSandboxReal {
     $item = Get-Item -LiteralPath $Path -Force
     if (-not $item.PSIsContainer -or $item.LinkType) {
         throw ("Refusing to use the mutation sandbox '$Path': it is a " +
-            "$(if ($item.LinkType) { "$($item.LinkType) to '$($item.Target -join ', ')'" } else { 'file' }), " +
+            "$($item.LinkType ? "$($item.LinkType) to '$($item.Target -join ', ')'" : 'file'), " +
             'not a directory this run created. Writes would land outside the sandbox, which is the ' +
             'one thing the sandbox exists to prevent.')
     }
