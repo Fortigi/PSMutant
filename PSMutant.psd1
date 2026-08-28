@@ -40,7 +40,17 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**The coverage XML no longer piles up in your temp directory.** The baseline wrote Pester''s
+            ReleaseNotes = '**An absolute `reportPath` is honoured instead of being rewritten.** PowerShell''s `Join-Path`
+concatenates rather than letting a rooted right-hand side win, so a config asking for
+`/var/artifacts/report.json` got `<SourceRoot>/var/artifacts/report.json` -- the report written
+somewhere you did not ask for, with no error, and inside the tree this module otherwise takes care
+never to write to. A CI step pointing its report at an artifacts directory outside the checkout
+found nothing to upload, and the run left a directory chain behind in the repository it had just
+mutated. A relative path still resolves against `-SourceRoot`, and `../shared/report.json` -- which
+was never broken -- still climbs above it. `recheckPath` is derived from the same value and is fixed
+with it.
+
+**The coverage XML no longer piles up in your temp directory.** The baseline wrote Pester''s
 coverage report to `$TMPDIR/psmut-coverage-<pid>.xml`, and nothing ever deleted it: the startup
 sweep matched *directories* named `psmut-sandbox-*`, so it could not match that file by
 construction. They accumulated for the life of the machine -- 67 of them on the box this was found
