@@ -65,7 +65,8 @@ jobs:
       - name: Load pinned versions
         shell: pwsh
         run: |
-          $required = 'PESTER_VERSION', 'PESTER_COMPAT_VERSIONS', 'PSSA_VERSION',
+          $required = 'PESTER_VERSION', 'PESTER_COMPAT_VERSIONS', 'PS_COMPAT_VERSIONS',
+                      'PS_COMPAT_PESTER', 'PSSA_VERSION',
                       'PSCOMPLEXITY_VERSION', 'CONVERTTOSARIF_VERSION', 'PSSA_PATHS'
           $pins = @{}
           foreach ($line in Get-Content .github/pins.env) {
@@ -235,9 +236,34 @@ jobs:
             throw "Mutation score $($result.Score)% is below the break threshold ($($result.FailureReason))"
           }
 
-      # The manifest promises Pester >= 5.0.0, but the suite above runs on exactly one
-      # version, so nothing in it can prove that promise. This step loads the OTHER
-      # installed version and runs a real mutation whose fixture must leave survivors.
+      # The manifest declares a PowerShellVersion floor and everything above runs on whatever the
+      # runners ship, which is several minors newer -- so until #157 the number consumers were told
+      # had never been executed. This downloads each supported host and runs a real mutation on it,
+      # requiring the SAME verdicts the launching host measured.
+      #
+      # WINDOWS, and the reason is not preference: measured on a current Linux host, PowerShell 7.0
+      # dies before running a line ("No usable version of libssl was found" -- .NET Core 3.1 needs
+      # libssl 1.1) and 7.2 needs an ICU package the image may not carry. The Windows archives are
+      # self-contained. It is one leg because "does this PowerShell version run the module" is not
+      # an OS question, and the matrix already answers the path half on the runners' own PowerShell.
+      - name: Cache downloaded PowerShell runtimes
+        if: matrix.os == 'windows-latest'
+        uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        with:
+          path: ~/.psmut-pwsh
+          key: pwsh-runtimes-${{ runner.os }}-${{ hashFiles('.github/pins.env') }}
+
+      - name: PowerShell compatibility (every supported PowerShell, one leg per minor)
+        if: matrix.os == 'windows-latest'
+        shell: pwsh
+        # No argument: the script reads PS_COMPAT_VERSIONS and PS_COMPAT_PESTER from the
+        # environment or pins.env, and refuses an empty list rather than reporting a pass over
+        # zero versions.
+        run: ./tools/Test-PSMutantPowerShellCompatibility.ps1 -RuntimeRoot "$HOME/.psmut-pwsh"
+
+      # The manifest promises Pester >= 5.2.0, but the suite above runs on exactly one
+      # version, so nothing in it can prove that promise. This step runs a real mutation under
+      # every supported Pester, each in its own process, with a fixture that must leave survivors.
       # Before issue #16 this reported a silent, perfect, entirely fake 100%.
       - name: Pester compatibility guard (runs under the version the suite does not use)
         shell: pwsh
