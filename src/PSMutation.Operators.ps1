@@ -335,6 +335,102 @@ function Get-PSMutationTernaryConditionCandidate {
     }
 }
 
+function Get-PSMutationDefaultToken {
+    <#
+    .SYNOPSIS
+        Every `default` KEYWORD token in the file the given tree came from.
+    .DESCRIPTION
+        The tokens are re-derived here rather than threaded down from the parse in
+        Get-PSMutationCandidate, and that is a deliberate trade rather than an oversight.
+
+        Threading them means a -Tokens parameter on all ELEVEN operator functions, because they
+        are dispatched uniformly by name. Nine of them would never read it, which PSScriptAnalyzer
+        reports as nine PSReviewUnusedParameter findings -- correctly. A dead parameter on every
+        operator to serve one is the wrong shape, and excluding the rule to hide it would mute a
+        check that is doing its job.
+
+        The cost of not threading is one extra parse, paid ONLY on a file that contains a switch
+        with a default clause -- ten of 235 files in the consumer this was measured against.
+        Interleaved, it does not move the analysis time.
+
+        The root is walked to because an operator is handed the tree it should search, and only a
+        ROOT extent's offsets are file offsets. Tokenising a subtree's text would produce offsets
+        relative to that fragment, which would splice at the wrong place in the file -- silently,
+        since the result still parses.
+    #>
+    [OutputType([System.Collections.Generic.List[object]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Ast)
+    $root = $Ast
+    while ($root.Parent) { $root = $root.Parent }
+    $tokens = $null
+    $null = [System.Management.Automation.Language.Parser]::ParseInput($root.Extent.Text, [ref]$tokens, [ref]$null)
+    $out = [System.Collections.Generic.List[object]]::new()
+    # A plain foreach rather than `| Where-Object {}`, for the reason the metric collectors avoid
+    # it: the pipeline invokes a PowerShell scriptblock once per token.
+    foreach ($tok in $tokens) {
+        if ($tok.Kind -eq [System.Management.Automation.Language.TokenKind]::Default) { $out.Add($tok) }
+    }
+    return $out
+}
+
+function Get-PSMutationDefaultKeywordExtent {
+    <#
+    .SYNOPSIS
+        The extent of a switch's `default` KEYWORD, or $null when it has no default clause.
+    .DESCRIPTION
+        `default` is the one switch decision that is not on the AST. SwitchStatementAst exposes
+        `Default` as the StatementBlockAst BODY, so there is no condition node to force and no
+        extent to splice over -- which is why the clause went unreached and why the gap was filed
+        as needing statement removal, an operator this module does not have.
+
+        It does not. The keyword is an ordinary token, and forcing it is the same offset splice
+        every other candidate uses. `default { 'none' }` becomes `{ $false } { 'none' }`, a clause
+        that never matches -- which is exactly a switch with no fallback -- or `{ $true } { 'none' }`,
+        which fires unconditionally rather than only when nothing else matched:
+
+            switch ($x) { 1 { 'one' } default { 'none' } }
+              baseline                  x=1 one        x=99 none
+              default -> { $false }     x=1 one        x=99 <nothing>   <- fallback is dead
+              default -> { $true }      x=1 one none   x=99 none        <- fires when it should not
+
+        The dead-fallback direction is the fault worth catching: a `default` nobody exercises is a
+        fallback that could be anything at all.
+
+        The token is located by POSITION rather than by searching text, which matters for two
+        reasons. A block comment may itself contain the word "default" between the last clause and
+        the real keyword, which parses fine and defeats an IndexOf over the gap text. (That example
+        cannot be written out here: a literal comment-close sequence would end THIS comment, which
+        is how it was found.) And a nested switch has a `default` of its own; the
+        gap between THIS switch's last clause body and its own Default block cannot contain it,
+        because a nested default is inside a clause body or inside the default body, and both fall
+        outside that window.
+    #>
+    [OutputType([object])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Switch,
+        [Parameter(Mandatory)] [object[]]$Tokens
+    )
+    # No guard on $Switch.Default here, and no Kind test in the loop below. The caller skips a
+    # switch without a default, and $Tokens is already only Default tokens -- so both would be
+    # branches whose false arm nothing can reach, which is the shape this project fails other
+    # people's code for. There is no final `return $null` either: a foreach that matches nothing
+    # yields nothing, which the caller reads as no keyword.
+    #
+    # With no clauses at all -- `switch ($x) { default { } }` -- the window opens after the
+    # switch CONDITION instead of after a last clause that does not exist.
+    $from = if ($Switch.Clauses.Count -gt 0) {
+        $Switch.Clauses[-1].Item2.Extent.EndOffset
+    } else {
+        $Switch.Condition.Extent.EndOffset
+    }
+    $to = $Switch.Default.Extent.StartOffset
+    foreach ($tok in $Tokens) {
+        if ($tok.Extent.StartOffset -ge $from -and $tok.Extent.EndOffset -le $to) { return $tok.Extent }
+    }
+}
+
 function Get-PSMutationSwitchConditionCandidate {
     <#
     .SYNOPSIS
@@ -375,9 +471,20 @@ function Get-PSMutationSwitchConditionCandidate {
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
     $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
+    # Fetched ONCE per file and only when a switch actually has a default clause. Measured: the
+    # obvious spelling -- getting the tokens unconditionally at the top of this function -- cost
+    # 24% of ConditionForcing's whole analysis time on a 235-file repo, because MOST FILES
+    # CONTAIN NO SWITCH and every one of them still paid for it.
+    $defaults = $null
     foreach ($n in $nodes) {
         foreach ($clause in $n.Clauses) {
             New-PSMutationForcedCandidate -Extent $clause.Item1.Extent -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
+        }
+        if (-not $n.Default) { continue }
+        if ($null -eq $defaults) { $defaults = Get-PSMutationDefaultToken -Ast $Ast }
+        $keyword = Get-PSMutationDefaultKeywordExtent -Switch $n -Tokens $defaults
+        if ($keyword) {
+            New-PSMutationForcedCandidate -Extent $keyword -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
         }
     }
 }

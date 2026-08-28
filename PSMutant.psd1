@@ -55,12 +55,17 @@ which is a value substitution `NumberLiteral` and `StringLiteral` already make o
 `{ $true }` forces the decision instead: `1 { "one" }` becomes `{ $true } { "one" }`, which always
 matches and so shadows every later clause, or `{ $false } { "one" }`, which makes the clause dead.
 Shadowing is the fault worth catching -- a clause that swallows the ones below it is a real bug no
-expression operator reaches. `default` is still not reached; it has no condition to force.
+expression operator reaches.
 
-Expect more mutants if you use either construct: on a 238-file consumer the operator goes from 4448
-to 4566, 59 value clauses at two each. Neither this module''s source nor its sibling''s contains a
-ternary or a script-block clause anywhere, so neither self-gate moves -- this is here for consumers
-whose code uses them, where today the operator reports nothing at all.
+**`default` is forced too.** It is the one switch decision not on the AST -- `SwitchStatementAst`
+carries the default BODY, with no condition node -- so it was twice written off as needing an
+operator this module lacks. The keyword is an ordinary token: splicing over it yields a switch whose
+fallback is dead, and a `default` nobody exercises could be anything at all.
+
+On a 235-file consumer, `ConditionForcing` goes from **4404** candidates to **4548** (+3.3%): 124
+from the ternary and switch clauses, 20 from ten `default` clauses. Neither this module''s source nor
+its sibling''s holds a ternary or script-block clause, so this is for consumers whose code uses them,
+where before the operator reported nothing at all.
 
 **An absolute `reportPath` is honoured instead of being rewritten.** PowerShell''s `Join-Path`
 concatenates rather than letting a rooted right-hand side win, so a config asking for
