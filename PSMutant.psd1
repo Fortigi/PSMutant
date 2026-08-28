@@ -40,27 +40,30 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**`ConditionForcing` now reaches the ternary operator and every `switch` clause.** It looked for one
-node type -- `IfStatementAst` -- so `$x = $cond ? $a : $b` was invisible to it, and to every other
-operator too: a ternary compiles to no if-node at all, and when its condition is a bare variable
-there is no comparison, literal or negation for an expression operator to touch. `switch` clauses
-were unreached for a separate reason, and both kinds are now forced to `$true` and `$false` exactly
-as an `if` is, respecting the loop-condition no-mutate zone and skipping a condition that already IS
-the value it would be forced to.
+            ReleaseNotes = '**The report no longer publishes `"filesWithoutTestMapping": [null]`** -- an array holding one
+`null` where the honest answer is `[]`. It was the DEFAULT path, so most reports carried it, and a
+consumer listing the files that fell back to the whole suite got an entry that is not a file.
+`@($null)` is an array of ONE element, and the `$null` arrives ordinarily: a PowerShell function
+returning an empty collection unrolls it to nothing.
 
-A clause is forced to a SCRIPT BLOCK rather than a bare value. PowerShell matches a clause with
-`$_ -eq <clause>`, so forcing `1` to `$true` merely changes what is compared -- measured,
-`switch ($x) { 1 {...} }` forced that way stops matching `x = 1` and starts matching `x = $true`,
-which is a value substitution `NumberLiteral` and `StringLiteral` already make on their own terms.
-`{ $true }` forces the decision instead: `1 { "one" }` becomes `{ $true } { "one" }`, which always
-matches and so shadows every later clause, or `{ $false } { "one" }`, which makes the clause dead.
-Shadowing is the fault worth catching -- a clause that swallows the ones below it is a real bug no
-expression operator reaches.
+The two list fields beside it escaped by accident, not design, so all three now share one
+normaliser. `filesWithNoMutants`, `filesWithoutTestMapping` and `skippedAsUncovered` are also
+**declared in the report schema** for the first time and required on a full run -- their absence is
+why nothing caught this, since unknown fields validate cleanly by design.
 
-**`default` is forced too.** It is the one switch decision not on the AST -- `SwitchStatementAst`
-carries the default BODY, with no condition node -- so it was twice written off as needing an
-operator this module lacks. The keyword is an ordinary token: splicing over it yields a switch whose
-fallback is dead, and a `default` nobody exercises could be anything at all.
+**`ConditionForcing` now reaches the ternary operator and every `switch` clause, `default`
+included.** It looked for one node type -- `IfStatementAst` -- so `$x = $cond ? $a : $b` was
+invisible to it, and to every other operator too: a ternary compiles to no if-node at all, and a
+bare-variable condition offers no comparison, literal or negation to touch. All of them are now
+forced to `$true`/`$false` exactly as an `if` is, respecting the loop-condition no-mutate zone.
+
+A clause is forced to a SCRIPT BLOCK, not a bare value: PowerShell matches with `$_ -eq <clause>`,
+so `1` forced to `$true` merely changes what is compared. `{ $true }` forces the decision --
+`1 { "one" }` becomes `{ $true } { "one" }`, which always matches and shadows every later clause,
+or `{ $false } { "one" }`, which makes it dead. Shadowing is the fault worth catching: a clause
+that swallows the ones below it is a real bug no expression operator reaches. `default` is the one
+switch decision not on the AST -- `SwitchStatementAst` carries only the BODY -- but the keyword is
+an ordinary token, so forcing it yields a switch whose fallback is dead.
 
 On a 235-file consumer, `ConditionForcing` goes from **4404** candidates to **4548** (+3.3%): 124
 from the ternary and switch clauses, 20 from ten `default` clauses. Neither this module''s source nor
