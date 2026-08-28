@@ -1072,6 +1072,44 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   seventeen issues at once, two of them outranking everything already in the backlog. Both were
   in code that had been read many times and was at 100% coverage and 100% self-mutation.
 
+- **A watcher that cannot see reports no faults, which looks exactly like nothing being wrong.**
+  `tools/Test-PSMutantPinFreshness.ps1` covers the four single pins and, since #182, the two
+  per-minor compatibility lists. The lists needed a different question from the pins: a single pin
+  is stale when something newer exists, but a LIST is the compatibility claim itself, and
+  `PowerShellVersion = '7.0'` with no upper bound means **every version released from now on is
+  already promised**. A promise that grows by itself needs something watching it.
+
+  Asked as **three tiers**, because they are three different decisions and flattening them puts the
+  same weight on all three: PATCH (a leg is no longer the newest of its minor -- mechanical), MINOR
+  (a released minor no leg covers -- a small choice), MAJOR (a whole line promised and possibly
+  broken -- the one worth waking someone for). `New-PesterConfiguration` arriving in a MINOR already
+  cost this repo its Pester floor, so the middle tier is not decorative.
+
+  **An exemption is a declaration with a reason, and a stale one is a fault.** `PS_COMPAT_EXEMPT_MINORS`
+  holds 7.6 -- the runners' own PowerShell, covered by the ordinary suite and not repeated as a
+  downloaded leg. Without the declaration the job reports it every week until somebody mutes it,
+  which is the failure `pin-freshness.yml` already names in its own comments. So the watcher also
+  fails an exemption that was never released, or one a leg now covers.
+
+  Three ways to be silently blind, each found by planting a stale leg and checking the watcher
+  noticed -- never by reading the code:
+
+  - **`@(Invoke-RestMethod ...)` NESTS rather than flattens.** That cmdlet hands back a JSON array
+    as a single object, so the wrap produces one element whose `.tag_name` is every tag at once,
+    `.Count` is 1, a paging loop breaks after one page, and a `Where-Object` filter removes the lone
+    nested entry. Assign it directly.
+  - **The GitHub releases API is paged**, and one page of 100 reaches back only to PowerShell 7.2.3
+    -- so an unpaged request cannot see 7.0 or 7.1, and the check is blind to precisely the floor it
+    exists to guard while reporting confidently on everything newer.
+  - **`Find-Module -AllVersions` returns `Version` as a `System.String`**, so `.Major`/`.Minor` are
+    empty and a bare `-ge` is a string comparison in which `5.9.0` outranks `5.10.0`. Cast both
+    sides to `[version]`.
+
+  The lower bound is the lowest leg rather than a separate pin, because the list IS the claim
+  everywhere else here and a second source for the same number is a second thing to keep in step.
+  It cannot drift silently: the suite asserts a leg exists for every supported minor and ties the
+  PowerShell floor to the manifest's own `PowerShellVersion`.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
@@ -1118,10 +1156,6 @@ in the PR that closes its issue.
   `tests` entry -- runs the entire suite. None of it is wrong; all of it multiplies. Measure
   before choosing a mechanism, and note that the timeout is derived from a *serial* baseline, so
   parallel evaluation (#1) would manufacture false kills on top of whatever it saved.
-
-- **A pin nobody watches has already drifted** (#89, #94). `.github/pins.env` and the `uses:` SHAs
-  go stale silently, and `ci.yml` declares no `permissions` block, so it executes third-party
-  code with a write-scoped token.
 
 - **A run needs a context object before it needs another mode** (#63, #54, #56). Each mode
   currently adds another long parameter list threaded through the orchestrator; the run result

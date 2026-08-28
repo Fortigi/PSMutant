@@ -1,12 +1,6 @@
-# Changelog
-
-All notable changes to PSMutant are documented here. Format follows
-[Keep a Changelog](https://keepachangelog.com/); versions follow SemVer.
-
 ## [Unreleased]
 
 ### For consumers
-
 **The report says how many files the score was computed over.** `filesMutated` joins
 `skippedAsUncovered` and `declaredEquivalent` in the document and in the schema, for the reason
 those two already exist: 100% across eight files and 100% across nine are the same number, and only
@@ -24,7 +18,6 @@ config never mentioned, so it reports what it was pointed at rather than guessin
 missed; the fraction is yours to compute against your own file count.
 
 ### Internal
-
 **The sandbox isolation layer is now mutation-tested.** `src/PSMutation.Sandbox.ps1` -- the file
 enforcing the promise that a hard kill cannot leave a mutant in tracked source -- was the one source
 file the self-mutation gate did not measure, because its covering suite could not be named in the
@@ -83,6 +76,40 @@ a dependency to the gate that watches the dependencies.
 Note for anyone extending the complexity gate beyond `src/`: `Get-PSMutantWorkflowFact` measures
 21 cyclomatic / 25 cognitive. It is the parser, it is not gated in either repo today, and it cannot
 be refactored on one side alone without breaking the byte-identity the mechanism rests on.
+
+**The compatibility version lists are now watched.** `tools/Test-PSMutantPinFreshness.ps1` covered
+the four single pins; `PESTER_COMPAT_VERSIONS` and `PS_COMPAT_VERSIONS` were watched by nothing, and
+0.4.0 had just added more list pins to that blind spot.
+
+The lists need a different question from the pins. A single pin is stale when something newer
+exists. A list IS the compatibility claim, and `PowerShellVersion = '7.0'` with no upper bound means
+**every version released from now on is already promised** -- so the question is not "is our pin
+old" but "has the world moved past what we prove".
+
+Asked as **three tiers**, because they are three different decisions and flattening them would put
+the same weight on all three: PATCH (a leg is no longer the newest of its minor -- mechanical),
+MINOR (a released minor no leg covers -- a small choice), MAJOR (a whole line promised and possibly
+broken -- the one worth waking someone for). `New-PesterConfiguration` arriving in a *minor* already
+cost this repo its Pester floor once, so the middle tier is not decorative.
+
+**Exemptions are declared with a reason, and a stale one is itself a fault.**
+`PS_COMPAT_EXEMPT_MINORS` holds 7.6: the runners' own PowerShell, covered by the ordinary suite and
+deliberately not repeated as a downloaded leg. Undeclared, the job would report it every week until
+somebody muted it -- the failure `pin-freshness.yml` already names in its own comments. The watcher
+also fails an exemption that was never released, or one a leg now covers.
+
+Verified by planting stale legs rather than by reading the code: a superseded patch, a dropped
+minor on both feeds, and an exemption for a version that does not exist are each reported; the suite
+also fails if a supported minor loses its leg or an exemption collides with one.
+
+Two blind spots avoided, both already paid for elsewhere: `@(Invoke-RestMethod ...)` **nests rather
+than flattens** a JSON array, which silently yields one element and a loop that breaks after a page;
+and the GitHub releases API is **paged**, where one page of 100 reaches back only to PowerShell
+7.2.3 -- so an unpaged request cannot see 7.0 or 7.1, leaving the check blind to precisely the floor
+it guards.
+
+Running it now reports one real fault, from the pre-existing half: `PSCOMPLEXITY_VERSION` is pinned
+at 0.5.0 and 0.5.1 is available.
 
 ## [0.4.0] - 2026-08-28
 

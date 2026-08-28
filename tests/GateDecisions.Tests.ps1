@@ -405,7 +405,8 @@ Describe 'the shipped pins.env is itself a claim, so it is asserted here' {
     It 'declares every key the workflows require' {
         # The workflows assert this at run time; asserting it here means a missing pin fails in
         # the suite rather than five minutes into a job.
-        foreach ($k in 'PESTER_VERSION', 'PESTER_COMPAT_VERSIONS', 'PSSA_VERSION',
+        foreach ($k in 'PESTER_VERSION', 'PESTER_COMPAT_VERSIONS', 'PS_COMPAT_VERSIONS',
+            'PS_COMPAT_EXEMPT_MINORS', 'PS_COMPAT_PESTER', 'PSSA_VERSION',
             'PSCOMPLEXITY_VERSION', 'CONVERTTOSARIF_VERSION', 'PSSA_PATHS') {
             Get-PSMutantPinValue -Line $script:pinLines -Name $k |
                 Should-NotBeNull -Because "pins.env must define $k"
@@ -422,6 +423,42 @@ Describe 'the shipped pins.env is itself a claim, so it is asserted here' {
         $minors = @($versions | ForEach-Object { $v = [version]$_; "$($v.Major).$($v.Minor)" })
         foreach ($m in '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8', '5.9', '6.0', '6.1') {
             $minors | Should-ContainCollection $m -Because "no leg covers Pester $m"
+        }
+    }
+
+    It 'lists a PowerShell version for every supported minor' {
+        # The manifest's PowerShellVersion is the floor consumers are told; this list is what
+        # executes against it. A minor quietly dropped here narrows what is PROVEN without
+        # narrowing what is PROMISED, and the run stays green -- which is the shape the whole
+        # freshness watcher exists to catch, caught here a week earlier and for free.
+        #
+        # The ceiling is open on purpose: the runners' own PowerShell is newer than anything
+        # listed, the ordinary suite covers it, and that exemption is declared in pins.env
+        # rather than left as a silence.
+        $versions = @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PS_COMPAT_VERSIONS') -split ' ' |
+                Where-Object { $_ })
+        $minors = @($versions | ForEach-Object { $v = [version]$_; "$($v.Major).$($v.Minor)" })
+
+        $manifest = Import-PowerShellDataFile (Join-Path $script:repoRoot 'PSMutant.psd1')
+        $floor = [version]$manifest.PowerShellVersion
+        $minors | Should-ContainCollection "$($floor.Major).$($floor.Minor)" `
+            -Because 'the declared floor must be one of the versions actually run'
+        foreach ($m in '7.0', '7.1', '7.2', '7.3', '7.4', '7.5') {
+            $minors | Should-ContainCollection $m -Because "no leg covers PowerShell $m"
+        }
+    }
+
+    It 'exempts only minors that are neither covered nor imaginary' {
+        # An exemption is a claim, and the watcher fails a claim that stopped describing
+        # anything. Asserting the shape here means a typo fails in the suite rather than as a
+        # weekly issue nobody reads.
+        $exempt = @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PS_COMPAT_EXEMPT_MINORS') -split ' ' |
+                Where-Object { $_ })
+        $minors = @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PS_COMPAT_VERSIONS') -split ' ' |
+                Where-Object { $_ } | ForEach-Object { $v = [version]$_; "$($v.Major).$($v.Minor)" })
+        foreach ($e in $exempt) {
+            $e | Should-MatchString '^\d+\.\d+$' -Because 'an exemption names a minor, not a full version'
+            $minors | Should-NotContainCollection $e -Because "PowerShell $e is exempted and also covered by a leg; one of the two is wrong"
         }
     }
 
@@ -507,5 +544,77 @@ Describe 'the declared PowerShell floor and the legs that execute it' {
         $pinned = Get-PSMutantPinValue -Line (Get-Content (Join-Path $root '.github/pins.env')) -Name 'PS_COMPAT_PESTER'
         $pinned | Should-NotBeNull -Because 'PS_COMPAT_PESTER must name the Pester the PowerShell legs run under'
         [version]$pinned | Should-BeLessThan ([version]'6.0.0')
+    }
+}
+
+Describe 'Get-PSMutantVersionListFault' {
+    BeforeAll {
+        # One shape reused: three legs at 5.0/5.1/6.0, and a feed that has more.
+        $script:ours = @('5.0.4', '5.1.1', '6.0.1')
+        $script:feed = @('4.9.0', '5.0.1', '5.0.4', '5.1.0', '5.1.1', '6.0.0', '6.0.1')
+    }
+
+    It 'says nothing when every leg is the newest patch of its minor' {
+        # The kept case. Without it every assertion below would pass against a function that
+        # returned a fault for everything.
+        @(Get-PSMutantVersionListFault -Name 'X' -Ours $script:ours -Available $script:feed).Count | Should-Be 0
+    }
+
+    It 'reports a leg that is no longer the newest patch of its minor' {
+        (Get-PSMutantVersionListFault -Name 'X' -Ours @('5.0.1', '5.1.1', '6.0.1') -Available $script:feed) -join ' ' |
+            Should-BeLikeString '*PATCH: X leg 5.0.1 is superseded by 5.0.4*'
+    }
+
+    It 'reports a released minor that no leg covers' {
+        (Get-PSMutantVersionListFault -Name 'X' -Ours @('5.0.4', '6.0.1') -Available $script:feed) -join ' ' |
+            Should-BeLikeString '*MINOR: X 5.1 has been released*'
+    }
+
+    It 'reports a whole major that nothing tests' {
+        (Get-PSMutantVersionListFault -Name 'X' -Ours @('5.0.4', '5.1.1') -Available $script:feed) -join ' ' |
+            Should-BeLikeString '*MAJOR: X 6.x exists*'
+    }
+
+    It 'ignores everything below the lowest leg' {
+        # The floor. The feed holds 4.9.0 and the promise starts at 5.0 -- reporting it would be a
+        # gap in a range the module never claimed, and the first run of this check did exactly that
+        # for two whole Pester majors.
+        (Get-PSMutantVersionListFault -Name 'X' -Ours $script:ours -Available $script:feed) -join ' ' |
+            Should-NotBeLikeString '*4.9*'
+    }
+
+    It 'honours an exemption for a minor nobody covers' {
+        @(Get-PSMutantVersionListFault -Name 'X' -Ours @('5.0.4', '6.0.1') -Available $script:feed -ExemptMinor @('5.1')).Count |
+            Should-Be 0
+    }
+
+    It 'refuses an exemption for a version that was never released' {
+        (Get-PSMutantVersionListFault -Name 'X' -Ours $script:ours -Available $script:feed -ExemptMinor @('9.9')) -join ' ' |
+            Should-BeLikeString '*EXEMPTION: X 9.9 is exempted but has never been released*'
+    }
+
+    It 'refuses an exemption for a minor that IS covered' {
+        # Both halves of a contradiction are faults, because either one alone is a lie about the
+        # list: an exemption that is also tested has stopped describing anything, exactly like a
+        # stale equivalence declaration.
+        (Get-PSMutantVersionListFault -Name 'X' -Ours $script:ours -Available $script:feed -ExemptMinor @('5.1')) -join ' ' |
+            Should-BeLikeString '*exempted and also covered by a leg*'
+    }
+
+    It 'reports an unreachable feed rather than reading silence as good news' {
+        (Get-PSMutantVersionListFault -Name 'X' -Ours $script:ours -Available @()) -join ' ' |
+            Should-BeLikeString '*could not be checked*'
+    }
+
+    It 'reports an empty list rather than passing over nothing' {
+        (Get-PSMutantVersionListFault -Name 'X' -Ours @() -Available $script:feed) -join ' ' |
+            Should-BeLikeString '*no compatibility versions pinned*'
+    }
+
+    It 'survives a prerelease string in the feed' {
+        # A gallery feed answers with things like 6.2.0-beta1, which [version] refuses outright. One
+        # such entry must not fail the whole check -- and its MINOR still counts as released.
+        (Get-PSMutantVersionListFault -Name 'X' -Ours $script:ours -Available ($script:feed + '6.2.0-beta1')) -join ' ' |
+            Should-BeLikeString '*MINOR: X 6.2*'
     }
 }
