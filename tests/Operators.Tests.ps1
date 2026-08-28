@@ -430,8 +430,17 @@ function Get-Kind {
         It 'never replaces a return that is already $null' {
             # `return $null` -> `return $null` is not a mutation; it would be born
             # surviving and could only ever inflate the survivor list.
-            @($script:returns | Where-Object Original -eq '$null').Count | Should-Be 0
-            $script:returns.Count | Should-BeGreaterThan 0
+            #
+            # Collected HERE rather than read from the sibling ReturnValue Context. Reading
+            # $script:returns across Contexts made this test unrunnable on its own -- under
+            # -FullNameFilter, or VS Code's Pester adapter, it failed on a $null that has nothing
+            # to do with what it asserts. The guard-rail line below made that loud rather than
+            # silent, which is why it was an ergonomics defect and not a correctness one; one line
+            # of collection removes it either way.
+            $returns = @(Get-PSMutationCandidate -Path $script:structFixture -Operators @('ReturnValue'))
+            @($returns | Where-Object Original -eq '$null').Count | Should-Be 0
+            # Kept: an empty set would satisfy the line above for the wrong reason.
+            $returns.Count | Should-BeGreaterThan 0
         }
 
         It 'refuses an operator name it does not know, naming the alternatives' {
