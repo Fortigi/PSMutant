@@ -282,6 +282,30 @@ scored. Nothing is emitted outside a recognised CI.
   variable, which is read at run time and stays data whatever it contains.
 
 ### Internal
+- **The end-to-end counts are asserted exactly** (#36). They were open inequalities --
+  `Total | Should-BeGreaterThan 0` -- over a fixture that is fully determined and produces the
+  same three mutants on every run, so they could not tell 3 from 30 or from 1. That suite is the
+  last line of defence against a run producing plausible-looking but wrong counts. The mutant SET
+  is pinned too: three mutants of the wrong operator on the wrong lines sum to three just as well.
+- **Two shared-state defects in the suite are closed** (#43). `Operators.Tests`' `guards` Context
+  read `$script:returns` from its sibling Context and so could not run alone -- verified on main,
+  a run filtered to `guards` failed on a `$null` unrelated to what it asserts. And `Runner.Tests`
+  carried an assertion that could not fail: a local was declared, never assigned, then asserted
+  null. Removing it exposed the real problem underneath -- `$script:seenTests` is written by a
+  sibling test, so the surviving assertion could pass on the previous test's value with the mock
+  never firing. Both tests now clear it first.
+- **Two consumer-shaped fixtures** (#35), where every previous one had this module's own flat
+  `src/` + `tests/` shape. A NESTED source tree, which is where the sandbox path mapping is
+  actually exercised -- a flat layout has no separator in the relative part and cannot assert the
+  display path comes back `src/Domain/Calc.ps1` with forward slashes. And a MODULE-SHAPED consumer
+  whose test imports a manifest at the repo root, outside `sandboxSubtrees`.
+
+  The second came out differently from what #35 assumed, which is why it was worth running rather
+  than reasoning about: the issue expected a silent, vacuous score and proposed a new feature to
+  detect it. Measured, the run already refuses loudly -- `Assert-PSMutationBaselineGreen` throws
+  and names the failing test and its message. The tests pin a guard that was already right, and
+  the proposed feature is not needed.
+
 - `Invoke-PSMutationBaseline` takes `-SandboxRoot` and writes coverage there. Mandatory rather than
   defaulted to temp: the sandbox is the one directory a run owns and disposes of, and a default
   would put the file back in shared temp for any caller who forgot.
