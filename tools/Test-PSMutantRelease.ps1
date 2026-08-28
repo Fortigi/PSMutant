@@ -294,9 +294,22 @@ function Get-PSMutantRewrittenManifest {
     # Without this an apostrophe closes the string and the manifest stops parsing at all --
     # discovered at publish, on the one step that cannot be undone.
     $literal = "'" + ($Notes -replace "'", "''") + "'"
-    $pattern = "(?s)(ReleaseNotes\s*=\s*)'.*?'(?=\s*(
-?
-|\}))"
+
+    # The pattern must understand that escaping too, and for a long time it did not (#171).
+    # It was `'.*?'` guarded by a lookahead for a newline or a closing brace, which reads
+    # correctly until the value being REPLACED already contains a doubled quote. Then the
+    # second quote of an escaped pair, followed by ` }` or a line break, satisfies the
+    # lookahead: the match ends INSIDE the old value, the new one is spliced in there, and
+    # the remainder is left behind as bare tokens. The manifest stops parsing, and the error
+    # names a stray word rather than the cause. Any quoted phrase at the end of a line is
+    # enough -- it took two -Apply runs and no other change to produce it.
+    #
+    # This is the unrolled-loop spelling of a single-quoted PowerShell string: an opening
+    # quote, then runs of non-quotes separated by DOUBLED quotes, then the close. It consumes
+    # an escaped quote as content, so the match can only end at the real terminator, and it
+    # backtracks linearly rather than exponentially on a long value. Being exact, it needs no
+    # lookahead -- the old one was doing the work the body should have done.
+    $pattern = "(ReleaseNotes\s*=\s*)'[^']*(?:''[^']*)*'"
     if ($ManifestText -notmatch $pattern) {
         throw 'Manifest has no single-quoted ReleaseNotes value to replace.'
     }
