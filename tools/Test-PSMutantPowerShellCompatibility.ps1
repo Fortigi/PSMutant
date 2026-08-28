@@ -193,8 +193,8 @@ if ($Child) {
     # that misbehaved. PowerShell 7.0 and 7.1 are built on .NET Core 3.1 and .NET 5 and need
     # libssl 1.1, which a current Linux distribution no longer ships -- they die with "No usable
     # version of libssl was found" before executing a single line of this file, and the process
-    # exit code alone is indistinguishable from a real difference. Borrowed from the sibling's
-    # equivalent gate, which had it and this one did not.
+    # exit code alone is indistinguishable from a real difference. This gate did not have the
+    # marker until a leg failed and the report named the wrong culprit.
     Write-Output "STARTED $($PSVersionTable.PSVersion)"
 
     # ABSENT is a distinct answer from broken, exactly as in the Pester gate.

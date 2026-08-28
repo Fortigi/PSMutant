@@ -1,5 +1,5 @@
 # CI gate. Everything runs in the required "test" job -- a red lint, a complexity breach
-# (measured by our sibling module PSComplexity), a unit-test failure, a coverage drop or
+# (measured by PSComplexity), a unit-test failure, a coverage drop or
 # a self-mutation regression all block the merge. Dependencies are pinned for
 # reproducibility.
 #
@@ -199,7 +199,7 @@ jobs:
           Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
           ./tools/Measure-PSMutantCoverage.ps1
 
-      # Complexity gate via our sibling module PSComplexity (faithful cognitive metric).
+      # Complexity gate via PSComplexity (faithful cognitive metric).
       - name: Complexity gate (PSComplexity)
         shell: pwsh
         run: |

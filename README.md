@@ -294,7 +294,7 @@ Every one of these runs in the CI `test` job and blocks the merge on failure:
 - **Coverage** — 100% of `src/`, measured by `tools/Measure-PSMutantCoverage.ps1`.
 - **PSScriptAnalyzer** — zero Error/Warning findings (`Write-Host` is the one allowed rule).
 - **Complexity** — every unit must stay at or under **15 cyclomatic** and **15 cognitive**,
-  measured by the sibling module [**PSComplexity**](https://github.com/Fortigi/PSComplexity)
+  measured by [**PSComplexity**](https://github.com/Fortigi/PSComplexity)
   (`Test-PSComplexity`) — a faithful cognitive metric, not a bundled approximation.
 - **Self-mutation** — PSMutant mutation-tests itself; the score must stay above the
   `thresholds.break` floor in `psmutant.self.config.json`.

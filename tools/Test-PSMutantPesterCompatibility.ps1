@@ -109,7 +109,8 @@ function Invoke-PSMutantCompatControl {
         `Pester` by NAME to the newest installed, and that collides with the Pester.dll already
         in the process. The error names assembly versions and never mentions this module, so a
         gate built that way cannot test the floor it defends and reports the module broken when
-        pointed at it. That is the sibling's #115, and it is the same trap here.
+        pointed at it. That trap is not unique to this module -- a gate built on a command that
+        arrived mid-range cannot reach the floor it defends.
 
         6>$null replaces Output.Verbosity = 'None', which lives on the configuration object this
         can no longer build. Pester writes its progress to the information stream.

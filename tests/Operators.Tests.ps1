@@ -996,8 +996,8 @@ Describe 'the per-file AST index' {
 
     It 'does not serve one tree the PREVIOUS tree nodes' {
         # A type-keyed table cannot be shared the way a node-reference-keyed one can: appended to
-        # rather than replaced, it hands back the file before it. The sibling project hit exactly
-        # that -- a fixture reporting an `if` from the previous file.
+        # rather than replaced, it hands back the file before it -- a fixture reporting an `if`
+        # from the previous file, which is how this was found.
         $one = $script:P::ParseInput('if ($first) { 1 }', [ref]$null, [ref]$null)
         $two = $script:P::ParseInput('if ($second) { 2 }', [ref]$null, [ref]$null)
         $t = [type]("$($script:L)IfStatementAst")
@@ -1025,8 +1025,8 @@ Describe 'the per-file AST index' {
         # that disables it -- and this cache is the whole point of the change, not a micro
         # optimisation: without it every operator rebuilds and the walk count goes back up.
         #
-        # Proved the way the sibling proves its own memos: plant a value and show that a rebuild
-        # would overwrite it. Force the guard to $false and this test gets the real nodes back
+        # Proved the way a memo has to be: plant a value and show that a rebuild would overwrite
+        # it. Force the guard to $false and this test gets the real nodes back
         # instead of the sentinel.
         $ast = $script:P::ParseInput('if ($a) { 1 }', [ref]$null, [ref]$null)
         $ty = [type]("$($script:L)IfStatementAst")

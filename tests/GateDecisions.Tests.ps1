@@ -291,7 +291,7 @@ Describe 'Get-PSMutantProcessStateFault' {
 Describe 'a pin is watched, not just written down' {
     # A pin is a decision that was correct on the day it was made. Nothing watched them, and
     # the failure is asymmetric: a stale pin never breaks the build, it just quietly stops
-    # protecting you. The sibling repo's pin on THIS module sat at 0.1.0 across two majors --
+    # protecting you. A consumer's pin on a gating module sat at 0.1.0 across two majors --
     # one of which fixed a bug that scored every mutant killed -- and its CI stayed green.
 
     It 'reports a pin the gallery has moved past' {
@@ -501,8 +501,8 @@ Describe 'the declared PowerShell floor and the legs that execute it' {
         # resolving by name takes the newest. Measured: Pester 6.1.0 fails on PowerShell 7.2 with
         # "Unable to find type [PesterConfiguration]" and works on 7.4, while its own manifest
         # claims PowerShellVersion 5.1. Unpinned, the floor leg would fail for a reason that is
-        # not about this module. The sibling's gate needs no such pin: nothing in its src/ calls
-        # a Pester API.
+        # not about this module. A gate over a module that does NOT drive Pester needs no such
+        # pin; this one does, because driving Pester is what it is for.
         $root = Split-Path -Parent $PSScriptRoot
         $pinned = Get-PSMutantPinValue -Line (Get-Content (Join-Path $root '.github/pins.env')) -Name 'PS_COMPAT_PESTER'
         $pinned | Should-NotBeNull -Because 'PS_COMPAT_PESTER must name the Pester the PowerShell legs run under'

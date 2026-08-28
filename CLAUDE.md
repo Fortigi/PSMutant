@@ -37,7 +37,7 @@ CI (`.github/workflows/ci.yml`) runs, in order:
 | Unit tests | whole `tests/` directory, must be 0 failures. Two gates live only here: `Layering.Tests.ps1` (file-to-file edges, acyclicity, the one `Write-Host`) and the public-help and schema assertions in `EndToEnd.Tests.ps1` |
 | Order independence | `tools/Test-PSMutantOrderIndependence.ps1` — the same suite again, reversed, plus an environment comparison |
 | Coverage | `tools/Measure-PSMutantCoverage.ps1` — **100%** over `src/`, enforced |
-| Complexity | sibling module PSComplexity, 15 cyclomatic / 15 cognitive per unit |
+| Complexity | PSComplexity, 15 cyclomatic / 15 cognitive per unit |
 | Self-mutation | `Invoke-PSMutation -ConfigFile ./psmutant.self.config.json`, break = 100. Several hundred mutants and a handful of minutes -- deliberately not a figure to keep in step, because a hand-maintained count is how the numbers here became folklore before |
 | Pester compatibility | `tools/Test-PSMutantPesterCompatibility.ps1` — a real mutation run under the Pester version the suite does *not* use |
 
@@ -257,7 +257,7 @@ Its behaviour is pinned by the normal suite at 100% coverage instead.
 ## The mutant runspace is warm, and what that costs to keep true
 
 Every mutant used to get a fresh `[PowerShell]` and its own `Import-Module Pester`. Measured with
-PSComplexity as the target -- a real consumer repo, which is a better subject than this module's own
+a real consumer repo as the target, which is a better subject than this module's own
 source and is also the consumer-shaped fixture #35 asks for -- that floor is about **396 ms**, and
 over an 801 s run it was **219 s, 27%**, re-importing a module that does not change between mutants.
 
@@ -466,7 +466,7 @@ The same shape at a much larger scale is #174: each operator calls `FindAll` wit
 scriptblock predicate, so the default set walks every file **six times** -- 1.55M predicate
 invocations over 259k nodes -- where one indexing pass would serve all of them.
 
-**Measure reach on a consumer, not on this repo.** Neither this module's source nor PSComplexity's
+**Measure reach on a consumer, not on this repo.** Neither this module's source nor the one it gates
 contains a single ternary, and between them they hold exactly one `switch` -- so neither is any use
 for judging whether an operator matters. A 238-file consumer holds 2137 `if` statements, 18 `switch`
 statements, 59 value clauses against 3 script-block ones. The value clauses are where nearly every

@@ -274,9 +274,9 @@ function Get-PSMutantStalePinFault {
     )
     # A pin is a decision that was correct on the day it was made. Without a watcher it decays
     # into a decision nobody is making, and the failure is asymmetric: a stale pin never breaks
-    # the build, it just quietly stops protecting you. The sibling repo's pin on THIS module sat
-    # at 0.1.0 across two majors -- one of which fixed a bug that scored every mutant killed --
-    # and its CI was green throughout.
+    # the build, it just quietly stops protecting you. Observed: a consumer's pin on a gating
+    # module sat at 0.1.0 across two majors -- one of which fixed a bug that scored every mutant
+    # killed -- and its CI was green throughout.
     if ([string]::IsNullOrWhiteSpace($Pinned)) { return "$Name has no pinned version in .github/pins.env." }
     # "Could not look" is not "nothing newer". Reported as its own fault, because a checker
     # that reads an unreachable gallery as good news has stopped being able to fail at all.

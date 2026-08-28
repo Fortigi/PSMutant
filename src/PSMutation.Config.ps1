@@ -370,7 +370,7 @@ function Get-PSMutationReportPath {
     # within one `git add -A` of being committed.
     #
     # `../shared/r.json` already worked and still does; it was only the rooted form that was
-    # silently rewritten. Same guard, and the same reason, as Get-PSCxRelativePath in the sibling
+    # silently rewritten. The same guard, and the same reason, that any path-mapping layer needs
     # module -- which carries a comment about GetFullPath quietly using the working directory when
     # nobody checks.
     if ([System.IO.Path]::IsPathRooted($raw)) { return [System.IO.Path]::GetFullPath($raw) }

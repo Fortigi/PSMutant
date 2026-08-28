@@ -5,7 +5,7 @@
 .DESCRIPTION
     A pin is a decision that was correct on the day it was made. Nothing watched them here, and
     the failure mode is asymmetric: a stale pin never breaks the build, it just quietly stops
-    protecting you. The sibling repo's pin on THIS module sat at 0.1.0 across two majors -- one
+    protecting you. A consumer's pin on a gating module sat at 0.1.0 across two majors -- one
     of which fixed a bug that scored every mutant killed -- and its CI was green throughout.
 
     Reports rather than throws. A stale pin is a decision to make, not a build to break, and a
