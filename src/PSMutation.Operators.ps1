@@ -377,34 +377,32 @@ function Get-PSMutationDefaultToken {
 function Get-PSMutationDefaultKeywordExtent {
     <#
     .SYNOPSIS
-        The extent of a switch's `default` KEYWORD, or $null when it has no default clause.
+        The extent of a switch's `default` KEYWORD, given the file's Default tokens.
     .DESCRIPTION
         `default` is the one switch decision that is not on the AST. SwitchStatementAst exposes
-        `Default` as the StatementBlockAst BODY, so there is no condition node to force and no
-        extent to splice over -- which is why the clause went unreached and why the gap was filed
-        as needing statement removal, an operator this module does not have.
+        `Default` as the StatementBlockAst BODY, so there is no condition node to force -- which is
+        why the clause went unreached, and why it was twice written off as needing statement
+        removal, an operator this module does not have. It does not: the keyword is an ordinary
+        token, and forcing it is the same offset splice every other candidate uses.
 
-        It does not. The keyword is an ordinary token, and forcing it is the same offset splice
-        every other candidate uses. `default { 'none' }` becomes `{ $false } { 'none' }`, a clause
-        that never matches -- which is exactly a switch with no fallback -- or `{ $true } { 'none' }`,
-        which fires unconditionally rather than only when nothing else matched:
+        The rule is simply the LAST Default token that ends at or before this switch's default
+        BODY begins. Tokens arrive in document order, so the last one to satisfy that is the
+        nearest one above the body, which is this switch's own keyword.
 
-            switch ($x) { 1 { 'one' } default { 'none' } }
-              baseline                  x=1 one        x=99 none
-              default -> { $false }     x=1 one        x=99 <nothing>   <- fallback is dead
-              default -> { $true }      x=1 one none   x=99 none        <- fires when it should not
+        That nearness is what makes it correct without any further test. A nested switch's default
+        sits inside a clause body or inside a default body, so it is always FURTHER from this
+        body than this keyword is; and an earlier sibling switch's default is further still.
 
-        The dead-fallback direction is the fault worth catching: a `default` nobody exercises is a
-        fallback that could be anything at all.
+        An earlier version bounded the search from below as well, opening the window after the
+        last clause's body -- or after the switch condition when there were no clauses. That is
+        three more decisions to get right, and self-mutation showed why it was the wrong shape:
+        several of them could not be falsified at all. `Clauses.Count -gt 0` forced to $true
+        yields `Clauses[-1]` on an empty collection, which is $null, which coerces to offset 0 --
+        the same answer the correct branch gives. A rule that needs no lower bound has no such
+        arm to test.
 
-        The token is located by POSITION rather than by searching text, which matters for two
-        reasons. A block comment may itself contain the word "default" between the last clause and
-        the real keyword, which parses fine and defeats an IndexOf over the gap text. (That example
-        cannot be written out here: a literal comment-close sequence would end THIS comment, which
-        is how it was found.) And a nested switch has a `default` of its own; the
-        gap between THIS switch's last clause body and its own Default block cannot contain it,
-        because a nested default is inside a clause body or inside the default body, and both fall
-        outside that window.
+        `-le` rather than `-lt` because a keyword may END where the body BEGINS: `default{ 1 }`
+        is legal PowerShell and closes that gap to zero.
     #>
     [OutputType([object])]
     [CmdletBinding()]
@@ -412,23 +410,12 @@ function Get-PSMutationDefaultKeywordExtent {
         [Parameter(Mandatory)] $Switch,
         [Parameter(Mandatory)] [object[]]$Tokens
     )
-    # No guard on $Switch.Default here, and no Kind test in the loop below. The caller skips a
-    # switch without a default, and $Tokens is already only Default tokens -- so both would be
-    # branches whose false arm nothing can reach, which is the shape this project fails other
-    # people's code for. There is no final `return $null` either: a foreach that matches nothing
-    # yields nothing, which the caller reads as no keyword.
-    #
-    # With no clauses at all -- `switch ($x) { default { } }` -- the window opens after the
-    # switch CONDITION instead of after a last clause that does not exist.
-    $from = if ($Switch.Clauses.Count -gt 0) {
-        $Switch.Clauses[-1].Item2.Extent.EndOffset
-    } else {
-        $Switch.Condition.Extent.EndOffset
-    }
     $to = $Switch.Default.Extent.StartOffset
+    $found = $null
     foreach ($tok in $Tokens) {
-        if ($tok.Extent.StartOffset -ge $from -and $tok.Extent.EndOffset -le $to) { return $tok.Extent }
+        if ($tok.Extent.EndOffset -le $to) { $found = $tok.Extent }
     }
+    return $found
 }
 
 function Get-PSMutationSwitchConditionCandidate {
@@ -471,21 +458,20 @@ function Get-PSMutationSwitchConditionCandidate {
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
     $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
-    # Fetched ONCE per file and only when a switch actually has a default clause. Measured: the
-    # obvious spelling -- getting the tokens unconditionally at the top of this function -- cost
-    # 24% of ConditionForcing's whole analysis time on a 235-file repo, because MOST FILES
-    # CONTAIN NO SWITCH and every one of them still paid for it.
-    $defaults = $null
     foreach ($n in $nodes) {
         foreach ($clause in $n.Clauses) {
             New-PSMutationForcedCandidate -Extent $clause.Item1.Extent -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
         }
         if (-not $n.Default) { continue }
-        if ($null -eq $defaults) { $defaults = Get-PSMutationDefaultToken -Ast $Ast }
-        $keyword = Get-PSMutationDefaultKeywordExtent -Switch $n -Tokens $defaults
-        if ($keyword) {
-            New-PSMutationForcedCandidate -Extent $keyword -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
-        }
+        # Fetched per switch-with-a-default rather than memoised per file. A memo is one more
+        # decision, and self-mutation showed it was one nothing could kill: re-fetching returns
+        # the same tokens, so its two arms differ only in speed. Files holding more than one
+        # switch WITH a default are rare enough that the honest spelling wins.
+        $keyword = Get-PSMutationDefaultKeywordExtent -Switch $n -Tokens (Get-PSMutationDefaultToken -Ast $Ast)
+        # No `if ($keyword)`: a switch whose Default is set always has the keyword above it, so
+        # the guard's false arm is unreachable and its mutant unkillable. If that invariant ever
+        # breaks, a null extent fails loudly here rather than dropping the candidate in silence.
+        New-PSMutationForcedCandidate -Extent $keyword -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
     }
 }
 
