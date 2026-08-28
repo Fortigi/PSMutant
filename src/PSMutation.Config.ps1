@@ -361,6 +361,19 @@ function Get-PSMutationReportPath {
     if ($fault) { throw $fault }
     # No escape check: a report is an OUTPUT, not a mutation target, and writing one to a
     # shared artifacts directory above the source root is a reasonable thing to ask for.
+    #
+    # An ABSOLUTE path is honoured as given. PowerShell's Join-Path CONCATENATES rather than
+    # letting a rooted right-hand side win, so `/var/artifacts/r.json` used to come back as
+    # `<SourceRoot>/var/artifacts/r.json` -- the report written somewhere the caller did not ask
+    # for, with no error, and INSIDE the tree this module otherwise takes care never to write to.
+    # Observed for real: a run created a directory chain under the repo being mutated, which came
+    # within one `git add -A` of being committed.
+    #
+    # `../shared/r.json` already worked and still does; it was only the rooted form that was
+    # silently rewritten. Same guard, and the same reason, as Get-PSCxRelativePath in the sibling
+    # module -- which carries a comment about GetFullPath quietly using the working directory when
+    # nobody checks.
+    if ([System.IO.Path]::IsPathRooted($raw)) { return [System.IO.Path]::GetFullPath($raw) }
     return [System.IO.Path]::GetFullPath((Join-Path $SourceRoot $raw))
 }
 
