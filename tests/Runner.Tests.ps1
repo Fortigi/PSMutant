@@ -468,6 +468,81 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
         @($r.FailedTest).Count | Should-Be 1
         $r.FailedTest[0] | Should-Be 'Recheck.annotates under a CI -- Expected 1 call, but was 0.'
     }
+
+    It 'skips a LEADING BLANK line rather than reporting an empty reason' {
+        # A Pester message can begin with a blank line -- it does on the CI runners and did not on
+        # the machine the original was written on, so the first form of this took index 0 and the
+        # gate printed "Failed: Some.Test -- ." on CI only.
+        #
+        # That empty reason is the bare test name this field exists to improve on: a -Quiet gate
+        # prints one line, and a name with no reason sends the reader to reproduce a failure that
+        # is not happening on their machine. Found by an end-to-end test going red on both legs.
+        Mock Invoke-Pester {
+            [pscustomobject]@{
+                Result       = 'Failed'
+                CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
+                Failed       = @(
+                    [pscustomobject]@{
+                        ExpandedPath = 'Get-Sign.is pos'
+                        ErrorRecord  = [pscustomobject]@{
+                            Exception = [pscustomobject]@{
+                                Message = "`r`n   `r`nThe term 'Get-Sign' is not recognized.`r`nat <ScriptBlock>, calc.Tests.ps1:2"
+                            }
+                        }
+                    }
+                )
+            }
+        }
+
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
+
+        $r.FailedTest[0] | Should-Be "Get-Sign.is pos -- The term 'Get-Sign' is not recognized."
+    }
+
+    It 'reports a message that is ONE line, blank-padded, as just that line' {
+        # The commonest real shape, and the one no other fixture here has: exactly one non-empty
+        # line. The two-line fixtures above cannot distinguish `-gt 0` from `-gt 1` -- both take
+        # index 0 when there are two -- so the boundary was unpinned and the mutation gate found
+        # it. With one line and `-gt 1`, the guard falls through to the whole raw message, blank
+        # padding and all.
+        Mock Invoke-Pester {
+            [pscustomobject]@{
+                Result       = 'Failed'
+                CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
+                Failed       = @(
+                    [pscustomobject]@{
+                        ExpandedPath = 'Solo.Test'
+                        ErrorRecord  = [pscustomobject]@{ Exception = [pscustomobject]@{ Message = "`r`nonly this line`r`n" } }
+                    }
+                )
+            }
+        }
+
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
+
+        $r.FailedTest[0] | Should-Be 'Solo.Test -- only this line'
+    }
+
+    It 'falls back to the whole message when every line is blank' {
+        # Something beats nothing: an all-whitespace message is degenerate, but reporting '' for it
+        # puts the gate back to a bare test name -- the exact shape the line above removes.
+        Mock Invoke-Pester {
+            [pscustomobject]@{
+                Result       = 'Failed'
+                CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
+                Failed       = @(
+                    [pscustomobject]@{
+                        ExpandedPath = 'Some.Test'
+                        ErrorRecord  = [pscustomobject]@{ Exception = [pscustomobject]@{ Message = "`r`n  `r`n" } }
+                    }
+                )
+            }
+        }
+
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
+
+        $r.FailedTest[0] | Should-BeLikeString 'Some.Test -- *'
+    }
 }
 
 Describe 'Assert-PSMutationBaselineGreen' {

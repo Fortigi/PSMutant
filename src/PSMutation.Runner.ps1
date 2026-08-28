@@ -84,7 +84,17 @@ function Invoke-PSMutationBaseline {
         # carriage return, which travels into an exception message and prints as a stray line
         # break in the middle of the gate's one line of output.
         FailedTest      = @($result.Failed | ForEach-Object {
-                $why = @($_.ErrorRecord.Exception.Message -split "\r?\n")[0]
+                # The first NON-EMPTY line, not simply the first. A Pester failure message can
+                # begin with a blank line -- it does on the CI runners and did not on the machine
+                # this was written on -- and taking [0] then yields '', so the gate printed
+                # "Failed: Some.Test -- ." That is the bare test name this whole field exists to
+                # improve on: a run reported by a -Quiet gate prints one line, and a name with no
+                # reason sends the reader to reproduce a failure that is not happening on their
+                # machine. Falls back to the whole message rather than to '' when every line is
+                # blank, because something is always better than nothing here.
+                $lines = @($_.ErrorRecord.Exception.Message -split "\r?\n" |
+                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
+                $why = if ($lines.Count -gt 0) { $lines[0].Trim() } else { [string]$_.ErrorRecord.Exception.Message }
                 "$($_.ExpandedPath) -- $why"
             })
     }
