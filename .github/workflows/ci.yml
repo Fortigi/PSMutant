@@ -146,6 +146,15 @@ jobs:
           Import-Module ./PSMutant.psd1 -Force
           Get-Command Invoke-PSMutation -ErrorAction Stop | Out-Null
 
+      # Watches THIS directory for drift from the repository this one is paired with, which
+      # nothing did: the two gate each other, so their CI is assumed comparable, and it was not
+      # -- in thirteen ways at once. Each workflow reads fine on its own, which is why only a
+      # shared rule set catches it. It found a real fault here on its first run: publish.yml ran
+      # the suite with the classic Should syntax still legal while ci.yml forbade it.
+      - name: CI parity (the capabilities both repos share)
+        shell: pwsh
+        run: ./tools/Test-PSMutantCiParity.ps1
+
       - name: Release consistency (ModuleVersion, CHANGELOG, ReleaseNotes)
         shell: pwsh
         run: ./tools/Test-PSMutantRelease.ps1 | Out-Null

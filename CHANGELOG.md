@@ -52,6 +52,38 @@ nothing:
   `StartsWith('../')` arm, so only a path whose way back is exactly `..` -- a config entry naming the
   repo's parent -- distinguishes `-or` from `-and` there.
 
+**Something now compares this repository's CI to the one it is paired with.** The two gate each
+other, which makes it easy to assume their pipelines are comparable; they were not, in thirteen ways
+at once, and nothing compared them, because each workflow reads perfectly well on its own and a gap
+is only visible from outside either repo.
+
+`tools/Test-PSMutantCiParity.ps1` checks `.github/workflows/` against the shared rules in
+`tools/ParityDecisions.ps1`: every job carries a `timeout-minutes`, every workflow a concurrency
+group and a `permissions` block, `publish.yml` never cancels in progress, every action pinned to a
+SHA with the version in a trailing comment, no version written out where `pins.env` should be read,
+no lint spelled inline, every Pester configuration disabling the classic `Should` syntax, and
+`ci.yml` running a matrix over both operating systems with `fail-fast: false`.
+
+**The rules are stated as shape, never by file name**, so `ParityDecisions.ps1` is byte-identical in
+both repos apart from the command prefix. That is the whole mechanism: **diffing the two copies IS
+the comparison**, and declining a rule becomes a deletion somebody has to argue for in a diff rather
+than a silence. Until now only one side held a copy, so there was nothing to diff and the gate could
+not fire in the direction that mattered.
+
+It found a real fault here on its first run, the same class it found on its first run in the other
+repo and reached independently: `publish.yml` ran the suite with the classic `Should` syntax still
+legal while `ci.yml` forbade it -- a publish-time gate weaker than the merge gate, which is the
+direction that matters, since it is the last one before something irreversible. Fixed in this change.
+
+Reads **comment-stripped** text, which is not fussiness: a workflow can spend six lines of prose on
+`Invoke-ScriptAnalyzer` explaining why it does *not* call it, and a grep reads that as an inline lint
+gate. Text rather than parsed YAML because PowerShell ships no YAML parser, and pinning one would add
+a dependency to the gate that watches the dependencies.
+
+Note for anyone extending the complexity gate beyond `src/`: `Get-PSMutantWorkflowFact` measures
+21 cyclomatic / 25 cognitive. It is the parser, it is not gated in either repo today, and it cannot
+be refactored on one side alone without breaking the byte-identity the mechanism rests on.
+
 ## [0.4.0] - 2026-08-28
 
 > Renamed from an unreleased 0.3.3. That version was prepared but never tagged and never
