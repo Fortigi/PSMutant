@@ -418,9 +418,53 @@ switch ($x) { 1 { 'one' } 'a' { 'letter' } default { 'none' } }
 The shadowing case is the fault worth catching, and it is why `New-PSMutationForcedCandidate` takes
 the forced spellings as a PARAMETER rather than assuming `$true`/`$false`.
 
-**`default` is still not reached**, and that is a real limitation rather than an oversight: it sits
-outside `Clauses` on the AST and has no condition to force. Removing the clause entirely is
-statement removal, an operator this module does not have; #172 records it.
+**`default` IS reached, and getting there meant disproving this file.** This section used to say
+the clause was out of scope because it sits outside `Clauses` with no condition to force, so
+removing it would be statement removal -- an operator this module does not have. The first half is
+true and the conclusion does not follow. `default` is an ordinary TOKEN, and splicing over it is
+the same offset replacement as everything else: `{ $false }` gives a switch whose fallback is dead,
+`{ $true }` one that fires when it should not.
+
+That makes **twice** on this one operator that "this needs new machinery" was written into an issue
+*and* into this file before anyone spent ten minutes trying it -- first a value clause, said to need
+a syntax rewrite, then `default`, said to need statement removal. Both were an extent splice. The
+general rule is the one already here about `ReferenceEqualityComparer`: **a claim about what the
+framework cannot do is checkable in ten seconds, so check it before designing around it.**
+
+The keyword is located by POSITION -- the window between a switch's last clause body and its own
+default block -- rather than by searching that text for the word. A block comment in the gap can
+contain it, and a nested switch has a `default` of its own, which the window excludes because an
+inner default sits inside a clause body.
+
+**Get the tokens lazily, and let the linter pick the design.** Two spellings were measured and both
+were wrong before the third.
+
+Filtering the token stream at the top of the candidate function cost **24%** of ConditionForcing's
+whole analysis time over 235 files -- because MOST FILES CONTAIN NO `switch`, and every one of them
+paid a full scan for nothing.
+
+Threading the tokens down from the parse in `Get-PSMutationCandidate` is free at run time, and is
+what the second attempt did. It also needs a `-Tokens` parameter on **all eleven** operator
+functions, because they are dispatched uniformly by name -- nine of which never read it.
+PSScriptAnalyzer reports that as nine `PSReviewUnusedParameter` findings, correctly, and excluding
+the rule to keep the design would have muted a check doing exactly its job.
+
+So the tokens are re-derived inside the one function that wants them, only for a file that holds a
+switch WITH a default -- ten of those 235 files. Interleaved CPU time over three pairs: **6269ms
+against 6267ms**, with the sign flipping between pairs. An extra parse on 4% of files is free, a
+dead parameter on ten functions is not, and the lint gate is what made the difference visible.
+
+Walk to the ROOT before tokenising. Only a root extent's offsets are file offsets; tokenising a
+subtree's text yields offsets relative to that fragment, which splices at the wrong place and
+**still parses**, so nothing downstream would catch it.
+
+The same shape at a much larger scale is #174: each operator calls `FindAll` with its own
+scriptblock predicate, so the default set walks every file **six times** -- 1.55M predicate
+invocations over 259k nodes -- where one indexing pass would serve all of them.
+
+The same shape at a much larger scale is #174: each operator calls `FindAll` with its own
+scriptblock predicate, so the default set walks every file **six times** -- 1.55M predicate
+invocations over 259k nodes -- where one indexing pass would serve all of them.
 
 **Measure reach on a consumer, not on this repo.** Neither this module's source nor PSComplexity's
 contains a single ternary, and between them they hold exactly one `switch` -- so neither is any use

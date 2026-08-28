@@ -340,12 +340,135 @@ function Get-Kind {
                     Where-Object { $_.Mutated -eq '$true' -and $_.Original -eq '1' }) | Should-BeCollection @()
         }
 
-        It 'declines the DEFAULT clause, which has no condition to force' {
-            # It is not in Clauses at all -- SwitchStatementAst carries it separately -- so this
-            # pins that the walk does not reach for it. Removing the whole clause would be the
-            # analogous mutation, and that is statement removal rather than condition forcing.
-            @(Get-PSMutationCandidate -Path $script:decisionFixture -Operators @('ConditionForcing') |
-                    Where-Object Original -like '*default*') | Should-BeCollection @()
+        It 'forces the DEFAULT clause, which is a token rather than an AST node' {
+            # This replaces a test that asserted the opposite, and it is the SECOND time on this
+            # one operator that "it needs statement removal / a syntax rewrite" was written down
+            # before anyone tried it. `default` is not in Clauses -- SwitchStatementAst carries the
+            # BODY separately and there is no condition node -- but the keyword is an ordinary
+            # token, so forcing it is the same offset splice as everything else.
+            $def = @(Get-PSMutationCandidate -Path $script:decisionFixture -Operators @('ConditionForcing') |
+                    Where-Object Original -eq 'default')
+            @($def).Count | Should-Be 2
+            ($def.Mutated | Sort-Object) | Should-BeCollection @('{ $false }', '{ $true }')
+        }
+
+        It 'locates the default keyword by POSITION, not by searching the text' {
+            # A block comment sitting in the gap can contain the word "default" and defeat an
+            # IndexOf. The keyword forced must be the real one -- asserted by its column, since
+            # both the comment and the keyword are on the same line.
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defcomment-$PID.ps1"
+            # Built rather than written literally: a comment-close sequence inside the here-string
+            # of THIS file would end the wrong comment.
+            $open = '<' + '#'; $close = '#' + '>'
+            $prefix = "function T { param(`$x) switch (`$x) { 1 { 'a' } $open default $close "
+            "$prefix default { 'b' } } }" | Set-Content $f -Encoding utf8
+            try {
+                $def = @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing') |
+                        Where-Object Original -eq 'default')
+                @($def).Count | Should-Be 2
+                # The EXACT offset of the real keyword, which is one past the prefix ending in the
+                # comment. An IndexOf over the gap text would have returned the word in the comment,
+                # at an offset inside it -- so this discriminates rather than merely passing.
+                $def[0].StartOffset | Should-Be ($prefix.Length + 1)
+            } finally { Remove-Item $f -ErrorAction SilentlyContinue }
+        }
+
+        It 'forces a default in a switch that has NO other clauses' {
+            # The window has to open after the switch CONDITION when there is no last clause to
+            # open it after -- the arm of that branch a switch with clauses never exercises.
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defonly-$PID.ps1"
+            "function T { param(`$x) switch (`$x) { default { 'only' } } }" | Set-Content $f -Encoding utf8
+            try {
+                @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing') |
+                        Where-Object Original -eq 'default').Count | Should-Be 2
+            } finally { Remove-Item $f -ErrorAction SilentlyContinue }
+        }
+
+        It 'emits only the clause candidates for a switch with no default at all' {
+            # The other side of that pair: the walk must skip the default work entirely rather
+            # than reach for a keyword that is not there. Two candidates, both from the clause.
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-nodef-$PID.ps1"
+            "function T { param(`$x) switch (`$x) { 1 { 'a' } } }" | Set-Content $f -Encoding utf8
+            try {
+                $got = @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing'))
+                @($got).Count | Should-Be 2
+                @($got | Where-Object Original -eq 'default') | Should-BeCollection @()
+            } finally { Remove-Item $f -ErrorAction SilentlyContinue }
+        }
+
+        It 'forces the KEYWORD, not whatever token happens to sit above the body' {
+            # The token list is filtered to Default tokens, and this is the fixture that proves the
+            # filter does work. Comments ARE in the token stream, so with a comment between the
+            # keyword and its body the nearest token above the body is the COMMENT -- an unfiltered
+            # search picks that and forces `<# c #>` instead of `default`. Every other fixture here
+            # has the keyword directly above the body, where filtered and unfiltered agree.
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defgap-$PID.ps1"
+            $open = '<' + '#'; $close = '#' + '>'
+            "function T { param(`$x) switch (`$x) { 1 { 'a' } default $open c $close { 'b' } } }" |
+                Set-Content $f -Encoding utf8
+            try {
+                $got = @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing'))
+                @($got | Where-Object Original -eq 'default').Count | Should-Be 2
+                @($got | Where-Object { $_.Original -like "*$open*" }) | Should-BeCollection @()
+            } finally { Remove-Item $f -ErrorAction SilentlyContinue }
+        }
+
+        It 'reaches a default keyword that ENDS exactly where its body begins' {
+            # `default{ 'a' }` with no space is legal PowerShell, and it closes the gap between the
+            # keyword's end offset and the body block's start offset to ZERO. The bound has to be
+            # inclusive to see it, so this is the one fixture that tells `-le` from `-lt`.
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-deftight-$PID.ps1"
+            "function T { param(`$x) switch (`$x) { 1 { 'a' } default{ 'b' } } }" |
+                Set-Content $f -Encoding utf8
+            try {
+                @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing') |
+                        Where-Object Original -eq 'default').Count | Should-Be 2
+            } finally { Remove-Item $f -ErrorAction SilentlyContinue }
+        }
+
+        It 'gives a NESTED switch its own default, not the outer one twice' {
+            # The window is the gap between a switch's last clause body and its own default block,
+            # so an inner default -- which sits inside a clause body -- cannot be picked up by the
+            # outer switch. Two defaults in, two distinct extents out.
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defnest-$PID.ps1"
+            @'
+function T {
+    param($x, $y)
+    switch ($x) {
+        1 { switch ($y) { 2 { 'inner' } default { 'innerdef' } } }
+        default { 'outerdef' }
+    }
+}
+'@ | Set-Content $f -Encoding utf8
+            try {
+                $def = @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing') |
+                        Where-Object Original -eq 'default')
+                @($def).Count | Should-Be 4
+                @($def.Line | Sort-Object -Unique) | Should-BeCollection @(4, 5)
+            } finally { Remove-Item $f -ErrorAction SilentlyContinue }
+        }
+
+        It 'reports FILE offsets when handed a subtree, not offsets into the fragment' {
+            # The tokens are re-derived from the root of whatever tree the operator is given,
+            # because only a ROOT extent's offsets are file offsets. Handed a subtree and
+            # tokenising ITS text, the default would be spliced at an offset short by the length
+            # of everything above it -- and the result would still parse, so nothing else here
+            # would notice. The prefix is deliberately long enough that the two cannot coincide.
+            $src = @'
+function Outer {
+    param($x)
+    switch ($x) { 1 { 'a' } default { 'b' } }
+}
+'@
+            $ast = [System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null)
+            $body = $ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)[0].Body
+            $got = @(Get-PSMutationSwitchConditionCandidate -Ast $body -File 'f.ps1' |
+                    Where-Object Original -eq 'default')
+            @($got).Count | Should-Be 2
+            $got[0].StartOffset | Should-Be $src.IndexOf('default')
+            # Not the fragment offset, which is what a subtree tokenisation would have produced.
+            $got[0].StartOffset | Should-NotBe $body.Extent.Text.IndexOf('default')
         }
 
         It 'leaves a ternary in a LOOP CONDITION alone' {
@@ -835,5 +958,88 @@ $topLevel = 3
         Get-PSMutationEnclosingFunction -Offset 30 -Ranges $ranges | Should-Be 'Inner'
         # Outside the nested one, the enclosing function is still the answer.
         Get-PSMutationEnclosingFunction -Offset 50 -Ranges $ranges | Should-Be 'Outer'
+    }
+}
+
+Describe 'the per-file AST index' {
+    BeforeAll {
+        $script:P = [System.Management.Automation.Language.Parser]
+        $script:L = 'System.Management.Automation.Language.'
+    }
+
+    It 'answers an -is query with every SUBTYPE, not just the exact type' {
+        # The one place a type-keyed index can silently change behaviour. StringConstantExpressionAst
+        # IS A ConstantExpressionAst, and NumberLiteral asks for the base type -- so an index keyed
+        # on exact types alone would stop seeing string constants and quietly shrink the mutant set.
+        # A smaller set scoring the same is precisely what this module exists to catch elsewhere.
+        ([type]("$($script:L)StringConstantExpressionAst")).IsSubclassOf(
+            [type]("$($script:L)ConstantExpressionAst")) | Should-BeTrue
+        $ast = $script:P::ParseInput('$a = 1; $b = "two"', [ref]$null, [ref]$null)
+        $consts = @(Get-PSMutationNodeByKind -Ast $ast -Type ([type]("$($script:L)ConstantExpressionAst")))
+        # Both the number and the string, because both ARE constant expressions.
+        @($consts | ForEach-Object { $_.Extent.Text } | Sort-Object) | Should-BeCollection @('1', '"two"' | Sort-Object)
+    }
+
+    It 'returns nodes in the same order FindAll does' {
+        # Candidate ids are assigned from a canonical sort, and a report records survivors by id.
+        # A traversal-order change renumbers every mutant while the recheck compatibility gate sees
+        # no change, so it would match survivors against a different set.
+        $ast = $script:P::ParseInput('if ($a) { if ($b) { 1 } }; if ($c) { 2 }', [ref]$null, [ref]$null)
+        $t = [type]("$($script:L)IfStatementAst")
+        $viaFindAll = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true))
+        $viaIndex = @(Get-PSMutationNodeByKind -Ast $ast -Type $t)
+        @($viaIndex).Count | Should-Be @($viaFindAll).Count
+        for ($i = 0; $i -lt $viaFindAll.Count; $i++) {
+            $viaIndex[$i].Extent.StartOffset | Should-Be $viaFindAll[$i].Extent.StartOffset
+        }
+    }
+
+    It 'does not serve one tree the PREVIOUS tree nodes' {
+        # A type-keyed table cannot be shared the way a node-reference-keyed one can: appended to
+        # rather than replaced, it hands back the file before it. The sibling project hit exactly
+        # that -- a fixture reporting an `if` from the previous file.
+        $one = $script:P::ParseInput('if ($first) { 1 }', [ref]$null, [ref]$null)
+        $two = $script:P::ParseInput('if ($second) { 2 }', [ref]$null, [ref]$null)
+        $t = [type]("$($script:L)IfStatementAst")
+        @(Get-PSMutationNodeByKind -Ast $one -Type $t).Count | Should-Be 1
+        $got = @(Get-PSMutationNodeByKind -Ast $two -Type $t)
+        @($got).Count | Should-Be 1
+        $got[0].Clauses[0].Item1.Extent.Text | Should-Be '$second'
+    }
+
+    It 'searches only the SUBTREE it was given' {
+        # The index is keyed on the Ast object handed in, not on its root, because that is what
+        # FindAll does. Rooting it instead would let an operator handed a subtree emit candidates
+        # for code outside it -- offsets that are real, for a unit nobody asked about.
+        $ast = $script:P::ParseInput("function A { if (`$x) { 1 } }`nfunction B { if (`$y) { 2 } }", [ref]$null, [ref]$null)
+        $fnB = @($ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) |
+            Where-Object { $_.Name -eq 'B' }
+        $got = @(Get-PSMutationNodeByKind -Ast $fnB.Body -Type ([type]("$($script:L)IfStatementAst")))
+        @($got).Count | Should-Be 1
+        $got[0].Clauses[0].Item1.Extent.Text | Should-Be '$y'
+    }
+
+    It 'builds the index ONCE per tree and reuses it' {
+        # A cache's two arms differ only in SPEED, so comparing output can never catch a mutant
+        # that disables it -- and this cache is the whole point of the change, not a micro
+        # optimisation: without it every operator rebuilds and the walk count goes back up.
+        #
+        # Proved the way the sibling proves its own memos: plant a value and show that a rebuild
+        # would overwrite it. Force the guard to $false and this test gets the real nodes back
+        # instead of the sentinel.
+        $ast = $script:P::ParseInput('if ($a) { 1 }', [ref]$null, [ref]$null)
+        $ty = [type]("$($script:L)IfStatementAst")
+        $null = Get-PSMutationNodeByKind -Ast $ast -Type $ty
+        $planted = [System.Collections.Generic.List[object]]::new()
+        $planted.Add('sentinel')
+        $script:PSMutationIndex[$ty] = $planted
+        @(Get-PSMutationNodeByKind -Ast $ast -Type $ty) | Should-BeCollection @('sentinel')
+    }
+
+    It 'returns an empty collection for a type the file does not contain' {
+        $ast = $script:P::ParseInput('$a = 1', [ref]$null, [ref]$null)
+        @(Get-PSMutationNodeByKind -Ast $ast -Type ([type]("$($script:L)SwitchStatementAst"))) |
+            Should-BeCollection @()
     }
 }
