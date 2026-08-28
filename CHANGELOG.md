@@ -282,6 +282,15 @@ scored. Nothing is emitted outside a recognised CI.
   variable, which is read at run time and stays data whatever it contains.
 
 ### Internal
+- **A failing baseline no longer reports an empty reason.** `Invoke-PSMutationBaseline` took the
+  first line of a Pester failure message; a message that begins with a blank line -- which they do
+  on the CI runners and did not on the machine the code was written on -- made that `''`, so the
+  gate printed `Failed: Some.Test -- .` That is the bare test name the field exists to improve on:
+  a `-Quiet` gate prints one line, and a name with no reason sends the reader to reproduce a
+  failure that is not happening on their machine. It now takes the first NON-EMPTY line, and falls
+  back to the whole message rather than to `''`. Found by one of the new end-to-end fixtures going
+  red on both CI legs.
+
 - **The end-to-end counts are asserted exactly** (#36). They were open inequalities --
   `Total | Should-BeGreaterThan 0` -- over a fixture that is fully determined and produces the
   same three mutants on every run, so they could not tell 3 from 30 or from 1. That suite is the

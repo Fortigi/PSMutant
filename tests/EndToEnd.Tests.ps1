@@ -826,7 +826,12 @@ Describe 'Get-Sign' { It 'is pos' { Get-Sign 5 | Should -Be 'pos' } }
         try { Invoke-PSMutation -ConfigFile $script:modConfig -SourceRoot $script:modProj -Quiet }
         catch { $message = $_.Exception.Message }
         $message | Should-BeLikeString '*Get-Sign.is pos*'
-        $message | Should-BeLikeString "*'Get-Sign' is not recognized*"
+        # The test NAME and a non-empty reason -- not Pester's exact wording, which is not ours to
+        # guarantee and differs between machines. The first draft asserted the literal
+        # "'Get-Sign' is not recognized" and went red on both CI legs, where the message came back
+        # "Failed: Get-Sign.is pos -- ." That empty reason was a real defect, now fixed in
+        # Invoke-PSMutationBaseline; this asserts the property rather than the prose.
+        $message | Should-NotBeLikeString '*is pos -- .*'
     }
 
     It 'writes no report for a run it refused' {
