@@ -88,6 +88,20 @@
       "items": { "type": "string" },
       "description": "Full runs only. Equivalence declarations that are no longer true or no longer identify exactly one mutant. Non-empty means the run failed on them."
     },
+    "skippedAsUncovered": {
+      "type": "integer",
+      "description": "Full runs only. Candidates the covered-lines filter removed before any test ran. Beside declaredEquivalent because it answers the same question -- how much of what the config asked for is NOT behind the score -- and this one usually removes far more."
+    },
+    "filesWithNoMutants": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Full runs only. Files in 'mutate' that produced no candidate at all. Empty is the ordinary answer and is written as [], never as [null]."
+    },
+    "filesWithoutTestMapping": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Full runs only. Files in 'mutate' with no 'tests' entry, which therefore fall back to running the whole suite -- correct, but slow, and otherwise invisible. Empty is the ordinary answer and is written as [], never as [null]: these three fields were absent from this schema until #158, which is why a [null] here went unnoticed for two releases. Declaring 'items' is what makes that shape invalid rather than merely wrong."
+    },
     "thresholds": {
       "type": ["object", "null"],
       "description": "Full runs only. The gate as configured; null when none was set, which means report-only.",
@@ -124,6 +138,9 @@
           "survived",
           "declaredEquivalent",
           "staleEquivalents",
+          "skippedAsUncovered",
+          "filesWithNoMutants",
+          "filesWithoutTestMapping",
           "thresholds"
         ]
       }
