@@ -33,6 +33,41 @@ $script:PSMutationBoundaryMap = @{ '-gt' = '-ge'; '-ge' = '-gt'; '-lt' = '-le'; 
 # repo gating on thresholds.break would go red purely from upgrading the module.
 $script:PSMutationDefaultOperators = @('BinaryOperator', 'BooleanLiteral', 'NumberLiteral', 'NegationRemoval')
 
+$script:PSMutationIndexFor = $null
+$script:PSMutationIndex = $null
+
+function Confirm-PSMutationAstIndex {
+    # Walk the given tree ONCE and bucket every node by type, including its base types, so an
+    #  query is a dictionary hit. Keyed on the exact Ast object handed in -- not its root --
+    # because FindAll searches the subtree it is called on, and an operator handed a subtree must
+    # not see nodes outside it.
+    param([Parameter(Mandatory)] $Ast)
+    if ($script:PSMutationIndexFor -eq $Ast) { return }
+    $idx = @{}
+    # No `param()` on the predicate: it ignores the node, and a declared-but-unused parameter is
+    # a PSReviewUnusedParameter finding this repo does not exclude.
+    foreach ($n in $Ast.FindAll({ $true }, $true)) {
+        $ty = $n.GetType()
+        while ($ty -and $ty -ne [object]) {
+            $bucket = $idx[$ty]
+            if ($null -eq $bucket) { $bucket = [System.Collections.Generic.List[object]]::new(); $idx[$ty] = $bucket }
+            $bucket.Add($n)
+            $ty = $ty.BaseType
+        }
+    }
+    # Assigned together and last: a half-built index under the new key would be served as complete.
+    $script:PSMutationIndex = $idx
+    $script:PSMutationIndexFor = $Ast
+}
+
+function Get-PSMutationNodeByKind {
+    param([Parameter(Mandatory)] $Ast, [Parameter(Mandatory)] [type]$Type)
+    Confirm-PSMutationAstIndex -Ast $Ast
+    $hit = $script:PSMutationIndex[$Type]
+    if ($null -eq $hit) { return @() }
+    return $hit
+}
+
 function Get-PSMutationKnownOperator {
     # Every operator name this module understands, sorted. A function rather than a bare
     # constant so the config validator can offer the alternatives without reading another
@@ -111,7 +146,7 @@ function Get-PSMutationLoopRange {
     [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Ast)
-    $loops = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.LoopStatementAst] }, $true)
+    $loops = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.LoopStatementAst]))
     # Comma operator so an empty result stays an [array] through the return (a bare
     # `@()` would unroll to $null and break the mandatory -Ranges binding downstream).
     return , @($loops | Where-Object { $_.Condition } | ForEach-Object {
@@ -129,7 +164,7 @@ function Get-PSMutationFunctionRange {
     [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Ast)
-    $fns = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+    $fns = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.FunctionDefinitionAst]))
     # Comma operator so an empty result stays an [array] through the return, exactly as
     # Get-PSMutationLoopRange does and for the same reason.
     return , @($fns | ForEach-Object {
@@ -191,7 +226,7 @@ function Get-PSMutationSwapCandidate {
         [Parameter(Mandatory)] [hashtable]$Map,
         [Parameter(Mandatory)] [string]$Operator
     )
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.BinaryExpressionAst]))
     foreach ($n in $nodes) {
         $ext = $n.ErrorPosition
         $key = $ext.Text.ToLowerInvariant()
@@ -215,7 +250,7 @@ function Get-PSMutationBooleanCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.VariableExpressionAst]))
     foreach ($n in $nodes) {
         $flip = switch ($n.VariablePath.UserPath.ToLowerInvariant()) {
             'true'  { '$false' }
@@ -233,7 +268,7 @@ function Get-PSMutationNumberCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ConstantExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.ConstantExpressionAst]))
     foreach ($n in $nodes) {
         if ($n.Value -isnot [int] -and $n.Value -isnot [long]) { continue }
         if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
@@ -247,7 +282,7 @@ function Get-PSMutationStringCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.StringConstantExpressionAst]))
     foreach ($n in $nodes) {
         if ($n.StringConstantType -notin 'SingleQuoted', 'DoubleQuoted') { continue }
         if ([string]::IsNullOrEmpty($n.Value)) { continue }
@@ -261,7 +296,7 @@ function Get-PSMutationNegationCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.UnaryExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.UnaryExpressionAst]))
     foreach ($n in $nodes) {
         if ($n.TokenKind -notin 'Not', 'Exclaim') { continue }
         if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
@@ -312,7 +347,7 @@ function Get-PSMutationIfConditionCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.IfStatementAst]))
     foreach ($n in $nodes) {
         foreach ($clause in $n.Clauses) {
             New-PSMutationForcedCandidate -Extent $clause.Item1.Extent -File $File -Ranges $Ranges -Forced '$true', '$false'
@@ -329,10 +364,93 @@ function Get-PSMutationTernaryConditionCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TernaryExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.TernaryExpressionAst]))
     foreach ($n in $nodes) {
         New-PSMutationForcedCandidate -Extent $n.Condition.Extent -File $File -Ranges $Ranges -Forced '$true', '$false'
     }
+}
+
+function Get-PSMutationDefaultToken {
+    <#
+    .SYNOPSIS
+        Every `default` KEYWORD token in the file the given tree came from.
+    .DESCRIPTION
+        The tokens are re-derived here rather than threaded down from the parse in
+        Get-PSMutationCandidate, and that is a deliberate trade rather than an oversight.
+
+        Threading them means a -Tokens parameter on all ELEVEN operator functions, because they
+        are dispatched uniformly by name. Nine of them would never read it, which PSScriptAnalyzer
+        reports as nine PSReviewUnusedParameter findings -- correctly. A dead parameter on every
+        operator to serve one is the wrong shape, and excluding the rule to hide it would mute a
+        check that is doing its job.
+
+        The cost of not threading is one extra parse, paid ONLY on a file that contains a switch
+        with a default clause -- ten of 235 files in the consumer this was measured against.
+        Interleaved, it does not move the analysis time.
+
+        The root is walked to because an operator is handed the tree it should search, and only a
+        ROOT extent's offsets are file offsets. Tokenising a subtree's text would produce offsets
+        relative to that fragment, which would splice at the wrong place in the file -- silently,
+        since the result still parses.
+    #>
+    [OutputType([System.Collections.Generic.List[object]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Ast)
+    $root = $Ast
+    while ($root.Parent) { $root = $root.Parent }
+    $tokens = $null
+    $null = [System.Management.Automation.Language.Parser]::ParseInput($root.Extent.Text, [ref]$tokens, [ref]$null)
+    $out = [System.Collections.Generic.List[object]]::new()
+    # A plain foreach rather than `| Where-Object {}`, for the reason the metric collectors avoid
+    # it: the pipeline invokes a PowerShell scriptblock once per token.
+    foreach ($tok in $tokens) {
+        if ($tok.Kind -eq [System.Management.Automation.Language.TokenKind]::Default) { $out.Add($tok) }
+    }
+    return $out
+}
+
+function Get-PSMutationDefaultKeywordExtent {
+    <#
+    .SYNOPSIS
+        The extent of a switch's `default` KEYWORD, given the file's Default tokens.
+    .DESCRIPTION
+        `default` is the one switch decision that is not on the AST. SwitchStatementAst exposes
+        `Default` as the StatementBlockAst BODY, so there is no condition node to force -- which is
+        why the clause went unreached, and why it was twice written off as needing statement
+        removal, an operator this module does not have. It does not: the keyword is an ordinary
+        token, and forcing it is the same offset splice every other candidate uses.
+
+        The rule is simply the LAST Default token that ends at or before this switch's default
+        BODY begins. Tokens arrive in document order, so the last one to satisfy that is the
+        nearest one above the body, which is this switch's own keyword.
+
+        That nearness is what makes it correct without any further test. A nested switch's default
+        sits inside a clause body or inside a default body, so it is always FURTHER from this
+        body than this keyword is; and an earlier sibling switch's default is further still.
+
+        An earlier version bounded the search from below as well, opening the window after the
+        last clause's body -- or after the switch condition when there were no clauses. That is
+        three more decisions to get right, and self-mutation showed why it was the wrong shape:
+        several of them could not be falsified at all. `Clauses.Count -gt 0` forced to $true
+        yields `Clauses[-1]` on an empty collection, which is $null, which coerces to offset 0 --
+        the same answer the correct branch gives. A rule that needs no lower bound has no such
+        arm to test.
+
+        `-le` rather than `-lt` because a keyword may END where the body BEGINS: `default{ 1 }`
+        is legal PowerShell and closes that gap to zero.
+    #>
+    [OutputType([object])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Switch,
+        [Parameter(Mandatory)] [object[]]$Tokens
+    )
+    $to = $Switch.Default.Extent.StartOffset
+    $found = $null
+    foreach ($tok in $Tokens) {
+        if ($tok.Extent.EndOffset -le $to) { $found = $tok.Extent }
+    }
+    return $found
 }
 
 function Get-PSMutationSwitchConditionCandidate {
@@ -374,11 +492,21 @@ function Get-PSMutationSwitchConditionCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.SwitchStatementAst]))
     foreach ($n in $nodes) {
         foreach ($clause in $n.Clauses) {
             New-PSMutationForcedCandidate -Extent $clause.Item1.Extent -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
         }
+        if (-not $n.Default) { continue }
+        # Fetched per switch-with-a-default rather than memoised per file. A memo is one more
+        # decision, and self-mutation showed it was one nothing could kill: re-fetching returns
+        # the same tokens, so its two arms differ only in speed. Files holding more than one
+        # switch WITH a default are rare enough that the honest spelling wins.
+        $keyword = Get-PSMutationDefaultKeywordExtent -Switch $n -Tokens (Get-PSMutationDefaultToken -Ast $Ast)
+        # No `if ($keyword)`: a switch whose Default is set always has the keyword above it, so
+        # the guard's false arm is unreachable and its mutant unkillable. If that invariant ever
+        # breaks, a null extent fails loudly here rather than dropping the candidate in silence.
+        New-PSMutationForcedCandidate -Extent $keyword -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
     }
 }
 
@@ -415,7 +543,7 @@ function Get-PSMutationReturnCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.ReturnStatementAst]))
     foreach ($n in $nodes) {
         # A bare `return` yields nothing already, and one that returns $null is the
         # mutation -- neither can change behaviour.
