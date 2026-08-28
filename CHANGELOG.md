@@ -284,6 +284,28 @@ scored. Nothing is emitted outside a recognised CI.
   variable, which is read at run time and stays data whatever it contains.
 
 ### Internal
+- **A re-run of `Test-PSMutantRelease.ps1 -Apply` no longer corrupts the manifest** (#171). The
+  value is escaped correctly on the way in -- each `'` doubled -- but the pattern that FOUND the
+  value to replace did not understand that escaping. It was `'.*?'` guarded by a lookahead for a
+  newline or a closing brace, which reads correctly until the stored value already contains a
+  doubled quote: the second quote of an escaped pair, followed by ` }` or a line break, satisfies
+  the lookahead, so the match ends INSIDE the old value, the new one is spliced in there, and the
+  remainder is left behind as bare tokens. The manifest then fails to parse, and the error names a
+  stray word rather than the cause.
+
+  Any quoted phrase at the end of a line arms it -- `the mode is called 'strict'` is enough -- and
+  it takes two `-Apply` runs and no other change to fire, because it is the value the FIRST write
+  leaves behind that arms the second. Found while regenerating the notes for this release.
+
+  The pattern is now the unrolled-loop spelling of a single-quoted PowerShell string,
+  `'[^']*(?:''[^']*)*'`, which consumes an escaped quote as content, can only end at the real
+  terminator, and backtracks linearly. Being exact it needs no lookahead at all.
+
+  `Get-PSMutantRewrittenManifest` had **no tests**, which is how this shipped. It has five now,
+  and three of them rewrite the manifest twice -- deliberately, because a single rewrite over a
+  pristine manifest passes with the broken pattern too. Verified by reverting the fix: all three
+  go red, and a one-shot version of the same tests stayed green.
+
 - The script-block-only guard in `Get-PSMutationSwitchConditionCandidate` is gone, which makes the
   walker simpler rather than more complex: every clause is forced the same way. The reasoning that
   put the guard there -- that a value clause needed a syntax rewrite and new machinery -- was wrong,
