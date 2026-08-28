@@ -1,6 +1,6 @@
 {
   "$schema": "./schemas/v1/config.schema.json",
-  "_comment": "PSMutant tested against ITSELF (dogfooding). Every source file is mutated except src/PSMutation.Sandbox.ps1, and that one exclusion is structural rather than a gap: its covering suite tests/Sandbox.Tests.ps1 calls Clear-PSMutationStaleSandbox for real, a self-mutation baseline runs IN-PROCESS so it shares $PID with the sandbox the run is executing from, and the sweep treats its own process id as reclaimable -- so naming that suite anywhere here deletes the live run's sandbox mid-baseline and turns the run red before a single mutant is tried. Its behaviour is pinned by the normal suite at 100% line coverage instead. NOTE: this exclusion previously cited a 'shared sandbox' (issue #2, since fixed) and then 'real temp side-effects', neither of which was the actual blocker. Run: Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .",
+  "_comment": "PSMutant tested against ITSELF (dogfooding). EVERY source file is mutated, including src/PSMutation.Sandbox.ps1 -- the file that enforces the headline guarantee that mutants never touch tracked source, and the last one outside these numbers until #22. What blocked it was never the file: tests/Sandbox.Tests.ps1 called Clear-PSMutationStaleSandbox for real, a baseline runs its covering suites IN-PROCESS so it shares $PID with the sandbox the run is executing from, and Test-PSMutationSandboxAbandoned treats its own process id as reclaimable -- so naming that suite anywhere here deleted the live run's sandbox mid-baseline and turned the run red before a single mutant was tried. The destructive half now lives in tests/SandboxSweep.Tests.ps1, which is DELIBERATELY NAMED NOWHERE in this file: AllTests is the union of every file under `tests`, so listing it as a covering suite for anything would kill the run again. It still runs in the ordinary suite. The assumption underneath -- that a process cannot already own a sandbox, which stops holding for any nested run -- is untouched and stays open on #22. Run: Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .",
   "_sandboxSubtreesComment": "schemas/ is copied because the module READS it at run time now: the config schema is the config format, and a sandboxed copy of src/ that cannot find it refuses every config, turning the baseline red before a mutant is tried.",
   "sandboxSubtrees": [
     "src",
@@ -15,7 +15,8 @@
     "src/PSMutation.Config.ps1",
     "src/PSMutation.Output.ps1",
     "src/PSMutation.Runner.ps1",
-    "src/Invoke-PSMutation.ps1"
+    "src/Invoke-PSMutation.ps1",
+    "src/PSMutation.Sandbox.ps1"
   ],
   "tests": {
     "src/PSMutation.Operators.ps1": [
@@ -41,6 +42,9 @@
     ],
     "src/Invoke-PSMutation.ps1": [
       "tests/Orchestrator.Tests.ps1"
+    ],
+    "src/PSMutation.Sandbox.ps1": [
+      "tests/Sandbox.Tests.ps1"
     ]
   },
   "coveredLinesOnly": true,
