@@ -630,9 +630,11 @@ Describe 'the published report schema' {
         # message read 'Required properties ["mode"] are not present', naming the one field
         # whose presence would turn the document into a recheck. Following it made things
         # worse, and it cost real time here.
-        $bad = $script:fullText -replace '(?m)^\s*"skippedAsUncovered":\s*\d+,
-?
-', ''
+        # The line is blanked rather than removed, and the pattern carries NO line ending.
+        # Spelled with a \r?\n it matched on Linux and nothing on Windows, where the report is
+        # CRLF -- so the fixture came back identical to the original, and the assertion below is
+        # the only reason that surfaced as a failure instead of as a vacuous pass.
+        $bad = $script:fullText -replace '(?m)^[ \t]*"skippedAsUncovered":[ \t]*\d+,[ \t]*\r?$', ''
         $bad | Should-NotBe $script:fullText -Because 'the fixture must actually differ, or this asserts nothing'
         $message = ''
         try { Test-Json -Json $bad -Schema $script:schema -ErrorAction Stop | Out-Null }

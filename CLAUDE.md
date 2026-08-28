@@ -1155,6 +1155,24 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   in the code and the changelog. `filesMutated` shipped with 862 characters of argument in its
   description before this was noticed.
 
+- **A regex carrying a LINE ENDING is a platform assumption, exactly like one carrying a path
+  separator.** A test fixture built with `-replace '...,\r?\n', ''` matched on Linux and matched
+  NOTHING on Windows, where the report is CRLF -- so the "broken" document handed to the validator
+  was byte-identical to the good one, and the test asserted that a valid report is valid. It was
+  green on Linux and only failed on the Windows leg.
+
+  Match the line's CONTENT and anchor with `(?m)...$`, never the terminator: `'(?m)^[ \t]*"field":
+  [ \t]*\d+,[ \t]*\r?$'` blanks the line on both platforms, and JSON does not care about the
+  empty line left behind. Probe a pattern against both endings before trusting it -- building the
+  same string twice, once with `\n` and once with `\r\n`, takes ten seconds and is the check that
+  would have caught this.
+
+  **What made it visible was the vacuity guard, not the assertion.** The test carried
+  `$bad | Should-NotBe $original -Because 'the fixture must actually differ, or this asserts
+  nothing'`, and that is the line that failed. Without it the test would have passed on both
+  platforms while checking nothing at all. Every test that builds a broken fixture by editing a
+  good one needs that guard.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
