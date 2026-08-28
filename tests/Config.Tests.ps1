@@ -693,6 +693,38 @@ Describe 'a config path answers for itself before anything uses it' {
             Should-MatchString ([regex]::Escape('mine.json'))
     }
 
+    It 'honours an ABSOLUTE reportPath instead of rebasing it under the source root' {
+        # PowerShell's Join-Path concatenates rather than letting a rooted right-hand side win, so
+        # '/var/artifacts/r.json' used to resolve to '<SourceRoot>/var/artifacts/r.json' -- the
+        # report written somewhere the caller did not ask for, with no error, and INSIDE the tree
+        # the sandbox exists to keep clean. Observed for real: a run built a directory chain under
+        # the repo being mutated.
+        #
+        # Built with GetTempPath rather than a literal '/var/...' so the assertion is about
+        # rootedness rather than about Unix, and still means something on Windows where an absolute
+        # path starts with a drive letter.
+        $absolute = Join-Path ([System.IO.Path]::GetTempPath()) 'psmut-abs-report.json'
+        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = $absolute }) -SourceRoot $script:root) |
+            Should-Be ([System.IO.Path]::GetFullPath($absolute))
+    }
+
+    It 'still resolves a RELATIVE reportPath against the source root' {
+        # The other half, and the one that fails if the guard is written the wrong way round. A
+        # test for the absolute case alone would pass just as well if every path were now taken
+        # literally, which would break every existing config.
+        $resolved = Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/mine.json' }) -SourceRoot $script:root
+        $resolved | Should-Be ([System.IO.Path]::GetFullPath((Join-Path $script:root 'out/mine.json')))
+        $resolved | Should-MatchString ([regex]::Escape($script:root))
+    }
+
+    It 'still resolves a path that climbs ABOVE the source root' {
+        # Documented as reasonable -- a shared artifacts directory beside the repo -- and it was
+        # never the broken case. Pinned so the fix for the rooted form cannot quietly take it away.
+        $resolved = Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = '../shared/r.json' }) -SourceRoot $script:root
+        $resolved | Should-Be ([System.IO.Path]::GetFullPath((Join-Path $script:root '../shared/r.json')))
+        $resolved | Should-NotMatchString ([regex]::Escape([System.IO.Path]::Combine($script:root, 'shared')))
+    }
+
     It 'throws through the reportPath resolver, not just the primitive' {
         # Through the resolver, because a fault function can be correct in both arms while
         # the caller ignores what it returns -- the caller is one line that deletes clean.
