@@ -143,6 +143,29 @@ Verifying one mutant does not need the whole suite either. The config maps each 
 to one covering suite, so `Config.Tests.ps1` is 101 tests in 4.6s where the whole `tests/`
 directory is 546 in 49s. Apply the mutant by hand, run that one file, restore.
 
+**Run the suite the way CI runs it, which means `$ErrorActionPreference = 'Stop'`.**
+
+```powershell
+$ErrorActionPreference = 'Stop'
+Invoke-Pester -Configuration $cfg
+```
+
+A developer shell defaults to `Continue`; the workflow steps run under `Stop`, and the difference
+is not cosmetic. Under `Stop` a failing `Import-Module` in a `BeforeAll` becomes terminating, so
+Pester marks every test in the block Failed and attaches the error to the **container** rather than
+to the test -- which means `$test.ErrorRecord` is EMPTY, and any code reading a reason off it gets
+nothing. That is a real difference in behaviour, not in formatting.
+
+It cost three pushes to find. A fixture went red on both CI legs while passing locally, and the
+first two fixes each addressed a different plausible cause -- Pester's wording, then a leading blank
+line -- without reaching it. One line in front of `Invoke-Pester` reproduces both legs on the
+machine you are standing on.
+
+The general shape, which is worth more than the specific bug: **the environment differences that
+matter are the ones that change control flow**, not the ones that change text. `$ErrorActionPreference`,
+`$PSNativeCommandUseErrorActionPreference` and strict mode all belong on that list; a locale or a
+console width does not.
+
 **CI is the LAST gate, not the first.** It exists to catch what local checking cannot see --
 the other operating system, the pinned dependency set, and the interaction between gates. A
 Linux-only defect shipped green from a Windows machine this way: a hard-coded backslash in a
@@ -367,6 +390,44 @@ the **green** run is the one that throws, under Actions only.
 pass the switch down; they never guard. Guarding at the call site means each new emitter has
 to remember, and one that forgets prints in quiet mode while every existing test stays green,
 because those tests assert on the output the *current* callers produce.
+
+## Forcing a decision: what a `switch` clause actually needs
+
+`ConditionForcing` reaches `if`/`elseif`, the ternary, and every `switch` clause. Getting the
+`switch` right took two attempts and the wrong reasoning was recorded in an issue before it was
+checked, so the conclusion is written here.
+
+**A clause condition is its own extent, so forcing it is an ordinary offset splice.** Both #46 and
+the follow-up I filed claimed a value clause needed a "syntax rewrite" and new machinery. It does
+not: `1 { 'one' }` becomes `{ $true } { 'one' }` by replacing the extent of `1`, exactly as every
+other operator replaces an extent.
+
+**Force to a SCRIPT BLOCK, never to a bare `$true`.** This is the part that is easy to get wrong and
+was got wrong first. PowerShell matches a clause with `$_ -eq <clause>`, so a bare `$true` spliced
+over `1` does not mean "always match" -- measured, it stops matching `x = 1` and starts matching
+`x = $true`. That is a value substitution with murky semantics, as likely to be equivalent as
+informative. Wrapping it makes the clause a CONDITION, which is what forcing means everywhere else:
+
+```
+switch ($x) { 1 { 'one' } 'a' { 'letter' } default { 'none' } }
+  baseline          x=1 one    x='a' letter      x=99 none
+  1 -> { $true }    x=1 one    x='a' one letter  x=99 one     <- shadows, and falls through
+  1 -> { $false }   x=1 none   x='a' letter      x=99 none
+```
+
+The shadowing case is the fault worth catching, and it is why `New-PSMutationForcedCandidate` takes
+the forced spellings as a PARAMETER rather than assuming `$true`/`$false`.
+
+**`default` is still not reached**, and that is a real limitation rather than an oversight: it sits
+outside `Clauses` on the AST and has no condition to force. Removing the clause entirely is
+statement removal, an operator this module does not have; #172 records it.
+
+**Measure reach on a consumer, not on this repo.** Neither this module's source nor PSComplexity's
+contains a single ternary, and between them they hold exactly one `switch` -- so neither is any use
+for judging whether an operator matters. IdentityAtlas, 238 files: 2137 `if` statements, 18 `switch`
+statements, 59 value clauses against 3 script-block ones. The value clauses are where nearly every
+switch decision lives, and measuring that is what turned this from a leftover into the substantive
+half.
 
 ## The two published schemas
 
