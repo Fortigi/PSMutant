@@ -396,6 +396,36 @@ function Get-Kind {
             } finally { Remove-Item $f -ErrorAction SilentlyContinue }
         }
 
+        It 'forces the KEYWORD, not whatever token happens to sit above the body' {
+            # The token list is filtered to Default tokens, and this is the fixture that proves the
+            # filter does work. Comments ARE in the token stream, so with a comment between the
+            # keyword and its body the nearest token above the body is the COMMENT -- an unfiltered
+            # search picks that and forces `<# c #>` instead of `default`. Every other fixture here
+            # has the keyword directly above the body, where filtered and unfiltered agree.
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defgap-$PID.ps1"
+            $open = '<' + '#'; $close = '#' + '>'
+            "function T { param(`$x) switch (`$x) { 1 { 'a' } default $open c $close { 'b' } } }" |
+                Set-Content $f -Encoding utf8
+            try {
+                $got = @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing'))
+                @($got | Where-Object Original -eq 'default').Count | Should-Be 2
+                @($got | Where-Object { $_.Original -like "*$open*" }) | Should-BeCollection @()
+            } finally { Remove-Item $f -ErrorAction SilentlyContinue }
+        }
+
+        It 'reaches a default keyword that ENDS exactly where its body begins' {
+            # `default{ 'a' }` with no space is legal PowerShell, and it closes the gap between the
+            # keyword's end offset and the body block's start offset to ZERO. The bound has to be
+            # inclusive to see it, so this is the one fixture that tells `-le` from `-lt`.
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-deftight-$PID.ps1"
+            "function T { param(`$x) switch (`$x) { 1 { 'a' } default{ 'b' } } }" |
+                Set-Content $f -Encoding utf8
+            try {
+                @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing') |
+                        Where-Object Original -eq 'default').Count | Should-Be 2
+            } finally { Remove-Item $f -ErrorAction SilentlyContinue }
+        }
+
         It 'gives a NESTED switch its own default, not the outer one twice' {
             # The window is the gap between a switch's last clause body and its own default block,
             # so an inner default -- which sits inside a clause body -- cannot be picked up by the
