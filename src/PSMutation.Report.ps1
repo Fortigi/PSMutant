@@ -59,8 +59,25 @@ function Get-PSMutationEquivalentKey {
     # `File:Function:Description` is stable under every edit that does not move the mutant
     # out of its function. `File:Line:Description` is still accepted, second, so existing
     # configs keep working -- a fix for key churn that invalidated every key would be a
-    # poor trade. Code at file scope has no function to be addressed by, so it keeps only
-    # the line form.
+    # poor trade.
+    #
+    # Code at FILE SCOPE has no function to be addressed by, and used to keep only the line
+    # form for that reason. It churned exactly as the paragraph above says it would: this
+    # repo's own `$script:PSMutationWarmUses = 0` declaration was re-keyed twice in one day,
+    # 154 -> 167 -> 181, by two unrelated edits, the second of which was comment-only and
+    # changed no code at all (#179). A declaration re-keyed by hand invites updating the
+    # number without re-reading the argument, which is how it stops being a claim anyone has
+    # checked.
+    #
+    # So file scope gets a stable NAME instead: `<script-body>`, the same synthetic the
+    # sibling uses for a unit with no enclosing function. It is not unique within a file --
+    # two file-scope mutants sharing a description answer to one key -- and that is handled
+    # rather than ignored: Get-PSMutationDeclarationFault already refuses a key matching more
+    # than one mutant as ambiguous. Loud and wrong beats quiet and drifting.
+    #
+    # The synthetic lives HERE and not in the report's `function` field, which stays empty.
+    # This is an addressing scheme; that field is a statement about the code, and there
+    # genuinely is no function.
     [OutputType([string[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Result)
@@ -73,8 +90,8 @@ function Get-PSMutationEquivalentKey {
     # [string[]], and dropping the @() turns a single key into a scalar the cast cannot
     # widen. Same shape as Get-PSMutationCandidate, same reason.
     $byLine = "$($Result.File):$($Result.Line):$($Result.Description)"
-    if ([string]::IsNullOrEmpty([string]$Result.Function)) { return [string[]]@($byLine) }
-    return [string[]]@("$($Result.File):$($Result.Function):$($Result.Description)", $byLine)
+    $name = [string]::IsNullOrEmpty([string]$Result.Function) ? '<script-body>' : [string]$Result.Function
+    return [string[]]@("$($Result.File):${name}:$($Result.Description)", $byLine)
 }
 
 function Get-PSMutationDeclaredKey {
