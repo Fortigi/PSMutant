@@ -960,3 +960,86 @@ $topLevel = 3
         Get-PSMutationEnclosingFunction -Offset 50 -Ranges $ranges | Should-Be 'Outer'
     }
 }
+
+Describe 'the per-file AST index' {
+    BeforeAll {
+        $script:P = [System.Management.Automation.Language.Parser]
+        $script:L = 'System.Management.Automation.Language.'
+    }
+
+    It 'answers an -is query with every SUBTYPE, not just the exact type' {
+        # The one place a type-keyed index can silently change behaviour. StringConstantExpressionAst
+        # IS A ConstantExpressionAst, and NumberLiteral asks for the base type -- so an index keyed
+        # on exact types alone would stop seeing string constants and quietly shrink the mutant set.
+        # A smaller set scoring the same is precisely what this module exists to catch elsewhere.
+        ([type]("$($script:L)StringConstantExpressionAst")).IsSubclassOf(
+            [type]("$($script:L)ConstantExpressionAst")) | Should-BeTrue
+        $ast = $script:P::ParseInput('$a = 1; $b = "two"', [ref]$null, [ref]$null)
+        $consts = @(Get-PSMutationNodeByKind -Ast $ast -Type ([type]("$($script:L)ConstantExpressionAst")))
+        # Both the number and the string, because both ARE constant expressions.
+        @($consts | ForEach-Object { $_.Extent.Text } | Sort-Object) | Should-BeCollection @('1', '"two"' | Sort-Object)
+    }
+
+    It 'returns nodes in the same order FindAll does' {
+        # Candidate ids are assigned from a canonical sort, and a report records survivors by id.
+        # A traversal-order change renumbers every mutant while the recheck compatibility gate sees
+        # no change, so it would match survivors against a different set.
+        $ast = $script:P::ParseInput('if ($a) { if ($b) { 1 } }; if ($c) { 2 }', [ref]$null, [ref]$null)
+        $t = [type]("$($script:L)IfStatementAst")
+        $viaFindAll = @($ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true))
+        $viaIndex = @(Get-PSMutationNodeByKind -Ast $ast -Type $t)
+        @($viaIndex).Count | Should-Be @($viaFindAll).Count
+        for ($i = 0; $i -lt $viaFindAll.Count; $i++) {
+            $viaIndex[$i].Extent.StartOffset | Should-Be $viaFindAll[$i].Extent.StartOffset
+        }
+    }
+
+    It 'does not serve one tree the PREVIOUS tree nodes' {
+        # A type-keyed table cannot be shared the way a node-reference-keyed one can: appended to
+        # rather than replaced, it hands back the file before it. The sibling project hit exactly
+        # that -- a fixture reporting an `if` from the previous file.
+        $one = $script:P::ParseInput('if ($first) { 1 }', [ref]$null, [ref]$null)
+        $two = $script:P::ParseInput('if ($second) { 2 }', [ref]$null, [ref]$null)
+        $t = [type]("$($script:L)IfStatementAst")
+        @(Get-PSMutationNodeByKind -Ast $one -Type $t).Count | Should-Be 1
+        $got = @(Get-PSMutationNodeByKind -Ast $two -Type $t)
+        @($got).Count | Should-Be 1
+        $got[0].Clauses[0].Item1.Extent.Text | Should-Be '$second'
+    }
+
+    It 'searches only the SUBTREE it was given' {
+        # The index is keyed on the Ast object handed in, not on its root, because that is what
+        # FindAll does. Rooting it instead would let an operator handed a subtree emit candidates
+        # for code outside it -- offsets that are real, for a unit nobody asked about.
+        $ast = $script:P::ParseInput("function A { if (`$x) { 1 } }`nfunction B { if (`$y) { 2 } }", [ref]$null, [ref]$null)
+        $fnB = @($ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)) |
+            Where-Object { $_.Name -eq 'B' }
+        $got = @(Get-PSMutationNodeByKind -Ast $fnB.Body -Type ([type]("$($script:L)IfStatementAst")))
+        @($got).Count | Should-Be 1
+        $got[0].Clauses[0].Item1.Extent.Text | Should-Be '$y'
+    }
+
+    It 'builds the index ONCE per tree and reuses it' {
+        # A cache's two arms differ only in SPEED, so comparing output can never catch a mutant
+        # that disables it -- and this cache is the whole point of the change, not a micro
+        # optimisation: without it every operator rebuilds and the walk count goes back up.
+        #
+        # Proved the way the sibling proves its own memos: plant a value and show that a rebuild
+        # would overwrite it. Force the guard to $false and this test gets the real nodes back
+        # instead of the sentinel.
+        $ast = $script:P::ParseInput('if ($a) { 1 }', [ref]$null, [ref]$null)
+        $ty = [type]("$($script:L)IfStatementAst")
+        $null = Get-PSMutationNodeByKind -Ast $ast -Type $ty
+        $planted = [System.Collections.Generic.List[object]]::new()
+        $planted.Add('sentinel')
+        $script:PSMutationIndex[$ty] = $planted
+        @(Get-PSMutationNodeByKind -Ast $ast -Type $ty) | Should-BeCollection @('sentinel')
+    }
+
+    It 'returns an empty collection for a type the file does not contain' {
+        $ast = $script:P::ParseInput('$a = 1', [ref]$null, [ref]$null)
+        @(Get-PSMutationNodeByKind -Ast $ast -Type ([type]("$($script:L)SwitchStatementAst"))) |
+            Should-BeCollection @()
+    }
+}

@@ -33,6 +33,41 @@ $script:PSMutationBoundaryMap = @{ '-gt' = '-ge'; '-ge' = '-gt'; '-lt' = '-le'; 
 # repo gating on thresholds.break would go red purely from upgrading the module.
 $script:PSMutationDefaultOperators = @('BinaryOperator', 'BooleanLiteral', 'NumberLiteral', 'NegationRemoval')
 
+$script:PSMutationIndexFor = $null
+$script:PSMutationIndex = $null
+
+function Confirm-PSMutationAstIndex {
+    # Walk the given tree ONCE and bucket every node by type, including its base types, so an
+    #  query is a dictionary hit. Keyed on the exact Ast object handed in -- not its root --
+    # because FindAll searches the subtree it is called on, and an operator handed a subtree must
+    # not see nodes outside it.
+    param([Parameter(Mandatory)] $Ast)
+    if ($script:PSMutationIndexFor -eq $Ast) { return }
+    $idx = @{}
+    # No `param()` on the predicate: it ignores the node, and a declared-but-unused parameter is
+    # a PSReviewUnusedParameter finding this repo does not exclude.
+    foreach ($n in $Ast.FindAll({ $true }, $true)) {
+        $ty = $n.GetType()
+        while ($ty -and $ty -ne [object]) {
+            $bucket = $idx[$ty]
+            if ($null -eq $bucket) { $bucket = [System.Collections.Generic.List[object]]::new(); $idx[$ty] = $bucket }
+            $bucket.Add($n)
+            $ty = $ty.BaseType
+        }
+    }
+    # Assigned together and last: a half-built index under the new key would be served as complete.
+    $script:PSMutationIndex = $idx
+    $script:PSMutationIndexFor = $Ast
+}
+
+function Get-PSMutationNodeByKind {
+    param([Parameter(Mandatory)] $Ast, [Parameter(Mandatory)] [type]$Type)
+    Confirm-PSMutationAstIndex -Ast $Ast
+    $hit = $script:PSMutationIndex[$Type]
+    if ($null -eq $hit) { return @() }
+    return $hit
+}
+
 function Get-PSMutationKnownOperator {
     # Every operator name this module understands, sorted. A function rather than a bare
     # constant so the config validator can offer the alternatives without reading another
@@ -111,7 +146,7 @@ function Get-PSMutationLoopRange {
     [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Ast)
-    $loops = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.LoopStatementAst] }, $true)
+    $loops = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.LoopStatementAst]))
     # Comma operator so an empty result stays an [array] through the return (a bare
     # `@()` would unroll to $null and break the mandatory -Ranges binding downstream).
     return , @($loops | Where-Object { $_.Condition } | ForEach-Object {
@@ -129,7 +164,7 @@ function Get-PSMutationFunctionRange {
     [OutputType([object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Ast)
-    $fns = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.FunctionDefinitionAst] }, $true)
+    $fns = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.FunctionDefinitionAst]))
     # Comma operator so an empty result stays an [array] through the return, exactly as
     # Get-PSMutationLoopRange does and for the same reason.
     return , @($fns | ForEach-Object {
@@ -191,7 +226,7 @@ function Get-PSMutationSwapCandidate {
         [Parameter(Mandatory)] [hashtable]$Map,
         [Parameter(Mandatory)] [string]$Operator
     )
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.BinaryExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.BinaryExpressionAst]))
     foreach ($n in $nodes) {
         $ext = $n.ErrorPosition
         $key = $ext.Text.ToLowerInvariant()
@@ -215,7 +250,7 @@ function Get-PSMutationBooleanCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.VariableExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.VariableExpressionAst]))
     foreach ($n in $nodes) {
         $flip = switch ($n.VariablePath.UserPath.ToLowerInvariant()) {
             'true'  { '$false' }
@@ -233,7 +268,7 @@ function Get-PSMutationNumberCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ConstantExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.ConstantExpressionAst]))
     foreach ($n in $nodes) {
         if ($n.Value -isnot [int] -and $n.Value -isnot [long]) { continue }
         if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
@@ -247,7 +282,7 @@ function Get-PSMutationStringCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.StringConstantExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.StringConstantExpressionAst]))
     foreach ($n in $nodes) {
         if ($n.StringConstantType -notin 'SingleQuoted', 'DoubleQuoted') { continue }
         if ([string]::IsNullOrEmpty($n.Value)) { continue }
@@ -261,7 +296,7 @@ function Get-PSMutationNegationCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.UnaryExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.UnaryExpressionAst]))
     foreach ($n in $nodes) {
         if ($n.TokenKind -notin 'Not', 'Exclaim') { continue }
         if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
@@ -312,7 +347,7 @@ function Get-PSMutationIfConditionCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.IfStatementAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.IfStatementAst]))
     foreach ($n in $nodes) {
         foreach ($clause in $n.Clauses) {
             New-PSMutationForcedCandidate -Extent $clause.Item1.Extent -File $File -Ranges $Ranges -Forced '$true', '$false'
@@ -329,7 +364,7 @@ function Get-PSMutationTernaryConditionCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.TernaryExpressionAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.TernaryExpressionAst]))
     foreach ($n in $nodes) {
         New-PSMutationForcedCandidate -Extent $n.Condition.Extent -File $File -Ranges $Ranges -Forced '$true', '$false'
     }
@@ -457,7 +492,7 @@ function Get-PSMutationSwitchConditionCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.SwitchStatementAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.SwitchStatementAst]))
     foreach ($n in $nodes) {
         foreach ($clause in $n.Clauses) {
             New-PSMutationForcedCandidate -Extent $clause.Item1.Extent -File $File -Ranges $Ranges -Forced '{ $true }', '{ $false }'
@@ -508,7 +543,7 @@ function Get-PSMutationReturnCandidate {
     [OutputType([pscustomobject[]])]
     [CmdletBinding()]
     param($Ast, [string]$File, [object[]]$Ranges = @())
-    $nodes = $Ast.FindAll({ param($n) $n -is [System.Management.Automation.Language.ReturnStatementAst] }, $true)
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.ReturnStatementAst]))
     foreach ($n in $nodes) {
         # A bare `return` yields nothing already, and one that returns $null is the
         # mutation -- neither can change behaviour.
