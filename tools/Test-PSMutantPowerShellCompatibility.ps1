@@ -96,7 +96,7 @@ function Test-Flag { param($x) if ($x) { return $true } else { return $false } }
 BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'calc.ps1') }
 Describe 'Get-Sign' {
     It 'is pos for positive' { Get-Sign 5 | Should -Be 'pos' }
-    It 'is neg for non-positive' { Get-Sign -5 | Should -Be 'neg' }
+    It 'is neg for non-positive' { Get-Sign (-5) | Should -Be 'neg' }
 }
 Describe 'Test-Flag' {
     It 'returns something for a truthy input' { { Test-Flag $true } | Should -Not -Throw }
@@ -197,6 +197,24 @@ if ($Child) {
     Import-Module Pester -RequiredVersion $PesterVersion -Force
     Import-Module (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'PSMutant.psd1') -Force
 
+    # THE CONTROL, and CI proved it was missing. Before any mutation, run the fixture's OWN suite
+    # on this host. Without it, a fixture that does not pass here is indistinguishable from the
+    # module misbehaving: the 7.0 leg failed with "Baseline suite is not green" and the gate
+    # reported "PSMutant does not behave identically on it", which blamed the wrong code.
+    #
+    # This is the same control the Pester gate carries, and it was left out here on the assumption
+    # that a fixture this small is portable. Observed, on 7.0 only -- 7.1 through 7.5 were
+    # identical: `Get-Sign -5` did not return what every other host returns. The exact parsing
+    # reason is not established here and the fixture no longer depends on it, since the call is
+    # parenthesised; what matters is that a fixture difference now REPORTS as one.
+    $control = Invoke-Pester -Path (Join-Path $FixtureRoot 'tests') -PassThru 6>$null
+    if ($control.FailedCount -gt 0 -or $control.PassedCount -eq 0) {
+        Write-Output "FIXTURE: the compatibility fixture's own suite does not pass on PowerShell $($PSVersionTable.PSVersion)."
+        Write-Output 'This is not a PSMutant failure -- nothing was mutated. The fixture is not portable to this host.'
+        foreach ($f in $control.Failed) { Write-Output "  FAILED: $($f.Name)" }
+        exit 4
+    }
+
     $config = Join-Path $FixtureRoot 'psmutant.json'
     $result = Invoke-PSMutation -ConfigFile $config -SourceRoot $FixtureRoot -Quiet
     $row = Get-PSMutantHostRow -Result $result -ReportPath (Join-Path $FixtureRoot 'reports/compat.json')
@@ -210,7 +228,10 @@ if ($Child) {
     exit 0
 }
 
-if (-not $Version) { $Version = Get-PSMutantPinnedList -Name 'PS_COMPAT_VERSIONS' -RepoRoot $repoRoot }
+# Whether the list came from the shipped pins or from the caller, because the floor check below
+# applies to one and not the other.
+$fromPins = -not $Version
+if ($fromPins) { $Version = Get-PSMutantPinnedList -Name 'PS_COMPAT_VERSIONS' -RepoRoot $repoRoot }
 if (-not $Version) {
     throw 'PS_COMPAT_VERSIONS is set neither in the environment nor in .github/pins.env. Refusing to run: a compatibility gate over zero versions passes every time.'
 }
@@ -220,8 +241,18 @@ if (-not $PesterVersion) {
 if (-not $PesterVersion) {
     throw 'PS_COMPAT_PESTER is set neither in the environment nor in .github/pins.env. This gate drives Pester, so it cannot pick one by accident: resolving by name takes the newest, which does not load on the oldest supported host.'
 }
-$floorFault = Get-PSMutantHostFloorFault -Declared (Import-PowerShellDataFile (Join-Path $repoRoot 'PSMutant.psd1')).PowerShellVersion -Leg $Version
-if ($floorFault) { throw $floorFault }
+# Only for the SHIPPED list. An explicit -Version is how a single failing leg gets reproduced, and
+# refusing that because one run does not cover the floor would make the gate hardest to use exactly
+# when it has just found something. The shipped configuration is asserted by the suite as well,
+# which is where the guarantee actually lives.
+if ($fromPins) {
+    $floorFault = Get-PSMutantHostFloorFault `
+        -Declared (Import-PowerShellDataFile (Join-Path $repoRoot 'PSMutant.psd1')).PowerShellVersion -Leg $Version
+    if ($floorFault) { throw $floorFault }
+}
+else {
+    Write-Output "Running an explicit subset ($($Version -join ', ')); the floor check applies to the shipped list, which the suite asserts."
+}
 
 if (-not $RuntimeRoot) { $RuntimeRoot = Join-Path ([System.IO.Path]::GetTempPath()) 'psmut-pwsh' }
 New-Item -ItemType Directory -Path $RuntimeRoot -Force | Out-Null
@@ -257,6 +288,7 @@ try {
         switch ($LASTEXITCODE) {
             0 { }
             3 { $faults.Add("PowerShell ${v}: Pester $PesterVersion not visible from that host; the gate could not run.") }
+            4 { $faults.Add("PowerShell ${v}: the FIXTURE does not run there, so nothing was proven about this module.") }
             default { $faults.Add("PowerShell ${v}: PSMutant does not behave identically on it.") }
         }
     }
