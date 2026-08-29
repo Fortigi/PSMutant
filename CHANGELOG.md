@@ -2,6 +2,31 @@
 
 ### For consumers
 
+**`-MergeIntoBaseline` folds a recheck's verdicts back into the report it came from.** The loop was
+full run, write tests, recheck, write tests, recheck -- then a **full run again** purely to refresh
+a baseline the rechecks had already made stale.
+
+```powershell
+Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json -MergeIntoBaseline
+```
+
+Each mutant the recheck re-evaluated takes its new verdict; everything else keeps the status it had.
+The report is **re-scored** from the merged rows, because new verdicts under the old number is a
+self-contradictory document and the number is what everything downstream reads.
+
+**It refuses rather than merging when the carried-over statuses may be stale.** A merge is only
+sound if the test changes were additive: adding a test cannot revive a mutant the baseline killed,
+but editing or deleting one can, and a recheck never looks at it. Reports now record each mapped
+test file's size, and the merge refuses when one **shrank**, disappeared, or when the baseline
+predates the field.
+
+Length rather than a hash, deliberately. Hash equality asks "unchanged", which would refuse the
+very loop this serves -- writing a test changes the file it lives in. Length is
+necessary-but-not-sufficient in the safe direction: a file that shrank lost something, while one
+that grew may still have had an assertion weakened in the same edit. So growth **permits** the merge
+rather than certifying it, and the merged report always records `mergedFrom` and
+`carriedOverUnverified` -- the caveat lives in the artifact, not only in the console.
+
 **A run that stops running now stops, instead of looking like a slow one.** Every mutant was
 bounded and the run was not. Observed: a run suspended overnight -- 875 minutes of wall clock
 against 333 seconds of CPU, a zero-byte report, and a sandbox its live pid kept the sweep from ever

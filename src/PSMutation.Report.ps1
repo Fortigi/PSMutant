@@ -600,7 +600,11 @@ function Write-PSMutationReport {
         # The mapped test files, so the report can name the ones that killed nothing. Only
         # meaningful alongside a complete killer list, which is why the schema forbids the
         # derived list without it.
-        [AllowEmptyCollection()] [string[]]$MappedTests = @()
+        [AllowEmptyCollection()] [string[]]$MappedTests = @(),
+        # What each mapped test file looked like when this report was written, so a later merge
+        # can tell an added test from a deleted one. Length rather than a hash: see
+        # Get-PSMutationMergeFault for why "unchanged" is the wrong question.
+        [hashtable]$TestFileLength = @{}
     )
     # The only place holding EVERY row, so the only place that can ask whether a
     # declaration matched nothing. The per-set fold no longer answers it.
@@ -635,6 +639,10 @@ function Write-PSMutationReport {
         # The disclosure that makes every KilledBy list readable. Always written, so a consumer
         # never has to guess which shape it is holding.
         killersComplete = $KillersComplete
+        # Recorded for -MergeIntoBaseline, which carries over the status of every mutant a recheck
+        # did not evaluate. Those statuses are only as good as the tests that produced them, and
+        # nothing else in this document says anything about the tests.
+        testFiles = [pscustomobject]$TestFileLength
         # Beside the blended score, not instead of it. The blend is what the thresholds gate on;
         # this is what says whether the blend is hiding anything.
         # ASSIGNED, not wrapped in @( ). The function returns `, @(...)` so an empty run yields an

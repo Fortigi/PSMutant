@@ -46,6 +46,40 @@ function Get-PSMutationSourceHash {
     finally { $sha.Dispose() }
 }
 
+function Get-PSMutationTestFileLength {
+    <#
+    .SYNOPSIS
+        Each mapped test file's size, keyed by the path the config names it by.
+    #>
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Path,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    # HERE rather than in Report.ps1, where it started. That file is a documented SINK: it
+    # serialises what it is handed and reaches into no other layer, and this needs the sandbox
+    # path converter -- so putting it there created a Report -> Sandbox edge the layering gate
+    # refused. It sits beside Get-PSMutationSourceHashMap instead, which does the same job for
+    # source files and keys its map the same way.
+    #
+    # Keyed by the path RELATIVE TO THE SANDBOX, exactly as Get-PSMutationSourceHashMap keys its
+    # hashes, and for the same reason: the absolute path contains the run's pid and its random
+    # sandbox token, so it can never match a later run's. Keyed that way the map was written and
+    # then compared against keys that differed every time -- the merge gate saw a baseline whose
+    # every test file was "gone".
+    #
+    # A file that cannot be read is simply absent, and the merge gate reads that as "was in the
+    # baseline and is gone", which is the honest answer: a test that is not there cannot be
+    # holding up any mutant's status.
+    $out = @{}
+    foreach ($p in $Path) {
+        $item = Get-Item -LiteralPath $p -ErrorAction SilentlyContinue
+        if ($item) { $out[(ConvertFrom-PSMutationSandboxPath -Path $p -SandboxRoot $SandboxRoot)] = [int]$item.Length }
+    }
+    return $out
+}
+
 function Get-PSMutationSourceHashMap {
     # displayPath -> hash, for every file in the mutate set.
     [OutputType([hashtable])]
@@ -59,6 +93,135 @@ function Get-PSMutationSourceHashMap {
         $map[(ConvertFrom-PSMutationSandboxPath -Path $f -SandboxRoot $SandboxRoot)] = Get-PSMutationSourceHash -Path $f
     }
     return $map
+}
+
+function Get-PSMutationMergeFault {
+    <#
+    .SYNOPSIS
+        Why this recheck may not be folded back into its baseline, as text. Nothing when it may.
+    #>
+    # object[], not string[]: both returns use the unary comma so an empty result survives the
+    # pipeline as an empty array rather than $null, and that wrapper is an object[].
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        # What the baseline recorded about each mapped test file: name -> @{ length }.
+        $BaselineTests,
+        [Parameter(Mandatory)] [hashtable]$CurrentTests
+    )
+    # A merge carries over the status of every mutant the recheck did NOT evaluate, and those
+    # statuses are only as good as the tests that produced them. Adding a test cannot revive a
+    # mutant the baseline killed; EDITING or DELETING one can, and a recheck never looks at it --
+    # so a merged report would confidently show a mutant dead that is alive again.
+    #
+    # The existing compatibility guard cannot help: it watches the SOURCE, and this is a question
+    # about the tests.
+    $faults = [System.Collections.Generic.List[string]]::new()
+    if ($null -eq $BaselineTests) {
+        $faults.Add('the baseline records nothing about its test files, so there is no way to tell whether a carried-over status still holds -- run the full set once to regenerate it')
+        return , $faults.ToArray()
+    }
+    foreach ($name in (@($BaselineTests.PSObject.Properties.Name) | Where-Object { $_ } | Sort-Object)) {
+        if (-not $CurrentTests.ContainsKey($name)) {
+            $faults.Add("$name was in the baseline and is gone -- every mutant it killed is carried over unverified, and a deleted test is exactly what revives one")
+            continue
+        }
+        # LENGTH, not hash, and the difference is the whole usable range of this feature. Hash
+        # equality answers "unchanged", which is far too strict: the recheck loop IS write a test,
+        # re-run, and writing a test changes the file it lives in. Refusing a merge whenever a
+        # test file changed would refuse the loop this exists to serve.
+        #
+        # Length is a NECESSARY-not-sufficient signal in the safe direction. A file that shrank
+        # lost something, and losing an assertion is what revives a mutant. A file that grew may
+        # still have had an assertion weakened in the same edit -- which is why growth permits the
+        # merge rather than certifying it, and why the merged report always says how many mutants
+        # were carried over without being re-evaluated.
+        # The recorded value IS the length. Reading `.length` off it looked natural and is a trap:
+        # PowerShell gives a scalar a .Length of 1, so the comparison became "is 150 less than 1"
+        # and never fired. The unit probe missed it because its fixture nested the number in an
+        # object -- a shape the report never writes -- which is the fixture-does-not-match-reality
+        # failure, caught only by running the thing end to end.
+        $was = [int]$BaselineTests.$name
+        if ([int]$CurrentTests[$name] -lt $was) {
+            $faults.Add("$name is shorter than when the baseline was written ($([int]$CurrentTests[$name]) bytes against $was) -- something was removed, and a merge would carry over every mutant it used to kill")
+        }
+    }
+    return , $faults.ToArray()
+}
+
+function Get-PSMutationMergedMutant {
+    <#
+    .SYNOPSIS
+        The baseline's mutants with the rechecked ones' statuses applied.
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Baseline,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Rechecked
+    )
+    # Keyed on the mutant's stable identity rather than on Id. Ids are assigned by walk order, so
+    # they mean the same thing only for identical source and operators -- which the compatibility
+    # gate already required to get this far -- but keying on the same string the equivalence
+    # declarations use means a merge cannot quietly pair the wrong two rows if that ever changes.
+    $byKey = @{}
+    foreach ($r in $Rechecked) { $byKey[@(Get-PSMutationEquivalentKey -Result $r)[0]] = $r }
+    $out = [System.Collections.Generic.List[object]]::new()
+    foreach ($b in $Baseline) {
+        $key = @(Get-PSMutationEquivalentKey -Result $b)[0]
+        if ($byKey.ContainsKey($key)) {
+            # The recheck looked at this one, so its verdict is current. Everything else about the
+            # row -- file, line, operator, description -- comes from the baseline, because that is
+            # where it was measured and the recheck row is a projection of the same mutant.
+            $fresh = $byKey[$key]
+            $out.Add([pscustomobject]@{
+                    Id = $b.Id; Function = $b.Function; File = $b.File; Line = $b.Line
+                    Operator = $b.Operator; Description = $b.Description
+                    Status = $fresh.Status; KilledBy = @($fresh.KilledBy)
+                })
+        }
+        else { $out.Add($b) }
+    }
+    return , $out.ToArray()
+}
+
+function Get-PSMutationMergedBaseline {
+    <#
+    .SYNOPSIS
+        The baseline document with this recheck's verdicts applied, and the caveat recorded in it.
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Baseline,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Rechecked,
+        $Equivalents
+    )
+    $merged = Get-PSMutationMergedMutant -Baseline @($Baseline.mutants) -Rechecked $Rechecked
+    $doc = $Baseline
+    $doc.mutants = $merged
+    $doc.survivors = @($merged | Where-Object Status -eq 'Survived')
+    # RE-SCORED from the merged rows. Writing the rows without re-folding the totals leaves the
+    # document self-contradictory -- new verdicts under the old number -- which is worse than not
+    # merging at all, because the number is what everything downstream reads.
+    $score = Get-PSMutationScore -Results $merged -Equivalents $Equivalents
+    # Add-Member -Force rather than assignment: setting a property a document does not already
+    # carry THROWS on a PSCustomObject, so a report missing any one of these -- an older one, or a
+    # hand-edited one -- would crash the merge instead of being merged. Every field is set the
+    # same way so no one of them is a special case.
+    foreach ($f in @{ mutationScore = $score.Score; total = $score.Total; killed = $score.Killed
+            survived = $score.Survived; timedOut = $score.TimedOut
+            declaredEquivalent = $score.DeclaredEquivalent }.GetEnumerator()) {
+        $doc | Add-Member -NotePropertyName $f.Key -NotePropertyValue $f.Value -Force
+    }
+    # THE CAVEAT LIVES IN THE ARTIFACT, not only in the console. Everything downstream reads this
+    # file as a measurement, and most of it was measured by an earlier run: a merged report says
+    # how many of its mutants were carried over without being re-evaluated, so a reader can see
+    # what fraction of the score this run actually stood behind.
+    $doc | Add-Member -NotePropertyName mergedFrom -NotePropertyValue @($Rechecked).Count -Force
+    $doc | Add-Member -NotePropertyName carriedOverUnverified `
+        -NotePropertyValue (@($merged).Count - @($Rechecked).Count) -Force
+    return $doc
 }
 
 function Test-PSMutationRecheckCompatible {
@@ -286,7 +449,11 @@ function Invoke-PSMutationRecheckRun {
         # A scriptblock, not a value: it is evaluated after the loop so the elapsed time it
         # records is the whole run rather than the moment the run started.
         [scriptblock]$Provenance = { @{} },
-        [switch]$Quiet
+        [switch]$Quiet,
+        # Fold this recheck's verdicts back into the baseline it came from. Opt-in, and it
+        # refuses rather than merging when the tests behind the carried-over statuses may have
+        # changed -- see Get-PSMutationMergeFault.
+        [switch]$MergeIntoBaseline
     )
     $prior = Get-Content $RecheckFrom -Raw | ConvertFrom-Json
     # Refuse rather than guess. Mutant ids are AST-walk positions: if the source or
@@ -314,6 +481,29 @@ function Invoke-PSMutationRecheckRun {
     $summary = Write-PSMutationRecheckReport -Results $results -ReportPath $recheckPath `
         -PriorSurvivorCount @($prior.survivors).Count -SourceReportPath $RecheckFrom `
         -SourceHashes $SourceHashes -Operators $Operators -Provenance (& $Provenance)
+    if ($MergeIntoBaseline) {
+        # Refused, not warned about. A merged report is a FULL report -- it carries a score, and
+        # everything downstream reads it as a measurement. Emitting one whose carried-over
+        # statuses may be stale would undo the honesty the recheck design was built around, which
+        # is why -RecheckFrom writes to a separate file in the first place.
+        # ASSIGNED, not wrapped in @( ). The callee returns `, $array` so an empty result stays an
+        # empty array rather than $null -- and @( ) around that yields a ONE-element array holding
+        # the array, so .Count is 1 for no faults at all and the merge is refused with a blank
+        # reason. Same trap as the per-file scores, in a third place.
+        $mergeFaults = Get-PSMutationMergeFault -BaselineTests $prior.testFiles `
+            -CurrentTests (Get-PSMutationTestFileLength -Path $Plan.AllTests -SandboxRoot $SandboxRoot)
+        if ($mergeFaults.Count -gt 0) {
+            throw ("Refusing to merge this recheck into $RecheckFrom." + [Environment]::NewLine +
+                (($mergeFaults | ForEach-Object { "  - $_" }) -join [Environment]::NewLine) +
+                [Environment]::NewLine + 'A merge carries over the status of every mutant this run did ' +
+                'not evaluate. Run the full set to get a report that measured all of them.')
+        }
+        Save-PSMutationReportDocument -ReportPath $RecheckFrom -Document (
+            Get-PSMutationMergedBaseline -Baseline $prior -Rechecked $results -Equivalents $Equivalents)
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Muted' `
+                -Text ("  Merged {0} rechecked verdict(s) into {1}; {2} mutant(s) carried over unverified." -f `
+                        @($results).Count, $RecheckFrom, (@($prior.mutants).Count - @($results).Count)))
+    }
     $recheckLines = Get-PSMutationRecheckSummaryLine -Summary $summary `
         -Results $results -ReportPath $recheckPath
     Write-PSMutationOutput -Quiet:$Quiet -Lines $recheckLines

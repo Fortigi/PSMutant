@@ -358,7 +358,12 @@ Describe 'Get-PSMutationSourceHash' {
 Describe 'Invoke-PSMutationRecheckRun' {
     BeforeEach {
         $script:reportFile = Join-Path $TestDrive 'prior.json'
-        '{ "survivors": [ { "Id": 1, "File": "src/a.ps1" }, { "Id": 2, "File": "src/a.ps1" } ] }' |
+        # Carries `mutants` as well as `survivors`, because a real report does and the merge path
+        # reads it. A fixture holding only survivors bound $null into the merge and failed for a
+        # reason that had nothing to do with what was being tested.
+        '{ "survivors": [ { "Id": 1, "File": "src/a.ps1" }, { "Id": 2, "File": "src/a.ps1" } ],
+           "mutants": [ { "Id": 1, "File": "src/a.ps1", "Function": "F", "Description": "d", "Status": "Survived", "Line": 1, "Operator": "X" },
+                        { "Id": 2, "File": "src/a.ps1", "Function": "F", "Description": "e", "Status": "Survived", "Line": 2, "Operator": "X" } ] }' |
             Set-Content $script:reportFile -Encoding utf8
         $script:plan = @{ TestsByFile = @{}; AllTests = @('tests/a.Tests.ps1') }
         # Deliberately NOT mocking Test-PSMutationAnnotationHost here. Every test below that
@@ -378,6 +383,55 @@ Describe 'Invoke-PSMutationRecheckRun' {
                 -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
                 -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet } |
             Should-Throw -ExceptionMessage '*Cannot recheck*source changed for src/a.ps1*regenerate*'
+    }
+
+    It 'merges into the baseline under -MergeIntoBaseline, and says what it carried over' {
+        # The recheck's whole point is that it does NOT touch the baseline, so the one path that
+        # does needs driving end to end -- the merged document is asserted on its own above, and
+        # this covers the run choosing to write it and reporting what it did.
+        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { , @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Function = 'F'
+                    Description = 'd'; Status = 'Killed'; Line = 1; Operator = 'X'; KilledBy = @() }) }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 1; StillSurviving = 0 } }
+        Mock Get-PSMutationMergeFault { , @() }
+        Mock Save-PSMutationReportDocument { }
+
+        Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+            -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet -MergeIntoBaseline | Out-Null
+
+        # Written back to the BASELINE path, not the recheck path -- that is the whole difference.
+        Should-Invoke Save-PSMutationReportDocument -Times 1 -ParameterFilter { $ReportPath -eq $script:reportFile }
+        # The COUNT, not just the phrase. The baseline holds two mutants and one was rechecked, so
+        # exactly one is carried over -- and a message that got the arithmetic backwards would
+        # still contain the words.
+        Should-Invoke Write-PSMutationOutput -Times 1 -ParameterFilter {
+            (($Lines | ForEach-Object { $_.Text }) -join ' ') -like '*1 mutant(s) carried over unverified*'
+        }
+    }
+
+    It 'refuses the merge, and writes nothing, when the tests may have changed' {
+        # Refused rather than warned about: a merged report carries a score, and everything
+        # downstream reads it as a measurement.
+        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { , @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Status = 'Killed' }) }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 1; StillSurviving = 0 } }
+        Mock Get-PSMutationMergeFault { , @('tests/a.Tests.ps1 is shorter than when the baseline was written') }
+        Mock Save-PSMutationReportDocument { }
+
+        { Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+                -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+                -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet -MergeIntoBaseline } |
+            Should-Throw -ExceptionMessage '*Run the full set to get a report that measured all of them*'
+        Should-Invoke Save-PSMutationReportDocument -Times 0
     }
 
     It 'evaluates only the prior survivors and returns the recheck summary' {
@@ -621,5 +675,160 @@ Describe 'the recheck gate refuses a report about a different run' {
             -SourceHashes @{ 'src/a.ps1' = 'h1' } -Operators @('BinaryOperator')
         ($reasons -join ' ') | Should-MatchString 'src/b.ps1'
         ($reasons -join ' ') | Should-MatchString 'src/c.ps1'
+    }
+}
+
+Describe 'Get-PSMutationMergeFault' {
+    BeforeAll {
+        # The value is a bare integer, exactly as Write-PSMutationReport records it. An earlier
+        # fixture nested it in an object, and the gate read `.length` off it -- which PowerShell
+        # answers as 1 for any scalar, so the comparison became "is 150 less than 1" and never
+        # fired. The fixture agreed with the code and neither agreed with the report.
+        $script:priorTests = [pscustomobject]@{ 'tests/a.Tests.ps1' = 1000 }
+    }
+
+    It 'permits a merge when a test file GREW' {
+        # The loop this exists for: write a test, re-run, fold the result back. Refusing whenever
+        # a test file changed would refuse exactly that, which is why the signal is length rather
+        # than a hash.
+        (Get-PSMutationMergeFault -BaselineTests $script:priorTests -CurrentTests @{ 'tests/a.Tests.ps1' = 1200 }).Count |
+            Should-Be 0
+    }
+
+    It 'permits a merge when nothing changed at all' {
+        (Get-PSMutationMergeFault -BaselineTests $script:priorTests -CurrentTests @{ 'tests/a.Tests.ps1' = 1000 }).Count |
+            Should-Be 0
+    }
+
+    It 'refuses when a test file SHRANK' {
+        # Something was removed, and removing an assertion is what revives a mutant the baseline
+        # recorded as killed -- which a recheck never looks at.
+        (Get-PSMutationMergeFault -BaselineTests $script:priorTests -CurrentTests @{ 'tests/a.Tests.ps1' = 800 }) -join ' ' |
+            Should-MatchString 'is shorter than when the baseline was written \(800 bytes against 1000\)'
+    }
+
+    It 'refuses when a test file is gone' {
+        (Get-PSMutationMergeFault -BaselineTests $script:priorTests -CurrentTests @{}) -join ' ' |
+            Should-MatchString 'was in the baseline and is gone'
+    }
+
+    It 'refuses a baseline that predates the field' {
+        # An older report says nothing about its tests, so there is no way to tell whether a
+        # carried-over status still holds. Silence is not consent.
+        (Get-PSMutationMergeFault -BaselineTests $null -CurrentTests @{ 'tests/a.Tests.ps1' = 1000 }) -join ' ' |
+            Should-MatchString 'records nothing about its test files'
+    }
+
+    It 'ignores a test file that is new since the baseline' {
+        # Adding a test cannot revive a mutant the baseline killed, so a file the baseline never
+        # saw is not a reason to refuse.
+        (Get-PSMutationMergeFault -BaselineTests $script:priorTests `
+                -CurrentTests @{ 'tests/a.Tests.ps1' = 1000; 'tests/new.Tests.ps1' = 50 }).Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationMergedMutant' {
+    BeforeAll {
+        function script:Mu([string]$Desc, [string]$Status) {
+            [pscustomobject]@{ Id = 1; File = 'a.ps1'; Function = 'F'; Description = $Desc
+                Status = $Status; Line = 1; Operator = 'X'; KilledBy = @() }
+        }
+    }
+
+    It 'applies the rechecked verdict and leaves everything else alone' {
+        $merged = Get-PSMutationMergedMutant `
+            -Baseline @((script:Mu -Desc 'd1' -Status 'Survived'), (script:Mu -Desc 'd2' -Status 'Survived'), (script:Mu -Desc 'd3' -Status 'Killed')) `
+            -Rechecked @((script:Mu -Desc 'd1' -Status 'Killed'))
+        (($merged | ForEach-Object { "$($_.Description)=$($_.Status)" }) -join ',') |
+            Should-Be 'd1=Killed,d2=Survived,d3=Killed'
+    }
+
+    It 'keeps every baseline mutant, including ones the recheck never saw' {
+        # A merge is a baseline with verdicts applied, not a recheck padded out. Dropping the
+        # unrechecked rows would silently shrink the denominator and raise the score.
+        $merged = Get-PSMutationMergedMutant `
+            -Baseline @((script:Mu -Desc 'd1' -Status 'Survived'), (script:Mu -Desc 'd2' -Status 'Killed')) `
+            -Rechecked @()
+        @($merged).Count | Should-Be 2
+    }
+}
+
+Describe 'Get-PSMutationMergedBaseline' {
+    BeforeAll {
+        function script:Doc {
+            [pscustomobject]@{
+                schemaVersion = 1; mutationScore = 33.3; total = 3; killed = 1; survived = 2
+                timedOut = 0; declaredEquivalent = 0
+                mutants = @(
+                    [pscustomobject]@{ Id = 1; File = 'a.ps1'; Function = 'F'; Description = 'd1'; Status = 'Survived'; Line = 1; Operator = 'X'; KilledBy = @() }
+                    [pscustomobject]@{ Id = 2; File = 'a.ps1'; Function = 'F'; Description = 'd2'; Status = 'Survived'; Line = 2; Operator = 'X'; KilledBy = @() }
+                    [pscustomobject]@{ Id = 3; File = 'a.ps1'; Function = 'F'; Description = 'd3'; Status = 'Killed'; Line = 3; Operator = 'X'; KilledBy = @() })
+                survivors = @()
+            }
+        }
+        $script:killedOne = @([pscustomobject]@{ Id = 1; File = 'a.ps1'; Function = 'F'
+                Description = 'd1'; Status = 'Killed'; Line = 1; Operator = 'X'; KilledBy = @('t') })
+    }
+
+    It 'RE-SCORES from the merged rows' {
+        # Writing new verdicts under the old number leaves the document self-contradictory, which
+        # is worse than not merging: the score is what everything downstream reads.
+        $doc = Get-PSMutationMergedBaseline -Baseline (script:Doc) -Rechecked $script:killedOne
+        $doc.mutationScore | Should-Be 66.7
+        $doc.killed | Should-Be 2
+        $doc.survived | Should-Be 1
+    }
+
+    It 'rebuilds the survivor list from the merged rows' {
+        # The list a later -RecheckFrom reads. Left stale it would seed the next round with a
+        # mutant this one just killed.
+        $doc = Get-PSMutationMergedBaseline -Baseline (script:Doc) -Rechecked $script:killedOne
+        @($doc.survivors | ForEach-Object { $_.Description }) | Should-BeCollection @('d2')
+    }
+
+    It 'records the caveat IN the artifact, not only on the console' {
+        # Most of a merged report was measured by an earlier run. A reader has to be able to see
+        # what fraction of the score this run actually stood behind, from the file itself.
+        $doc = Get-PSMutationMergedBaseline -Baseline (script:Doc) -Rechecked $script:killedOne
+        $doc.mergedFrom | Should-Be 1
+        $doc.carriedOverUnverified | Should-Be 2
+    }
+
+    It 'honours the equivalence declarations when re-scoring' {
+        # The score is a fold over the rows and excuses declared mutants; re-scoring without them
+        # would report a different number from the run that produced the baseline.
+        $eq = [pscustomobject]@{ 'a.ps1:F:d2' = 'cannot be killed' }
+        $doc = Get-PSMutationMergedBaseline -Baseline (script:Doc) -Rechecked $script:killedOne -Equivalents $eq
+        $doc.declaredEquivalent | Should-Be 1
+        $doc.mutationScore | Should-Be 100
+    }
+}
+
+Describe 'Get-PSMutationTestFileLength' {
+    It 'records a file that exists and omits one that does not' {
+        # Both arms. A present file must be measured, and a missing one must be ABSENT rather
+        # than zero -- the merge gate reads absence as "was in the baseline and is gone", which is
+        # the honest answer, while a zero would read as a file that shrank to nothing.
+        $dir = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $dir -Force | Out-Null
+        $real = Join-Path $dir 'tests/there.Tests.ps1'
+        New-Item -ItemType Directory -Path (Split-Path -Parent $real) -Force | Out-Null
+        Set-Content -LiteralPath $real -Value 'x' -NoNewline
+
+        $map = Get-PSMutationTestFileLength -Path @($real, (Join-Path $dir 'tests/gone.Tests.ps1')) -SandboxRoot $dir
+        $map.Keys | Should-BeCollection @('tests/there.Tests.ps1')
+        $map['tests/there.Tests.ps1'] | Should-Be 1
+    }
+
+    It 'keys relative to the sandbox, so two runs can be compared' {
+        # The absolute path carries the run's pid and its random sandbox token, so a map keyed
+        # that way can never match a later run's -- measured, the merge gate saw a baseline whose
+        # every test file was "gone".
+        $dir = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path (Join-Path $dir 'tests') -Force | Out-Null
+        $f = Join-Path $dir 'tests/a.Tests.ps1'
+        Set-Content -LiteralPath $f -Value 'xy' -NoNewline
+        (Get-PSMutationTestFileLength -Path @($f) -SandboxRoot $dir).Keys |
+            Should-BeCollection @('tests/a.Tests.ps1')
     }
 }
