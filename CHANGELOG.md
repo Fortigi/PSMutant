@@ -78,6 +78,21 @@ the complete list is evidence of weakness rather than proof of uselessness.
 
 ### Internal
 
+**The sandbox sweep suite is a covering suite at last.** `tests/SandboxSweep.Tests.ps1` was
+deliberately named nowhere in the mutation config, because listing it deleted the live run's own
+sandbox and turned the baseline red before a single mutant was tried. Removing the sweep's carve-out
+for our own process id removed that hazard, so the suite is now mapped and its mutants are counted
+instead of it covering nothing.
+
+Mapping it immediately surfaced a mutant nothing could reach before: the sweep's `-WhatIf` guard.
+The test for it mocks the removal rather than checking temp afterwards, because `-WhatIf` propagates
+into nested cmdlets -- with the outer `ShouldProcess` forced true the inner `Remove-Item` is itself
+in WhatIf mode and still deletes nothing, so "the directory survived" proves only that PowerShell
+propagated the preference. Its pairing test asserts the removal IS reached without `-WhatIf`, and
+had to filter on `Path` rather than `LiteralPath`: the sweep passes the name positionally, and
+filtering the wrong parameter reports zero calls, which reads exactly like a sweep that removed
+nothing.
+
 **A leaking temp file, and the rule that should have caught it.** `tools/Measure-PSMutantCoverage.ps1`
 wrote `psmutant-coverage-<pid>.xml` into shared temp and nothing removed it. The runner's sweep
 matches `psmut-coverage-*.xml` -- one letter different -- so it could not match by construction:
