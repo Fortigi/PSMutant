@@ -276,37 +276,52 @@ function Get-PSMutationWarmPesterScript {
     .OUTPUTS
         [string] the script text.
     #>
-    [OutputType([string])]
+    [OutputType([scriptblock])]
     [CmdletBinding()]
-    param(
-        # Record EVERY failing test rather than stopping at the first. Off by default because it
-        # forfeits SkipRemainingOnFailure, and that is not free: measured over this repo's
-        # Operators.ps1 -- 118 mutants, all killed -- the same run takes 46s with the early stop
-        # and 75s without, a 63% increase. The cost lands on killed mutants, which are almost all
-        # of them, so it is the default run that would pay.
+    param()
+    # A SCRIPTBLOCK, not a here-string, and the difference is that this is real code rather than
+    # text that happens to look like it. Every mutant verdict in every run passes through these
+    # lines, and as a string nothing ever examined them: PSScriptAnalyzer sees a string literal,
+    # the parser sees nothing until AddScript at runtime, and a test can only string-match. A typo
+    # here failed no lint, no parse and no test, and surfaced on a consumer's machine mid-run as
+    # "the covering tests produced no result" -- a message pointing at the mutant rather than at
+    # this. The version-resolution bug that produced #16 lived in this script's predecessor.
+    #
+    # Written this way the parser checks it when this file is dot-sourced, the analyzer lints it,
+    # and tests/Pester.Tests.ps1 asserts that it parses.
+    #
+    # The early-stop decision moved INSIDE the block for the same reason. It was briefly a line
+    # the caller concatenated in or left out, which made the thing handed to the runspace
+    # assembled text again -- one conditional away from the problem this fixes. It is now a
+    # parameter the child reads, so there is exactly one script and it is always the same one.
+    $sb = {
+        param($tests, $recordAllKillers)
+        $c = New-PesterConfiguration
+        $c.Run.Path = $tests
+        $c.Run.PassThru = $true
+        $c.Output.Verbosity = 'None'
+        # SkipRemainingOnFailure stops the suite at the first failing test. A mutant only ever asks
+        # one question -- does ANY test notice -- and once one has, every test after it is work
+        # whose outcome cannot change the verdict. Measured against a killed mutant in this repo's
+        # sibling: a 2.03s covering suite finishes in 0.34s, 83% less, with the result identical.
+        # A SURVIVOR is unaffected by construction: nothing fails, so nothing is skipped.
         #
-        # What it buys is the only data that answers "which of my tests never kill anything".
-        # With the early stop a test that WOULD have killed but was skipped is indistinguishable
-        # from one that cannot kill at all -- and acting on that reading means deleting a test
-        # that works. The flag exists so that analysis is a deliberate, occasional run rather
-        # than a permanent tax on every gate.
-        [switch]$RecordAllKillers
-    )
-    # Built by concatenation rather than by two here-strings: the two scripts differ in one line
-    # and one expression, and a second copy is a second thing to keep in step.
-    $skip = $RecordAllKillers ? '' : @'
-if ($c.Run.PSObject.Properties['SkipRemainingOnFailure']) { $c.Run.SkipRemainingOnFailure = 'Run' }
-'@
-    return @"
-param(`$tests)
-`$c = New-PesterConfiguration
-`$c.Run.Path = `$tests
-`$c.Run.PassThru = `$true
-`$c.Output.Verbosity = 'None'
-$skip
-`$r = Invoke-Pester -Configuration `$c
-# ExpandedName, not Name: a -ForEach case is one name and many tests, and a killer nobody can
-# tell apart from its siblings is not an answer to "which test killed this".
-[pscustomobject]@{ Result = [string]`$r.Result; Killers = @(`$r.Failed | ForEach-Object { `$_.ExpandedName }) }
-"@
+        # Set only when the loaded Pester HAS the property. It arrived in Pester 5.3.0 -- measured,
+        # not looked up: 5.2.0 does not carry it and 5.3.0 does -- so the guard exists for Pester
+        # 5.2.x and nothing else. Assigning a property that does not exist would fail the whole run
+        # for a speed optimisation, on a version this module still promises to support.
+        if (-not $recordAllKillers -and $c.Run.PSObject.Properties['SkipRemainingOnFailure']) {
+            $c.Run.SkipRemainingOnFailure = 'Run'
+        }
+        $r = Invoke-Pester -Configuration $c
+        # ExpandedName, not Name: a -ForEach case is one name and many tests, and a killer nobody
+        # can tell apart from its siblings is not an answer to "which test killed this".
+        [pscustomobject]@{ Result = [string]$r.Result; Killers = @($r.Failed | ForEach-Object { $_.ExpandedName }) }
+    }
+    # Returned as a SCRIPTBLOCK; the runner stringifies at the boundary where the runspace needs
+    # text. Handing back .ToString() here looked equivalent and is not: a caller can only get the
+    # code back by re-creating it, and a re-created block has no file association, so nothing it
+    # executes is attributed to these lines. Coverage sat at 98.95% with the body untested
+    # precisely because the only way to run it was through a copy.
+    return $sb
 }

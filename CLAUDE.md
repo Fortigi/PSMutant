@@ -1245,6 +1245,22 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   false -- so the same guard there is a branch whose two arms return the same value. Self-mutation
   reported it as a survivor on the first run.
 
+- **The child body every mutant runs is a SCRIPTBLOCK, not a here-string, so the toolchain can see
+  it.** As a string nothing examined it: PSScriptAnalyzer saw a string literal, the parser saw
+  nothing until `AddScript` at run time, and a test could only match substrings. Measured with the
+  same typo in both shapes -- **here-string: 0 parse errors, scriptblock: 2**. Verified the other
+  way too, by planting a syntax error inside the block and watching the lint gate fail.
+
+  Anything the child needs to vary is a **parameter**, never a line the caller concatenates in.
+  The early-stop flag was briefly assembled that way, which put the text back beyond the parser's
+  reach one conditional at a time. One script, always the same one.
+
+  The tests assert it **parses** and that its `param()` names match what the runner binds by name --
+  `AddParameter` binds by name, so a rename fails at run time with a binding error rather than at
+  parse time. Assertions about behaviour go through the AST rather than the text: the early-stop
+  decision now lives inside the script, so the string always mentions `SkipRemainingOnFailure` and
+  a substring check would pass whatever the condition said.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked

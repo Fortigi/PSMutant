@@ -218,7 +218,8 @@ function Invoke-PSBoundedPester {
     # interval to bound any state a suite leaves behind.
     $ps = Get-PSMutationWarmShell
     $ps.Commands.Clear()
-    [void]$ps.AddScript((Get-PSMutationWarmPesterScript -RecordAllKillers:$RecordAllKillers)).AddParameter('tests', $CoveringTests)
+    [void]$ps.AddScript((Get-PSMutationWarmPesterScript).ToString()).AddParameter('tests', $CoveringTests).
+        AddParameter('recordAllKillers', [bool]$RecordAllKillers)
     $async = $ps.BeginInvoke()
     if (-not $async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))) {
         $ps.Stop()
