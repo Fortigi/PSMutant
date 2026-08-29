@@ -667,6 +667,67 @@ lets the self-mutation gate stay in the single digits of minutes.
   AST rather than assumed from the fact that it compiled -- which is the whole problem with it, and
   the reason the one-line rule is the safe one rather than merely the tidy one.
 
+## Process, state and concurrency
+
+The module's stance on what runs when, what is held in memory, and what leaves temp. Four clauses,
+each with the line that enforces it and what would have to change for it to stop being right.
+
+Written down because it was inferable only by reading `Runner.ps1` carefully, and because clause 1
+is load-bearing for the headline correctness claim during exactly the design pass most likely to
+trade it away. The cost of leaving an invariant unnamed is already on the record here: the
+`Sandbox.ps1` mutation exclusion was explained two different wrong ways before the third, because
+the reason behind it had no name.
+
+- **1. Sequential evaluation is a CORRECTNESS mechanism, not a performance default.**
+  `Invoke-PSMutant` writes the mutant into the one shared sandbox copy
+  (`Runner.ps1` `WriteAllText($Candidate.File, $MutatedContent)`) and restores it afterwards, and
+  the covering tests run against the whole sandbox tree. Two mutants in different files are
+  therefore **not independent**: each child would see the other's mutation, and a "Survived"
+  verdict would be a verdict about a double mutant. **Serialisation, not the sandbox, is what keeps
+  mutants apart.**
+
+  Reading this as a tuning default is the single most plausible way to break the tool's core claim
+  while improving a benchmark. *It stops being right when each worker gets its own sandbox copy* --
+  which is what #1 has to buy before it can evaluate anything in parallel, and is a cost that
+  belongs in that issue's estimate rather than being discovered inside it.
+
+- **2. Rows are accumulated in a CALLER-OWNED list, and the report is written once at the end --
+  except on interruption.** This clause changed with #39 and the old wording is no longer true.
+  `Invoke-PSMutationLoop` takes a `-Sink` and adds to it; the orchestrator holds that list, so a
+  run stopped by Ctrl-C or a cancelled CI job still writes a **partial** report from a `finally`.
+  Roughly 208 bytes per mutant, which is why holding them is affordable at present scale.
+
+  *It stops being right when a run is large enough that the rows do not fit*, which is #194's
+  sidecar -- and that issue is the place to change it, not the loop.
+
+- **3. Only the REPORT leaves temp.** Everything a run writes goes to the sandbox root except the
+  document named by `reportPath`, which must survive the sandbox's deletion because it is the
+  output. Deliberate and correct.
+
+  *It stops being right the moment a second artefact needs to outlive the run* -- and the rule in
+  the next paragraph is what such an artefact has to be measured against.
+
+- **4. The unit of isolation is the OS PROCESS, not the run.** Sandbox ownership and liveness are
+  both keyed on `$PID` (`Sandbox.ps1`, `$CurrentProcessId = $PID`), so two runs in one process
+  share an identity they should not. This is the one clause nobody decided; it is #53, and it is
+  named here rather than argued.
+
+**Every temp artefact a run creates lives inside the sandbox.** `PSMutation.Sandbox.ps1` is a full
+lifecycle -- an owner id, a liveness test, and three cleanup paths -- and an artefact written
+outside it has none of that. The sweep matches `psmut-sandbox-*` directories and
+`psmut-coverage-*.xml` files by name, so anything under a different name **cannot** be reclaimed by
+construction.
+
+Measured twice, and the second time is why this rule is written rather than assumed: the runner's
+coverage XML used to live in shared temp and 177 had accumulated; that was fixed by moving it into
+the sandbox. `tools/Measure-PSMutantCoverage.ps1` then minted its own under
+`psmutant-coverage-*.xml` -- one letter different, invisible to the sweep -- and **56 of them, 4.2
+MB**, had accumulated by the time this section was written. It now deletes the file in a `finally`,
+because nothing ever reads it back and a gate script has no sandbox to put it in.
+
+The lesson is the general one: a cleanup that matches by NAME is a cleanup that a new name silently
+escapes. A new temp artefact belongs in the sandbox, or it deletes itself.
+
 ## Practices to preserve
 
 These are habits the codebase already has. They are written down because they are cheap to
