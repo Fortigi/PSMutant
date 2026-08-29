@@ -68,6 +68,18 @@ One clause had already stopped being true: rows are no longer held to the end of
 an interrupted run writes a partial report. And the self-config's comment cited a closed issue for
 an assumption that is still open; it now names the clause and the issue that owns it.
 
+**Writing clause 4 down closed half of it.** The sweep treated any directory holding our OWN process
+id as reclaimable, on the argument that it was a leftover we were about to recreate anyway. That was
+true while the sandbox name was exactly `psmut-sandbox-<pid>`; once the name gained 128 bits of
+randomness a new run creates a different directory, so the second half stopped being true and all
+the first half did was make this process's own live sandboxes reclaimable. Measured: a sibling run's
+sandbox and the caller's own both read as abandoned.
+
+Removed, and a live sandbox now survives its own sweep -- which is what a nested run needs. What is
+given up is reclaiming a crashed run's leftovers while the same process still runs; with the process
+alive there is no way to tell that from a live sibling, and deleting a live run's files is worse
+than leaving a directory until the process exits.
+
 **The code every mutant runs is now real code.** The child body handed to each runspace was a
 here-string, so nothing ever examined it: PSScriptAnalyzer saw a string literal, the parser saw
 nothing until `AddScript` at run time, and the tests could only match substrings. A typo in it

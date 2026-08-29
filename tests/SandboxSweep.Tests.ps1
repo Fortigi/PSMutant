@@ -93,7 +93,7 @@ Describe 'Clear-PSMutationStaleSandbox' {
         try {
             # CurrentProcessId is deliberately something else, so $PID reads as a
             # foreign, live owner rather than as our own reclaimable leftover.
-            Test-PSMutationSandboxAbandoned -Directory (Get-Item $live) -CurrentProcessId 1 | Should-BeFalse
+            Test-PSMutationSandboxAbandoned -Directory (Get-Item $live) | Should-BeFalse
         }
         finally { if (-not $preExisting) { Remove-Item $live -Recurse -Force -ErrorAction SilentlyContinue } }
     }

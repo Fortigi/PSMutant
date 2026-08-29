@@ -707,10 +707,17 @@ the reason behind it had no name.
   *It stops being right the moment a second artefact needs to outlive the run* -- and the rule in
   the next paragraph is what such an artefact has to be measured against.
 
-- **4. The unit of isolation is the OS PROCESS, not the run.** Sandbox ownership and liveness are
-  both keyed on `$PID` (`Sandbox.ps1`, `$CurrentProcessId = $PID`), so two runs in one process
-  share an identity they should not. This is the one clause nobody decided; it is #53, and it is
-  named here rather than argued.
+- **4. Ownership and liveness are both keyed on `$PID`, and that is the one clause nobody decided.**
+  It is #53. Half of it is now closed: the sweep used to treat any directory holding our OWN process
+  id as reclaimable, on an argument that stopped being true when the sandbox name gained 128 bits of
+  randomness -- so a live sandbox, and a nested run's, both read as abandoned. Measured, then
+  removed; a live sandbox now survives its own sweep.
+
+  What remains is that a pid still answers both "who owns this" and "is that owner alive", which
+  cannot distinguish two runs inside one process. *It stops being right when one process holds
+  several sandboxes at once*, which is #1 -- and the cost that belongs in #1's estimate is that
+  each worker needs its own full sandbox COPY, not a name inside a shared one, because the child
+  reads the mutant off disk and runs the covering tests over the whole tree.
 
 **Every temp artefact a run creates lives inside the sandbox.** `PSMutation.Sandbox.ps1` is a full
 lifecycle -- an owner id, a liveness test, and three cleanup paths -- and an artefact written
