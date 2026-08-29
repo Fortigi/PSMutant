@@ -1173,6 +1173,38 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   platforms while checking nothing at all. Every test that builds a broken fixture by editing a
   good one needs that guard.
 
+- **A top-level `$script:` assignment in a test file runs at DISCOVERY and never reaches the run
+  phase.** It does not merely leave the variable empty when the block runs alone -- it leaves the
+  block reading whatever a sibling Describe's `BeforeAll` wrote under the same name. Verified with a
+  two-Describe fixture: run intact, the second Describe sees the FIRST one's `BeforeAll` value, not
+  the top-level one; run alone, it sees an empty string.
+
+  Four Describes in `Config.Tests.ps1` named `[System.IO.Path]::GetTempPath()` and were reading a
+  fake repo under `TestDrive`. They passed for two releases because their assertions only ever check
+  a file NAME, never the root -- which is the same shape as any test whose fixture is wider than
+  what it asserts on.
+
+  Both halves are guarded, and they are separate for the reason the order-independence gate's two
+  halves are: `tests/SuiteHygiene.Tests.ps1` walks the AST for the **cause** -- an assignment with
+  no enclosing scriptblock -- and fires on a file that leaks whether or not anything reads it yet;
+  `tools/Test-PSMutantBlockIsolation.ps1` runs every Describe/Context alone for the **symptom**, 19s
+  for 102 blocks, and is a probe over the blocks that exist rather than a proof.
+
+  **Context, not It, is the isolation boundary.** An `It` shares its Describe's `BeforeAll` by
+  design, so isolating one would report a fault for the arrangement Pester documents. A Context is
+  where a file may legitimately keep its own setup.
+
+  Kept after the per-block test selection it was built for was measured and abandoned: Pester's
+  coverage is per-RUN, so the map needs one run per block, and that premium is proportional to the
+  test estate while the payoff is proportional to the mutant set. The gate earns its 19s on the
+  inner-loop argument instead, and on catching a dependency that arrives by some route the static
+  check does not model.
+
+  When planting a defect to check this gate can fire, make the plant FAITHFUL: the intact suite must
+  stay green while the isolated block fails. A plant that also reddens the whole file proves only
+  that a broken file is broken -- the first attempt here broke the syntax and tripped a different
+  guard entirely.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
