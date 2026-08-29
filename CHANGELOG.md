@@ -2,6 +2,26 @@
 
 ### For consumers
 
+**The report and the console break the score down per file.** A blended score is an average, so a
+strong file carries a weak one and the gate passes on a number nobody would accept per file --
+observed on a real consumer at roughly 89% blended while individual files ranged from 39.6% to 100%.
+
+`perFile` in the report carries each file's score with the counts it was computed over, weakest
+first. The console prints only the files below the good band, coloured by their **own** score:
+
+```
+  2 of 3 file(s) score below 85%:
+      39.6%  src/weak.ps1  (19 killed / 48)
+        78%  src/middling.ps1  (39 killed / 50)
+```
+
+It says nothing when one file was mutated -- the blend is that file -- and nothing when every file
+is at or above the band, so a clean run reads exactly as it did before.
+
+This is grouping, not new arithmetic: `Get-PSMutationScore` was written as a fold over the rows it
+is handed, deliberately, so that asking a whole-run question inside it could not make the answer
+wrong for a subset. A declared equivalent still excuses only its own file's mutant.
+
 **The report says which tests killed each mutant.** Every row carries `KilledBy`, and the run says
 whether those lists are complete.
 

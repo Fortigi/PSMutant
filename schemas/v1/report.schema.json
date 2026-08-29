@@ -232,6 +232,13 @@
         "type": "string"
       },
       "description": "Full runs only, and present only when killersComplete is true. Mapped test files that killed no mutant in this run. A test may still be the only thing covering a file outside the mutate list, so this is evidence of weakness rather than proof of uselessness."
+    },
+    "perFile": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/perFileScore"
+      },
+      "description": "Per-file scores, weakest first then by name. Beside the blended score rather than instead of it: the blend is what thresholds gate on, and this is what says whether the blend is hiding a weak file behind a strong one."
     }
   },
   "allOf": [
@@ -380,6 +387,42 @@
             "type": "string"
           },
           "description": "Tests that failed on this mutant. One entry unless killersComplete is true, since the run stops at the first failure by default. Empty for a survivor or a timeout."
+        }
+      }
+    },
+    "perFileScore": {
+      "type": "object",
+      "description": "One source file's score, folded from the same rows as the blended one.",
+      "required": [
+        "file",
+        "score",
+        "killed",
+        "survived",
+        "total"
+      ],
+      "properties": {
+        "file": {
+          "type": "string",
+          "description": "Path relative to the source root."
+        },
+        "score": {
+          "type": "number",
+          "description": "Percentage for this file alone."
+        },
+        "killed": {
+          "type": "integer"
+        },
+        "survived": {
+          "type": "integer"
+        },
+        "total": {
+          "type": "integer"
+        },
+        "timedOut": {
+          "type": "integer"
+        },
+        "declaredEquivalent": {
+          "type": "integer"
         }
       }
     }
