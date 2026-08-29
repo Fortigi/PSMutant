@@ -781,3 +781,143 @@ Describe 'the mutate file is read once per FILE, not twice per mutant' {
         finally { [System.IO.File]::WriteAllText($script:fixture, $original) }
     }
 }
+
+Describe 'Get-PSMutationStalledFault' {
+    It 'says nothing for a mutant that merely ran, or merely timed out' -ForEach @(
+        @{ Seconds = 2; Why = 'an ordinary mutant' }
+        @{ Seconds = 16; Why = 'one that hit its own timeout' }
+        @{ Seconds = 50; Why = 'a slow one on a loaded machine' }
+    ) {
+        # The bound must not fire on a working run, or it is switched off within a week. A
+        # timed-out mutant already costs its full budget plus discarding and rebuilding the
+        # runspace, so the limit sits well clear of it.
+        Should-BeNull -Actual (Get-PSMutationStalledFault -MutantSeconds $Seconds -TimeoutSeconds 15 -Index 3 -Total 9)
+    }
+
+    It 'reports a mutant whose wall clock says the bound did not fire' {
+        # What an overnight hang looks like from inside: the child is given a budget and its
+        # handle is waited on for exactly that, so a mutant far past it did not run slowly -- the
+        # mechanism that should have stopped it never fired. The observed case was 875 minutes of
+        # wall clock against 333 seconds of CPU.
+        $f = Get-PSMutationStalledFault -MutantSeconds 52500 -TimeoutSeconds 15 -Index 3 -Total 9
+        $f | Should-MatchString 'took 52500s against a per-mutant budget of 15s'
+        # It must name the CAUSE, not just the number, or the reader is sent to tune a timeout.
+        $f | Should-MatchString 'suspended or wedged'
+    }
+
+    It 'scales its limit with the budget rather than fixing a number' {
+        # A repo with a slow suite has a large per-mutant budget, and a fixed limit would either
+        # fire on its ordinary mutants or never fire on a fast repo's hang.
+        Should-BeNull -Actual (Get-PSMutationStalledFault -MutantSeconds 300 -TimeoutSeconds 120 -Index 1 -Total 2)
+        Should-NotBeNull -Actual (Get-PSMutationStalledFault -MutantSeconds 300 -TimeoutSeconds 5 -Index 1 -Total 2)
+    }
+}
+
+Describe 'the loop is bounded as a whole' {
+    BeforeAll {
+        $script:dCand = [pscustomobject]@{ Id = 1; File = (Join-Path $TestDrive 'd.ps1'); Line = 1
+            Operator = 'BinaryOperator'; Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '; Function = 'F' }
+        Set-Content -LiteralPath $script:dCand.File -Value 'x'
+    }
+
+    It 'stops when the run passes its wall-clock budget, naming how far it got' {
+        # Checked BETWEEN mutants, so it can never interrupt one mid-flight and leave a spliced
+        # file behind. A deadline of 0 elapsed seconds fires on the first check.
+        # 600ms a mutant against a 1s budget: the check after the first passes, the one after the
+        # second does not. Three candidates so the throw is demonstrably mid-loop rather than
+        # something that only happens once there is nothing left to do.
+        Mock Invoke-PSMutant { Start-Sleep -Milliseconds 600; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        { Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) `
+                -Candidates @($script:dCand, $script:dCand, $script:dCand) -TestsByFile @{} -AllTests @('t.ps1') `
+                -TimeoutSeconds 5 -SandboxRoot $TestDrive -Quiet -DeadlineSeconds 1 } |
+            Should-Throw -ExceptionMessage '*passed its wall-clock budget*'
+    }
+
+    It 'leaves the rows it finished in the caller''s sink, so a stopped run still has evidence' {
+        # The whole point of stopping BETWEEN mutants rather than at the end. The orchestrator's
+        # finally writes a partial report from this list, so a hang now says how far it got
+        # instead of leaving the zero-byte report the observed case did.
+        Mock Invoke-PSMutant { Start-Sleep -Milliseconds 600; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $sink = [System.Collections.Generic.List[object]]::new()
+        try {
+            Invoke-PSMutationLoop -Sink $sink -Candidates @($script:dCand, $script:dCand, $script:dCand) `
+                -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot $TestDrive `
+                -Quiet -DeadlineSeconds 1
+        }
+        catch {
+            # Swallowed on purpose: the throw is asserted by the test above, and what THIS test
+            # is about is what the sink holds afterwards. Re-throwing here would fail the test
+            # for the behaviour it is checking.
+            Write-Verbose "expected: $($_.Exception.Message)"
+        }
+        $sink.Count | Should-BeGreaterThan 0
+    }
+
+    It 'stops on a stalled mutant, and keeps what it finished' {
+        # The detector is tested directly above; what this covers is the loop ACTING on it. It
+        # is mocked rather than provoked because the real limit has a 30-second floor -- there so
+        # an ordinary overrun cannot trip it -- and waiting that out would buy nothing this
+        # assertion does not already say.
+        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Get-PSMutationStalledFault { 'the handle never came back' }
+        $sink = [System.Collections.Generic.List[object]]::new()
+        { Invoke-PSMutationLoop -Sink $sink -Candidates @($script:dCand, $script:dCand) `
+                -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot $TestDrive `
+                -Quiet -DeadlineSeconds 0 } | Should-Throw -ExceptionMessage '*handle never came back*'
+        # Checked AFTER the first mutant, so the row it finished is already recorded -- which is
+        # what lets the partial report say how far a hung run got.
+        $sink.Count | Should-Be 1
+    }
+
+    It 'runs to completion when the budget is zero' {
+        # Zero disables the bound, for a harness that already kills wedged jobs. Without this arm
+        # a caller who does not want the bound would have to invent a number they do not care about.
+        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) `
+            -Candidates @($script:dCand, $script:dCand) -TestsByFile @{} -AllTests @('t.ps1') `
+            -TimeoutSeconds 5 -SandboxRoot $TestDrive -Quiet -DeadlineSeconds 0
+        $r.Count | Should-Be 2
+    }
+}
+
+Describe 'the run bounds at their boundaries' {
+    It 'treats a mutant exactly AT the stall limit as fine, and one second past it as stalled' -ForEach @(
+        @{ Budget = 15; At = 60; Past = 61; Which = 'the four-times-budget arm' }
+        @{ Budget = 5; At = 35; Past = 36; Which = 'the plus-thirty floor' }
+    ) {
+        # Two rows because the limit is a max() of two arms and only one wins at a time. With a
+        # 15s budget the multiple wins (60 > 45); with a 5s budget the floor does (35 > 20). A
+        # fixture on one arm cannot see the other change at all -- measured: every mutant of the
+        # multiplier, the addend and the comparison survived tests that used only round numbers
+        # far from either boundary.
+        Should-BeNull -Actual (Get-PSMutationStalledFault -MutantSeconds $At -TimeoutSeconds $Budget -Index 1 -Total 2) `
+            -Because "exactly at the limit is not yet stalled, on $Which"
+        Should-NotBeNull -Actual (Get-PSMutationStalledFault -MutantSeconds $Past -TimeoutSeconds $Budget -Index 1 -Total 2) `
+            -Because "one second past it is, on $Which"
+    }
+
+    It 'treats elapsed exactly AT the run budget as fine, and past it as over' {
+        # The reason this decision was extracted from the loop: elapsed wall-clock never lands
+        # exactly on the budget, so inline nothing could tell -gt from -ge.
+        Should-BeNull -Actual (Get-PSMutationOverBudgetFault -ElapsedSeconds 100 -DeadlineSeconds 100 -Index 1 -Total 2)
+        Should-NotBeNull -Actual (Get-PSMutationOverBudgetFault -ElapsedSeconds 100.5 -DeadlineSeconds 100 -Index 1 -Total 2)
+    }
+
+    It 'never fires when the budget is zero or negative' {
+        # Zero is "disabled". Without this arm a disabled budget would read as a budget of zero
+        # seconds, which every run exceeds immediately.
+        foreach ($d in 0, -1) {
+            Should-BeNull -Actual (Get-PSMutationOverBudgetFault -ElapsedSeconds 9999 -DeadlineSeconds $d -Index 1 -Total 2)
+        }
+    }
+
+    It 'says what to do about it, in the part of the message built last' {
+        # Asserted against the LAST operand of the concatenation, not the first. PowerShell fails
+        # a string subtraction by converting to Int32 and quotes the whole left operand back, so a
+        # wildcard matching early text still passes for a message that was never built -- the trap
+        # this repo has already paid for once.
+        $f = Get-PSMutationOverBudgetFault -ElapsedSeconds 200 -DeadlineSeconds 100 -Index 7 -Total 9
+        $f | Should-MatchString 'set it to 0 if something else already kills wedged runs'
+        $f | Should-MatchString 'after 7 of 9'
+    }
+}

@@ -2,6 +2,30 @@
 
 ### For consumers
 
+**A run that stops running now stops, instead of looking like a slow one.** Every mutant was
+bounded and the run was not. Observed: a run suspended overnight -- 875 minutes of wall clock
+against 333 seconds of CPU, a zero-byte report, and a sandbox its live pid kept the sweep from ever
+reclaiming. There is no output until a run completes, so a hang and a long run are the same
+observation and the honest response to both is to wait.
+
+Two bounds, checked **between** mutants so neither can interrupt one mid-flight and leave a spliced
+file behind:
+
+- **A stalled mutant.** The child is given a budget and its handle waited on for exactly that, so a
+  mutant whose wall clock is far past it did not run slowly -- the thing that should have stopped it
+  never fired, which is what a sleeping machine does to a wait handle. This fires within one mutant
+  and names that cause.
+- **A whole-run budget**, as the backstop. Defaults to the baseline plus twice one per-mutant budget
+  for every mutant, which no correct run can exceed. `runTimeoutSeconds` overrides it; **0 disables
+  it**, for a harness that already kills wedged jobs.
+
+Both stop by throwing, so the partial-report path writes what the run got through. A hang used to
+leave a zero-byte file; it now leaves evidence of how far it reached.
+
+The limits are deliberately loose -- four times a mutant's budget with a thirty-second floor, and
+twice the theoretical run time. A bound that fires on a slow-but-working run is one that gets
+switched off within a week.
+
 **A committed list of accepted survivors, so the gate is adoptable on code that is already red.**
 Point `survivorBaseline` at a path and its presence enables the gate; `-UpdateBaseline` writes it.
 

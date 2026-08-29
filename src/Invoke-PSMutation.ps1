@@ -214,7 +214,7 @@ function Invoke-PSMutation {
         $partial = [System.Collections.Generic.List[object]]::new()
         $done = $false
         try {
-            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial -RecordAllKillers:$allKillers
+            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial -RecordAllKillers:$allKillers -DeadlineSeconds (Get-PSMutationRunDeadlineBudget -Cfg $cfg -CandidateCount $cands.Count -TimeoutSeconds $timeout -BaselineSeconds $baseline.DurationSeconds)
             $done = $true
         }
         finally {

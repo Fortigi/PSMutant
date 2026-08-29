@@ -146,6 +146,11 @@
     "survivorBaseline": {
       "type": "string",
       "description": "Path to a committed list of accepted surviving mutants, relative to the source root unless rooted. Its presence enables the baseline gate: a survivor not listed fails the run, and a listed one that is fixed, whose file leaves mutate, or that is also declared equivalent, fails too. Written by -UpdateBaseline. Absent means no baseline gate."
+    },
+    "runTimeoutSeconds": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Wall-clock budget for the whole run, checked between mutants. Defaults to the baseline plus twice one per-mutant budget for every mutant, which no correct run can exceed. Zero disables it, for a harness that already kills wedged jobs."
     }
   },
   "patternProperties": {

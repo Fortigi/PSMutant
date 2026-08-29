@@ -1000,3 +1000,38 @@ Describe 'Get-PSMutationSurvivorBaselinePath' {
                 -SourceRoot $script:sbRoot } | Should-Throw -ExceptionMessage '*survivorBaseline*'
     }
 }
+
+Describe 'Get-PSMutationRunDeadlineBudget' {
+    It 'derives a bound no correct run can exceed' {
+        # Baseline plus twice one per-mutant budget for every mutant. The x2 covers per-mutant
+        # work outside the bounded child -- reading and splicing the file, restoring it -- and a
+        # baseline measured once on a warm machine. Deliberately loose: this exists to end an
+        # overnight hang, not to trim a run having a bad day, and a bound that fired on a
+        # slow-but-working run would be switched off within a week.
+        Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{}) -CandidateCount 10 `
+            -TimeoutSeconds 15 -BaselineSeconds 20 | Should-Be 320
+    }
+
+    It 'lets an explicit setting win, including a small one' {
+        # A caller who knows their run's shape can tighten it. Asserted with a value FAR below
+        # the derived one, so this cannot pass by the derivation happening to agree.
+        Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{ runTimeoutSeconds = 42 }) `
+            -CandidateCount 10 -TimeoutSeconds 15 -BaselineSeconds 20 | Should-Be 42
+    }
+
+    It 'treats zero as disabled rather than as absent' {
+        # The distinction that makes the key usable: a consumer whose harness already kills
+        # wedged jobs should be able to say so, not tune a number they do not care about. Read as
+        # absent, zero would silently re-derive the bound they asked not to have.
+        Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{ runTimeoutSeconds = 0 }) `
+            -CandidateCount 10 -TimeoutSeconds 15 -BaselineSeconds 20 | Should-Be 0
+    }
+
+    It 'scales with the mutant count, not just the budget' {
+        # A run of 1000 mutants is legitimately longer than one of 10, and a bound that ignored
+        # the count would fire on every large repo.
+        $small = Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{}) -CandidateCount 10 -TimeoutSeconds 15 -BaselineSeconds 20
+        $large = Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{}) -CandidateCount 1000 -TimeoutSeconds 15 -BaselineSeconds 20
+        $large | Should-BeGreaterThan $small
+    }
+}

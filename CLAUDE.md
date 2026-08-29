@@ -1390,6 +1390,28 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   scope-shrink fault fired on a completely clean run. Caught by an end-to-end run, not by any unit
   test, because every fixture on both sides used the same form.
 
+- **A comparison against a live clock cannot have its boundary tested, so make it a pure decision.**
+  The whole-run budget started as `if ($runClock.Elapsed.TotalSeconds -gt $DeadlineSeconds)` inline
+  in the loop. Elapsed wall-clock never lands exactly on the budget, so no fixture could tell `-gt`
+  from `-ge`, and self-mutation reported both. Extracted to `Get-PSMutationOverBudgetFault`, taking
+  elapsed as a number, the boundary is one assertion.
+
+- **A `max()` of two arms needs a fixture on EACH arm.** The stall limit is
+  `max(budget * 4, budget + 30)`. With a 15-second budget the multiple wins; with a 5-second budget
+  the floor does. Round numbers far from either boundary left every mutant of the multiplier, the
+  addend and the comparison alive -- a fixture sitting on one arm cannot observe the other change at
+  all. Two rows, each exactly at its own limit and one second past it, kill all of them.
+
+- **Bound the RUN, not only each unit of work, and stop between units.** Every mutant was bounded
+  and the run was not, which shows up only as patience: a suspended run had 875 minutes of wall
+  clock against 333 seconds of CPU and looked exactly like a slow one. Checking between mutants
+  rather than inside one means a stop never leaves a spliced file behind, and the rows already in
+  the caller's sink are what the partial report is written from -- so the stop leaves evidence
+  instead of a zero-byte file.
+
+  Keep such a bound LOOSE. It exists to end an overnight hang, not to trim a run having a bad day,
+  and one that fires on a slow-but-working run is switched off within a week.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
