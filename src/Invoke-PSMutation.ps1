@@ -259,50 +259,14 @@ function Invoke-PSMutation {
 
         # The reason first, and the exit code derived from it, so the two cannot disagree about
         # the same run.
-        # The accepted-survivor baseline, when the config names one. Read AFTER the report is
+        # The accepted-survivor baseline, when the config names one. Applied AFTER the report is
         # written, so a run that fails here still leaves the evidence a reader needs to act on.
-        $baselineFault = @()
+        # The work is in Report.ps1: this file keeps the one line that decides whether to do it.
         $baselinePath = Get-PSMutationSurvivorBaselinePath -Cfg $cfg -SourceRoot $root
-        if ($baselinePath) {
-            # Read the same way the recheck path reads a prior report -- there is no separate
-            # document reader in this module, and inventing one here would be a second way to do
-            # the same thing.
-            # -ErrorAction Stop, so a baseline that exists but cannot be READ fails the run rather
-            # than being silently treated as absent -- an unreadable baseline enforcing nothing is
-            # exactly the "gate that stopped being able to fail" this module exists to catch. A
-            # MISSING file is different and is the ordinary first run, before -UpdateBaseline.
-            # An EMPTY object when the file is not there yet, never $null. $null is the decision
-            # function's signal for "no baseline configured at all", and a config that NAMES a
-            # baseline it has not created must not silently enforce nothing -- that is the gate
-            # that cannot fire, wearing the shape of a passing run. Missing means every survivor
-            # is new, which is what sends somebody to run -UpdateBaseline.
-            $prior = (Test-Path -LiteralPath $baselinePath) ?
-                ((Get-Content -LiteralPath $baselinePath -Raw -ErrorAction Stop | ConvertFrom-Json).survivors) :
-                ([pscustomobject]@{})
-            if ($UpdateBaseline) {
-                # WRITES WHATEVER THE RUN MEASURED, including on a failing run, which is PHPStan's
-                # stance for --generate-baseline and is what adoption needs: the whole point is to
-                # accept today's mess on a codebase that is already red, and refusing would make
-                # the first run impossible. It cannot launder a regression, because the NEXT run
-                # compares against what was recorded and fails on anything new.
-                Save-PSMutationReportDocument -Document (Get-PSMutationUpdatedSurvivorBaseline -Results $results) `
-                    -ReportPath $baselinePath
-                Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Muted' `
-                        -Text ("  Recorded {0} accepted survivor(s) to {1}." -f `
-                            @($results | Where-Object Status -eq 'Survived').Count, $baselinePath))
-            }
-            else {
-                # $cfg.mutate, NOT $t.Mutate. The plan's list is resolved to absolute sandbox
-                # paths, while a baseline key is built from a result row's DISPLAY path -- the
-                # repo-relative one. Comparing the two makes every entry look like a file that
-                # left the mutate list, which is the scope-shrink fault firing on a clean run.
-                $baselineFault = @(Get-PSMutationSurvivorBaselineFault -Results $results -Baseline $prior `
-                        -MutateFiles @($cfg.mutate) -Equivalents $cfg.equivalents)
-                foreach ($bf in $baselineFault) {
-                    Write-PSMutationOutput -Quiet:$false -Lines (New-PSMutationLine -Role 'Bad' -Text "  $bf")
-                }
-            }
-        }
+        $baselineFault = $baselinePath ?
+            @(Invoke-PSMutationSurvivorBaseline -BaselinePath $baselinePath -Results $results `
+                -MutateFiles @($cfg.mutate) -Equivalents $cfg.equivalents `
+                -Update:$UpdateBaseline -Quiet:$Quiet) : @()
 
         # The reason first, and the exit code derived from it, so the two cannot disagree about
         # the same run.

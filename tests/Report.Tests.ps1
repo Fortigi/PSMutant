@@ -1517,3 +1517,76 @@ Describe 'a survivor-baseline fault decides the run' {
             Should-Be 0
     }
 }
+
+Describe 'Invoke-PSMutationSurvivorBaseline' {
+    BeforeEach {
+        $script:bDir = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:bDir -Force | Out-Null
+        $script:bPath = Join-Path $script:bDir 'baseline.json'
+        $script:oneSurvivor = @([pscustomobject]@{ Id = 1; Function = 'F'; File = 'src/a.ps1'
+                Line = 1; Operator = 'BinaryOperator'; Description = 'd'; Status = 'Survived'; KilledBy = @() })
+    }
+
+    It 'writes the baseline and reports no fault under -Update' {
+        # The adoption run. It writes even though this run has an unaccepted survivor, which is
+        # the whole point -- refusing would make the first run impossible.
+        $f = Invoke-PSMutationSurvivorBaseline -BaselinePath $script:bPath -Results $script:oneSurvivor `
+            -MutateFiles @('src/a.ps1') -Update -Quiet
+        @($f).Count | Should-Be 0
+        $doc = Get-Content $script:bPath -Raw | ConvertFrom-Json
+        @($doc.survivors.PSObject.Properties.Name) | Should-BeCollection @('src/a.ps1:F:d')
+    }
+
+    It 'returns an empty collection, never $null, on the update path' {
+        # The caller feeds this straight into Get-PSMutationFailureReason, whose parameter refuses
+        # $null. A run that wrote its baseline would otherwise fail at the very last step.
+        $f = Invoke-PSMutationSurvivorBaseline -BaselinePath $script:bPath -Results @() `
+            -MutateFiles @('src/a.ps1') -Update -Quiet
+        Should-BeFalse -Actual ($null -eq $f)
+    }
+
+    It 'treats a MISSING baseline as empty, so every survivor is new' {
+        # Not as "no baseline configured". A config that names a baseline it has not created must
+        # not silently enforce nothing -- that is a gate that cannot fire wearing the shape of a
+        # passing run.
+        $f = Invoke-PSMutationSurvivorBaseline -BaselinePath $script:bPath -Results $script:oneSurvivor `
+            -MutateFiles @('src/a.ps1') -Quiet
+        ($f -join ' ') | Should-MatchString 'NEW survivor not in the baseline'
+    }
+
+    It 'reports nothing when the recorded baseline matches the run' {
+        '{ "schemaVersion": 1, "survivors": { "src/a.ps1:F:d": "" } }' |
+            Set-Content -LiteralPath $script:bPath -Encoding utf8
+        $f = Invoke-PSMutationSurvivorBaseline -BaselinePath $script:bPath -Results $script:oneSurvivor `
+            -MutateFiles @('src/a.ps1') -Quiet
+        @($f).Count | Should-Be 0
+    }
+
+    It 'refuses a baseline that exists but cannot be parsed' {
+        # An unreadable baseline treated as absent is a gate enforcing nothing while looking green.
+        # A MISSING file is different, and is the ordinary first run -- covered above.
+        'not json at all' | Set-Content -LiteralPath $script:bPath -Encoding utf8
+        { Invoke-PSMutationSurvivorBaseline -BaselinePath $script:bPath -Results $script:oneSurvivor `
+                -MutateFiles @('src/a.ps1') -Quiet } | Should-Throw
+    }
+
+    It 'prints each fault UNSILENCED, even under -Quiet' {
+        # -Quiet silences the progress log; a finding is not log. In CI these lines are the only
+        # place the mutants a reader must act on ever appear.
+        Mock Write-PSMutationOutput { }
+        $null = Invoke-PSMutationSurvivorBaseline -BaselinePath $script:bPath -Results $script:oneSurvivor `
+            -MutateFiles @('src/a.ps1') -Quiet
+        Should-Invoke Write-PSMutationOutput -Times 1 -ParameterFilter {
+            $Quiet -eq $false -and (($Lines | ForEach-Object { $_.Text }) -join ' ') -like '*NEW survivor*'
+        }
+    }
+
+    It 'returns the faults as data, not only as printed text' {
+        # The caller turns them into a failure reason and an exit code. A version that only printed
+        # would leave a CI job green while the console said otherwise.
+        $f = Invoke-PSMutationSurvivorBaseline -BaselinePath $script:bPath -Results $script:oneSurvivor `
+            -MutateFiles @('src/a.ps1') -Quiet
+        @($f).Count | Should-Be 1
+        $f[0] | Should-MatchString 'src/a.ps1:F:d'
+    }
+}

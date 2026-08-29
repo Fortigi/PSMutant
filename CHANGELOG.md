@@ -33,6 +33,9 @@ Psalm's baselines do, for the same reason: they list specific findings rather th
 
 Entries are keyed by file, function and change -- not by line -- so one survives a line moving.
 
+A baseline that exists but cannot be parsed fails the run; a MISSING one is the ordinary first run
+and means every survivor is new.
+
 **The report and the console break the score down per file.** A blended score is an average, so a
 strong file carries a weak one and the gate passes on a number nobody would accept per file --
 observed on a real consumer at roughly 89% blended while individual files ranged from 39.6% to 100%.

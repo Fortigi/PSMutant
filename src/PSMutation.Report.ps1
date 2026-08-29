@@ -215,6 +215,65 @@ function Get-PSMutationScore {
     }
 }
 
+function Invoke-PSMutationSurvivorBaseline {
+    <#
+    .SYNOPSIS
+        Apply the accepted-survivor baseline, or write it. Returns the faults, if any.
+    .DESCRIPTION
+        Extracted from the orchestrator, which the module's own complexity gate then failed at
+        cognitive 19 against a ceiling of 15 -- the read, the two-way branch and the fault loop
+        nested inside a function that was already doing the whole run.
+
+        Here rather than in Invoke-PSMutation.ps1 because this reads and writes a DOCUMENT, which
+        is what this file owns; the orchestrator keeps the one line that decides whether to call it.
+    #>
+    # object[], not string[]: both returns use the unary comma so an empty result survives the
+    # pipeline as an empty array rather than $null, and that wrapper is an object[] holding a
+    # string[]. Declaring the inner type is what PSUseOutputTypeCorrectly objects to, correctly.
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$BaselinePath,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$MutateFiles,
+        $Equivalents,
+        [switch]$Update,
+        [switch]$Quiet
+    )
+    if ($Update) {
+        # WRITES WHATEVER THE RUN MEASURED, including on a failing run. Accepting today's mess on
+        # a codebase that is already red is the whole use case, and refusing would make the first
+        # run impossible -- PHPStan's --generate-baseline takes the same stance. It cannot launder
+        # a regression, because the next run compares against what was recorded.
+        Save-PSMutationReportDocument -Document (Get-PSMutationUpdatedSurvivorBaseline -Results $Results) `
+            -ReportPath $BaselinePath
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Muted' `
+                -Text ("  Recorded {0} accepted survivor(s) to {1}." -f `
+                    @($Results | Where-Object Status -eq 'Survived').Count, $BaselinePath))
+        # Unary comma: without it an empty collection unrolls to $null on the way out, and the
+        # caller feeds this straight into a parameter that refuses one.
+        return , [string[]]@()
+    }
+    # An EMPTY object when the file is not there yet, never $null: $null is the decision
+    # function's signal for "no baseline configured at all", and a config that NAMES a baseline it
+    # has not created must not silently enforce nothing. Missing means every survivor is new,
+    # which is what sends somebody to run -UpdateBaseline.
+    #
+    # -ErrorAction Stop, so a baseline that exists but cannot be READ fails the run rather than
+    # being treated as absent -- an unreadable baseline enforcing nothing is the same defect.
+    $prior = (Test-Path -LiteralPath $BaselinePath) ?
+        ((Get-Content -LiteralPath $BaselinePath -Raw -ErrorAction Stop | ConvertFrom-Json).survivors) :
+        ([pscustomobject]@{})
+    $faults = @(Get-PSMutationSurvivorBaselineFault -Results $Results -Baseline $prior `
+            -MutateFiles $MutateFiles -Equivalents $Equivalents)
+    foreach ($f in $faults) {
+        # NOT passed -Quiet: that switch silences the progress log, and a finding is not log. In
+        # CI this is the only place the mutants a reader must act on ever appear.
+        Write-PSMutationOutput -Quiet:$false -Lines (New-PSMutationLine -Role 'Bad' -Text "  $f")
+    }
+    return , [string[]]$faults
+}
+
 function Get-PSMutationSurvivorBaselineFault {
     <#
     .SYNOPSIS
@@ -247,8 +306,12 @@ function Get-PSMutationSurvivorBaselineFault {
     $faults = [System.Collections.Generic.List[string]]::new()
     if ($null -eq $Baseline) { return $faults.ToArray() }
 
+    # Where-Object, because member enumeration over an object with NO properties yields $null and
+    # @($null) is a one-element array holding it. Unfiltered, an EMPTY baseline -- the state a
+    # project reaches once the debt is paid off -- produced a phantom entry whose file is the empty
+    # string, which is never in the mutate list, so a clean run reported a scope-shrink fault.
     $accepted = [System.Collections.Generic.HashSet[string]]::new(
-        [string[]]@($Baseline.PSObject.Properties.Name))
+        [string[]]@($Baseline.PSObject.Properties.Name | Where-Object { $_ }))
     $mutating = [System.Collections.Generic.HashSet[string]]::new([string[]]@($MutateFiles))
 
     # Keyed by the SAME builder equivalence declarations use, so an entry survives a line moving.
