@@ -121,7 +121,10 @@ function Invoke-PSMutation {
         [Parameter(Mandatory)] [string]$ConfigFile,
         [string]$SourceRoot = (Get-Location).Path,
         [string]$RecheckFrom,
-        [switch]$Quiet
+        [switch]$Quiet,
+        # Record this run's survivors as the accepted baseline. Writes even on a failing run --
+        # see the call site.
+        [switch]$UpdateBaseline
     )
 
     # Started before anything else so `totalSeconds` covers what a user actually waits for,
@@ -256,8 +259,19 @@ function Invoke-PSMutation {
 
         # The reason first, and the exit code derived from it, so the two cannot disagree about
         # the same run.
-        $reason = Get-PSMutationFailureReason -Summary $summary -Thresholds $cfg.thresholds
-        $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds
+        # The accepted-survivor baseline, when the config names one. Applied AFTER the report is
+        # written, so a run that fails here still leaves the evidence a reader needs to act on.
+        # The work is in Report.ps1: this file keeps the one line that decides whether to do it.
+        $baselinePath = Get-PSMutationSurvivorBaselinePath -Cfg $cfg -SourceRoot $root
+        $baselineFault = $baselinePath ?
+            @(Invoke-PSMutationSurvivorBaseline -BaselinePath $baselinePath -Results $results `
+                -MutateFiles @($cfg.mutate) -Equivalents $cfg.equivalents `
+                -Update:$UpdateBaseline -Quiet:$Quiet) : @()
+
+        # The reason first, and the exit code derived from it, so the two cannot disagree about
+        # the same run.
+        $reason = Get-PSMutationFailureReason -Summary $summary -Thresholds $cfg.thresholds -BaselineFault $baselineFault
+        $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds -BaselineFault $baselineFault
         return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit -FailureReason $reason
     }
     finally {

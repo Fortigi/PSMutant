@@ -1281,6 +1281,47 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   Listing every file puts the one needing attention inside a wall of 100%s; printing a breakdown for
   a single file restates the headline under a heading implying it found something.
 
+- **Baseline a SET of findings, never an aggregate.** The first attempt at #6 ratcheted a per-file
+  SCORE and was thrown away. A score is a ratio and its denominator moves with the source; measured
+  against a file baselined at 90%, adding ten well-tested lines reads as an improvement that must be
+  re-recorded, and deleting ten well-tested lines reads as a regression to 88.9% though nothing got
+  worse. Three of four ordinary edits fail the build, one of them usefully.
+
+  Baselining the surviving MUTANTS behaves the way PHPStan's and Psalm's baselines do, and for the
+  same reason: they list specific findings rather than a percentage. Re-measured on the same four
+  cases, one true positive and no false ones. The paired module reached the same shape from the
+  other direction -- complexity is an absolute number per unit, so its baseline can compare numbers
+  safely where this one cannot.
+
+- **Debt and equivalence are different claims and must not share a list.** `equivalents` means
+  *this mutant cannot be killed* and carries a written argument the gate checks; a baseline entry
+  means *this mutant is not killed yet* and is generated with no prose. Before the baseline existed,
+  the only way to record debt was to overstate it as equivalence -- which corrupts the one list
+  whose entries are supposed to be claims somebody actually made. An entry that is BOTH is refused,
+  because the declaration already excuses the mutant and the entry then permits nothing.
+
+  Four rules the baseline needs, three of which the paired module had first: a finding that is
+  fixed but still recorded is a fault (otherwise the ratchet has slack and it can come back), one
+  whose file left the scanned set is a fault (dropping a file hides findings rather than fixing
+  them), one that is also an argued exception is a fault, and the key must be STABLE -- function,
+  not line, since a baseline is committed once and reviewed rarely.
+
+- **`-UpdateBaseline` writes on a FAILING run, deliberately.** Accepting today's mess on a codebase
+  that is already red is the whole use case, and refusing would make the first run impossible --
+  PHPStan's `--generate-baseline` takes the same stance. It cannot launder a regression, because
+  the next run compares against what was recorded.
+
+- **A config is a declaration of intent; a baseline is recorded state.** The baseline lives in its
+  own file, named by a config KEY rather than fixed, so a monorepo can keep one per package. A tool
+  that rewrites its own config makes the user's hand-authored file something the machine edits, and
+  then nobody can tell which lines a person meant.
+
+- **Compare like with like when a key holds a path.** A baseline key is built from a result row's
+  DISPLAY path -- repo-relative -- while the plan's mutate list is resolved to absolute sandbox
+  paths. Comparing the two made every entry look like a file that had left the mutate list, so the
+  scope-shrink fault fired on a completely clean run. Caught by an end-to-end run, not by any unit
+  test, because every fixture on both sides used the same form.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked

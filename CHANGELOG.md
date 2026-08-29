@@ -2,6 +2,40 @@
 
 ### For consumers
 
+**A committed list of accepted survivors, so the gate is adoptable on code that is already red.**
+Point `survivorBaseline` at a path and its presence enables the gate; `-UpdateBaseline` writes it.
+
+```json
+{ "mutate": ["src/a.ps1"], "survivorBaseline": ".psmutant-survivors.json" }
+```
+
+A survivor **not** in the list fails the run. So does a listed one that has been **fixed** (leave it
+and the mutant can start surviving again later with nothing failing), one whose **file has left
+`mutate`** (dropping a file hides its survivors rather than fixing them), and one that is **also**
+declared equivalent (the declaration already excuses it, so the entry permits nothing).
+
+This is **debt, not equivalence**, and the two are deliberately separate. `equivalents` means *this
+mutant cannot be killed* and carries a written argument the gate checks; a baseline entry means
+*this mutant is not killed yet* and is generated. Without the second, the only way to record known
+debt was to overstate it as equivalence, which corrupts the one list whose entries are supposed to
+be claims somebody made.
+
+`-UpdateBaseline` writes **even on a failing run**, which is what adoption needs: accepting today's
+mess on a red codebase is the whole point, and refusing would make the first run impossible. It
+cannot launder a regression, because the next run compares against what was recorded.
+
+**Why a set of mutants and not a per-file score.** A score is a ratio and its denominator moves with
+the source. Measured against a file baselined at 90%: adding ten well-tested lines reads as an
+improvement that must be re-recorded, deleting ten well-tested lines reads as a regression to 88.9%
+though nothing got worse, and only under-tested new code is a true finding -- three of four ordinary
+edits fail, one of them usefully. Baselining the surviving mutants behaves the way PHPStan's and
+Psalm's baselines do, for the same reason: they list specific findings rather than a percentage.
+
+Entries are keyed by file, function and change -- not by line -- so one survives a line moving.
+
+A baseline that exists but cannot be parsed fails the run; a MISSING one is the ordinary first run
+and means every survivor is new.
+
 **The report and the console break the score down per file.** A blended score is an average, so a
 strong file carries a weak one and the gate passes on a number nobody would accept per file --
 observed on a real consumer at roughly 89% blended while individual files ranged from 39.6% to 100%.
