@@ -1220,6 +1220,31 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   Measured, rather than assumed: the guard holds when dot-sourced at top level, inside a function
   and inside a scriptblock, so the arrangement is safe in all three.
 
+- **The child stops at the first failing test, so a killer list is TRUNCATED unless asked
+  otherwise.** `SkipRemainingOnFailure = 'Run'` exists because a mutant asks one question -- does
+  ANY test notice -- and once one has, every test after it is work whose outcome cannot change the
+  verdict. `recordAllKillers` drops it and records every killer, at a measured cost: over this
+  repo's `Operators.ps1`, 118 mutants all killed, **50s becomes 73s** for the **same 118 verdicts**.
+  It buys data, not accuracy, which is why it is opt-in.
+
+  **Truncated is not "exactly one", and assuming so is wrong.** Measured on that same run: the
+  default still reported several killers for **20 of 118** mutants, because more than one test can
+  be marked failed before the early stop takes hold. With every killer recorded the figure is 85. So
+  the LENGTH of a row's `KilledBy` says nothing about how many tests kill it -- read
+  `killersComplete`, which every report carries.
+
+  **`testsWithoutKills` is absent unless the lists are complete, and the schema refuses it
+  otherwise.** Under the early stop a test that WOULD have killed but was skipped is
+  indistinguishable from one that cannot kill at all, and what a reader does with such a list is
+  delete things. Same principle as forbidding `mutationScore` on a partial run: make the dangerous
+  reading unrepresentable rather than merely undocumented.
+
+- **A default of FALSE needs no absent-key guard, and writing one is a survivor waiting to happen.**
+  `Get-PSMutationCoveredLinesOnly` defaults TRUE, so it must branch to tell an absent key from an
+  explicit `false`. `Get-PSMutationRecordEveryKiller` defaults false, and `[bool]$null` is already
+  false -- so the same guard there is a branch whose two arms return the same value. Self-mutation
+  reported it as a survivor on the first run.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked

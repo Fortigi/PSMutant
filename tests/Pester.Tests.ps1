@@ -293,3 +293,23 @@ Describe 'the child script the warm runspace runs' {
         ($withoutIt.PSObject.Properties['SkipRemainingOnFailure']) | Should-BeNull
     }
 }
+
+Describe 'Get-PSMutationWarmPesterScript honours -RecordAllKillers' {
+    It 'keeps the early stop by default and drops it when every killer is wanted' {
+        # The switch has exactly one job: decide whether the child stops at the first failing
+        # test. Asserted in BOTH directions -- a generator that ignored the switch would satisfy
+        # either half alone, and the expensive path would silently never be taken.
+        (Get-PSMutationWarmPesterScript) | Should-MatchString 'SkipRemainingOnFailure'
+        (Get-PSMutationWarmPesterScript -RecordAllKillers) | Should-NotMatchString 'SkipRemainingOnFailure'
+    }
+
+    It 'returns the verdict AND the killers either way' {
+        # The shape the caller reads is the same whichever path is taken; only how much of it is
+        # populated differs. A child that returned a bare string on one path would make
+        # Invoke-PSBoundedPester read $null and refuse the run.
+        foreach ($text in (Get-PSMutationWarmPesterScript), (Get-PSMutationWarmPesterScript -RecordAllKillers)) {
+            $text | Should-MatchString 'Result'
+            $text | Should-MatchString 'Killers'
+        }
+    }
+}

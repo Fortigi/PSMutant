@@ -278,14 +278,35 @@ function Get-PSMutationWarmPesterScript {
     #>
     [OutputType([string])]
     [CmdletBinding()]
-    param()
-    return @'
-param($tests)
-$c = New-PesterConfiguration
-$c.Run.Path = $tests
-$c.Run.PassThru = $true
-$c.Output.Verbosity = 'None'
+    param(
+        # Record EVERY failing test rather than stopping at the first. Off by default because it
+        # forfeits SkipRemainingOnFailure, and that is not free: measured over this repo's
+        # Operators.ps1 -- 118 mutants, all killed -- the same run takes 46s with the early stop
+        # and 75s without, a 63% increase. The cost lands on killed mutants, which are almost all
+        # of them, so it is the default run that would pay.
+        #
+        # What it buys is the only data that answers "which of my tests never kill anything".
+        # With the early stop a test that WOULD have killed but was skipped is indistinguishable
+        # from one that cannot kill at all -- and acting on that reading means deleting a test
+        # that works. The flag exists so that analysis is a deliberate, occasional run rather
+        # than a permanent tax on every gate.
+        [switch]$RecordAllKillers
+    )
+    # Built by concatenation rather than by two here-strings: the two scripts differ in one line
+    # and one expression, and a second copy is a second thing to keep in step.
+    $skip = $RecordAllKillers ? '' : @'
 if ($c.Run.PSObject.Properties['SkipRemainingOnFailure']) { $c.Run.SkipRemainingOnFailure = 'Run' }
-(Invoke-Pester -Configuration $c).Result
 '@
+    return @"
+param(`$tests)
+`$c = New-PesterConfiguration
+`$c.Run.Path = `$tests
+`$c.Run.PassThru = `$true
+`$c.Output.Verbosity = 'None'
+$skip
+`$r = Invoke-Pester -Configuration `$c
+# ExpandedName, not Name: a -ForEach case is one name and many tests, and a killer nobody can
+# tell apart from its siblings is not an answer to "which test killed this".
+[pscustomobject]@{ Result = [string]`$r.Result; Killers = @(`$r.Failed | ForEach-Object { `$_.ExpandedName }) }
+"@
 }

@@ -127,7 +127,7 @@ Describe 'Invoke-PSMutationLoop' {
         # being honoured -- get it wrong and every mutant runs the entire suite,
         # which is correct but turns a minutes-long run into an hours-long one.
         $script:seenTests = $null
-        Mock Invoke-PSMutant { $script:seenTests = $CoveringTests; 'Killed' }
+        Mock Invoke-PSMutant { $script:seenTests = $CoveringTests; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -143,7 +143,7 @@ Describe 'Invoke-PSMutationLoop' {
 
     It 'renders a progress line naming the mutant it just finished' {
         # Every other test here passes -Quiet, so this branch would otherwise never run.
-        Mock Invoke-PSMutant { 'Killed' }
+        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         Mock Write-PSMutationOutput { }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
@@ -163,7 +163,7 @@ Describe 'Invoke-PSMutationLoop' {
         # switch on, because Write-PSMutationOutput is the single place -Quiet is honoured
         # -- so what has to be proven here is that the switch is FORWARDED. A loop that
         # dropped it would print for real while any "was not called" assertion stayed green.
-        Mock Invoke-PSMutant { 'Killed' }
+        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         Mock Write-PSMutationOutput { }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
@@ -185,7 +185,7 @@ Describe 'Invoke-PSMutationLoop' {
         # test's value -- with the mock never firing at all, which is exactly the case it exists
         # to catch.
         $script:seenTests = $null
-        Mock Invoke-PSMutant { $script:seenTests = $CoveringTests; 'Killed' }
+        Mock Invoke-PSMutant { $script:seenTests = $CoveringTests; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -291,17 +291,19 @@ Describe 'Invoke-PSMutant' {
     }
 
     It 'reports Survived only when the suite still fully passes' {
-        Mock Invoke-PSBoundedPester { 'Passed' }
+        Mock Invoke-PSBoundedPester { [pscustomobject]@{ Result = 'Passed'; Killers = @() } }
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Survived'
+            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 |
+            Select-Object -ExpandProperty Status | Should-Be 'Survived'
     }
 
     It 'reports TimedOut apart from Killed, because a hang is not evidence' {
         # The bounded runner has always distinguished this; the verdict was discarded one
         # line later, so a suite that was merely too slow scored kills it never earned.
-        Mock Invoke-PSBoundedPester { 'TimedOut' }
+        Mock Invoke-PSBoundedPester { [pscustomobject]@{ Result = 'TimedOut'; Killers = @() } }
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'TimedOut'
+            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 |
+            Select-Object -ExpandProperty Status | Should-Be 'TimedOut'
     }
 
     It 'refuses an outcome it does not model rather than scoring it' {
@@ -309,7 +311,7 @@ Describe 'Invoke-PSMutant' {
         # scored Killed, so a Pester that grew a third run-level state would report a perfect
         # score with no test failing and nothing to notice. A rename fails loudly at the
         # baseline; a widening does not, which is why the set is closed here.
-        Mock Invoke-PSBoundedPester { 'Inconclusive' }
+        Mock Invoke-PSBoundedPester { [pscustomobject]@{ Result = 'Inconclusive'; Killers = @() } }
         { Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
                 -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } |
             Should-Throw -ExceptionMessage '*flatters the score*'
@@ -324,15 +326,16 @@ Describe 'Invoke-PSMutant' {
     ) {
         # Anything but Passed is a kill, which is why an outcome that means "we could
         # not tell" must never reach here -- see Invoke-PSBoundedPester.
-        Mock Invoke-PSBoundedPester { $Outcome }
+        Mock Invoke-PSBoundedPester { [pscustomobject]@{ Result = $Outcome; Killers = @() } }
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Should-Be 'Killed'
+            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 |
+            Select-Object -ExpandProperty Status | Should-Be 'Killed'
     }
 
     It 'writes the mutant into the file and restores it afterwards' {
         # The restore is what lets the next mutant start from clean source. Miss it and
         # every later mutant is evaluated against an accumulating pile of earlier ones.
-        Mock Invoke-PSBoundedPester { $script:during = [System.IO.File]::ReadAllText($script:target); 'Passed' }
+        Mock Invoke-PSBoundedPester { $script:during = [System.IO.File]::ReadAllText($script:target); [pscustomobject]@{ Result = 'Passed'; Killers = @() } }
 
         Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'MUTATED' `
             -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Out-Null
@@ -357,8 +360,8 @@ Describe 'Invoke-PSBoundedPester' {
     # reused, and warming it means really importing Pester -- so a fake path would break the
     # import rather than being ignored the way it was when the child script carried it.
     It 'hands back the verdict the child produced' {
-        Mock Get-PSMutationWarmPesterScript { 'param($tests) "Passed"' }
-        Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 | Should-Be 'Passed'
+        Mock Get-PSMutationWarmPesterScript { 'param($tests) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
+        (Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10).Result | Should-Be 'Passed'
     }
 
     It 'fails loudly when the child returns no verdict, and says what the child said' {
@@ -380,8 +383,13 @@ Describe 'Invoke-PSBoundedPester' {
         # stray Write-Output, a warning surfacing as an object. Only the final value is
         # the verdict; carrying any of the noise with it stops the string ever matching
         # 'Passed', which silently turns every survivor into a kill.
-        Mock Get-PSMutationWarmPesterScript { 'param($tests) "noise from a test file"; "Passed"' }
-        Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 | Should-Be 'Passed'
+        # TWO records, not noise-then-record. Since the child began returning an object, taking
+        # more than the last one no longer concatenates into an unusable string -- PowerShell
+        # enumerates .Result across the collection and the first value can still look like a
+        # verdict. Two records with DIFFERENT verdicts is what distinguishes "last" from "any":
+        # take both and the outcome is 'Failed Passed', which no known outcome matches.
+        Mock Get-PSMutationWarmPesterScript { 'param($tests) [pscustomobject]@{ Result = "Failed"; Killers = @() }; [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
+        (Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10).Result | Should-Be 'Passed'
     }
 
     It 'cuts off a child that overruns and reports TimedOut' {
@@ -397,7 +405,7 @@ Describe 'Invoke-PSBoundedPester' {
         Mock Get-PSMutationWarmPesterScript { 'param($tests) Start-Sleep -Seconds 30' }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $outcome = Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 1
+        $outcome = (Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 1).Result
         $sw.Stop()
 
         $outcome | Should-Be 'TimedOut'
@@ -689,7 +697,7 @@ Describe 'the mutant row the report publishes' {
         # Mutated are deliberately absent. Widening it to project the whole candidate would
         # re-publish the undeclared nine-field object #48 just withdrew, through the report
         # instead of through an export.
-        Mock Invoke-PSMutant { 'Killed' }
+        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $cand = [pscustomobject]@{
             Id = 7; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = '-eq -> -ne'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -703,7 +711,7 @@ Describe 'the mutant row the report publishes' {
         # carries the function it lives in. Widening the contract is what this assertion is
         # for -- it failed when the field was added, which is the pin working.
         @($r)[0].PSObject.Properties.Name |
-            Should-BeCollection @('Id', 'Function', 'File', 'Line', 'Operator', 'Description', 'Status')
+            Should-BeCollection @('Id', 'Function', 'File', 'Line', 'Operator', 'Description', 'Status', 'KilledBy')
     }
 }
 

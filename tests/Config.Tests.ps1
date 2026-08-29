@@ -935,3 +935,22 @@ Describe 'the sandbox plan refuses a tests key that covers nothing' {
             Should-Throw -ExceptionMessage '*_why-a-note*TOP level*'
     }
 }
+
+Describe 'Get-PSMutationRecordEveryKiller' {
+    It 'defaults to false, so no consumer pays for data it did not ask for' {
+        # The expensive direction is the one that must be opt-in. Recording every killer forfeits
+        # Pester's early stop: measured over this repo's Operators.ps1, 118 mutants all killed,
+        # 50s becomes 73s for the same 118 verdicts.
+        Should-BeFalse -Actual (Get-PSMutationRecordEveryKiller -Cfg ([pscustomobject]@{}))
+    }
+
+    It 'honours the config either way' -ForEach @(
+        @{ Value = $true; Expected = $true }
+        @{ Value = $false; Expected = $false }
+    ) {
+        # Both arms, because a resolver that ignored the key would satisfy the default test
+        # above and silently never turn the feature on.
+        (Get-PSMutationRecordEveryKiller -Cfg ([pscustomobject]@{ recordAllKillers = $Value })) |
+            Should-Be $Expected
+    }
+}

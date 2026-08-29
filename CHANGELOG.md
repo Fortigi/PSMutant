@@ -1,5 +1,27 @@
 ## [Unreleased]
 
+### For consumers
+
+**The report says which tests killed each mutant.** Every row carries `KilledBy`, and the run says
+whether those lists are complete.
+
+By default they are **truncated**, and that is not a compromise -- it is what the run already knows.
+A mutant's suite stops at the first failure, because once one test has noticed, every test after it
+is work whose outcome cannot change the verdict. Truncated is not the same as "exactly one":
+measured over 118 killed mutants, the default still reported several killers for 20 of them, so the
+length of a row's list says nothing about how many tests really kill it. Read `killersComplete`.
+
+Set **`recordAllKillers: true`** in the config to record every killer. It costs the early stop --
+measured on the same 118 mutants, 50s becomes 73s, about 46% more, for the same 118 verdicts. So it
+buys data, not accuracy, and it is opt-in because most runs are gates that never read the field.
+
+With it on, the report also names **`testsWithoutKills`**: mapped test files that killed nothing.
+That field is **absent** on a default run, and the schema refuses it there. Under the early stop a
+test that would have killed but was skipped is indistinguishable from one that cannot kill at all,
+and what a reader does with such a list is delete things -- so the honest answer is not to publish
+one. A test may also be the only thing covering a file outside `mutate` entirely, which is why even
+the complete list is evidence of weakness rather than proof of uselessness.
+
 ## [0.5.0] - 2026-08-29
 
 ### For consumers

@@ -282,6 +282,32 @@ function Get-PSMutationCoveredLinesOnly {
     return [bool]$Cfg.coveredLinesOnly
 }
 
+function Get-PSMutationRecordEveryKiller {
+    <#
+    .SYNOPSIS
+        Whether to record EVERY test that kills a mutant, rather than only the first.
+    #>
+    # Default FALSE, and that direction is the whole point. Recording every killer means
+    # forfeiting SkipRemainingOnFailure, which stops a mutant's suite at the first failure --
+    # measured over this repo's Operators.ps1, 118 mutants all killed: 50s with the early stop and
+    # 73s without, a ~46% increase that lands on killed mutants, which are nearly all of them.
+    # Both runs produced the same 118 verdicts, so the flag buys data rather than accuracy.
+    #
+    # So the expensive data is opt-in. What it buys is the only honest answer to "which of my
+    # tests never kill anything": with the early stop, a test that WOULD have killed but was
+    # skipped looks exactly like one that cannot kill at all, and acting on that reading means
+    # deleting a test that works. That analysis is an occasional audit, not something a gate
+    # needs on every run, so it should not be a standing tax on every consumer's wall clock.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param($Cfg)
+    # No absent-key guard, unlike Get-PSMutationCoveredLinesOnly beside it, and the asymmetry is
+    # the point: that one defaults TRUE, so it needs a branch to tell "absent" from "false". This
+    # one defaults false and [bool]$null is already false, so a guard here would be a branch whose
+    # two arms return the same value -- which self-mutation duly reported as a survivor.
+    return [bool]$Cfg.recordAllKillers
+}
+
 function Get-PSMutationPathFault {
     <#
     .SYNOPSIS

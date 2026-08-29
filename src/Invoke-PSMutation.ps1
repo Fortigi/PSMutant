@@ -175,6 +175,11 @@ function Invoke-PSMutation {
         # the recheck takes the scriptblock and invokes it after its own loop, the report
         # takes the already-invoked result.
         $exec = @{ Candidates = $cands; TimeoutSeconds = $timeout; SandboxRoot = $sandbox; Quiet = $Quiet }
+        # NOT in $exec, which is splatted into the recheck run as well. A recheck evaluates its
+        # mutants through the same loop and still records a first killer per row; what it does
+        # not do is pay for the complete list, because its report carries no killersComplete
+        # disclosure to make one readable.
+        $allKillers = Get-PSMutationRecordEveryKiller -Cfg $cfg
         $doc = @{ SourceHashes = $hashes; Operators = $ops; Equivalents = $cfg.equivalents; ReportPath = $reportPath }
 
         if ($RecheckFrom) {
@@ -206,7 +211,7 @@ function Invoke-PSMutation {
         $partial = [System.Collections.Generic.List[object]]::new()
         $done = $false
         try {
-            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial
+            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial -RecordAllKillers:$allKillers
             $done = $true
         }
         finally {
@@ -223,7 +228,7 @@ function Invoke-PSMutation {
         }
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
         # totalSeconds records how long the run took to start rather than to finish.
-        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate
+        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $allKillers -MappedTests $t.AllTests
         $band = Get-PSMutationScoreBand -Cfg $cfg
         $summaryLines = Get-PSMutationSummaryLine -Summary $summary -Results $results `
             -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents -Exclusion $exclusion

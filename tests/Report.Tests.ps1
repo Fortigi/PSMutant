@@ -477,7 +477,7 @@ Describe 'the contract a consumer actually depends on' {
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
                     'mutationScore', 'total', 'killed', 'survived', 'timedOut',
-                    'declaredEquivalent', 'filesMutated', 'skippedAsUncovered', 'filesWithNoMutants',
+                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'skippedAsUncovered', 'filesWithNoMutants',
                     'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
@@ -1167,5 +1167,59 @@ Describe 'Write-PSMutationPartialReport' {
         $doc.evaluated | Should-Be 0
         $doc.planned   | Should-Be 303
         @($doc.mutants).Count | Should-Be 0
+    }
+}
+
+Describe 'the report discloses whether its killer lists are complete' {
+    BeforeAll {
+        $script:kbRoot = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-kb-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:kbRoot -Force | Out-Null
+        $script:kbProv = New-PSMutationProvenance -ModuleVersion '1.2.3' `
+            -BaselineSeconds 1 -TotalSeconds 2 -PerMutantTimeoutSeconds 30
+        function script:WriteKb {
+            param([bool]$Complete, $Rows, [string[]]$Mapped = @('a.Tests.ps1', 'b.Tests.ps1'))
+            $path = Join-Path $script:kbRoot "r-$([System.Guid]::NewGuid().ToString('N')).json"
+            $null = Write-PSMutationReport -Results $Rows -Thresholds @{ high = 85; low = 70 } `
+                -Provenance $script:kbProv -SourceHashes @{ 'a.ps1' = 'h' } -Operators @('BinaryOperator') `
+                -ReportPath $path -KillersComplete $Complete -MappedTests $Mapped
+            return (Get-Content $path -Raw | ConvertFrom-Json)
+        }
+        $script:kbRows = @(
+            [pscustomobject]@{ Id = 1; Function = 'f'; File = 'a.ps1'; Line = 1; Operator = 'BinaryOperator'
+                Description = 'd'; Status = 'Killed'; KilledBy = @('a.Tests.ps1') }
+            [pscustomobject]@{ Id = 2; Function = 'f'; File = 'a.ps1'; Line = 2; Operator = 'BinaryOperator'
+                Description = 'd'; Status = 'Survived'; KilledBy = @() }
+        )
+    }
+    AfterAll { Remove-Item $script:kbRoot -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'always says which shape the killer lists are' -ForEach @(
+        @{ Complete = $true }
+        @{ Complete = $false }
+    ) {
+        # Written on every run, not only the complete one. A consumer that had to infer it from
+        # the presence of another field would be guessing at exactly the point where guessing
+        # turns a truncated list into a claim about test quality.
+        (script:WriteKb -Complete $Complete -Rows $script:kbRows).killersComplete | Should-Be $Complete
+    }
+
+    It 'names the tests that killed nothing ONLY when the lists are complete' {
+        # The whole reason the disclosure exists. Under the default early stop a test that would
+        # have killed but was skipped is indistinguishable from one that cannot kill at all, and
+        # what a reader does with this list is delete things.
+        $complete = script:WriteKb -Complete $true -Rows $script:kbRows
+        $complete.PSObject.Properties.Name | Should-ContainCollection 'testsWithoutKills'
+        @($complete.testsWithoutKills) | Should-BeCollection @('b.Tests.ps1')
+
+        $partial = script:WriteKb -Complete $false -Rows $script:kbRows
+        $partial.PSObject.Properties.Name | Should-NotContainCollection 'testsWithoutKills'
+    }
+
+    It 'counts a mapped test as killing nothing rather than omitting it' {
+        # a.Tests.ps1 killed; b.Tests.ps1 did not. The list is derived from the MAPPED set, so a
+        # test that ran and killed nothing is named -- deriving it from the killers instead would
+        # produce an empty list and read as "every test pulls its weight".
+        $doc = script:WriteKb -Complete $true -Rows $script:kbRows -Mapped @('a.Tests.ps1', 'b.Tests.ps1', 'c.Tests.ps1')
+        @($doc.testsWithoutKills) | Should-BeCollection @('b.Tests.ps1', 'c.Tests.ps1')
     }
 }
