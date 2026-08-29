@@ -1205,6 +1205,21 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   that a broken file is broken -- the first attempt here broke the syntax and tripped a different
   guard entirely.
 
+- **Every tested gate decision lives in `tools/GateDecisions.ps1`, and there is no second place.**
+  Nine release and changelog decisions used to sit inside `tools/Test-PSMutantRelease.ps1`, so the
+  repo held two conventions for one idea and anyone looking for "where do the decisions live" got
+  the right answer about half the time.
+
+  That is not only untidy. The sibling repo keeps all of its in one file, grew a gallery-staleness
+  check there, and this repo did not have one for two releases -- #115, whose fix already existed
+  next door. A decision with no obvious home is a decision nobody finds when they go looking for
+  its neighbours.
+
+  The gate scripts dot-source the file at script scope and keep their entry-point guard
+  (`$MyInvocation.InvocationName -ne '.'`), so a test can dot-source the SCRIPT and reach both.
+  Measured, rather than assumed: the guard holds when dot-sourced at top level, inside a function
+  and inside a scriptblock, so the arrangement is safe in all three.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked

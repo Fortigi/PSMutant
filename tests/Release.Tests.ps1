@@ -4,6 +4,10 @@
 # under an Unreleased heading, and a Gallery page cannot be corrected afterwards. So the
 # failure each test prevents is a permanent one.
 #
+# The decisions themselves now live in tools/GateDecisions.ps1 with every other tested gate
+# decision; this file dot-sources the SCRIPT rather than that file, which loads both and so
+# also proves the script's own wiring still reaches them.
+#
 # The script guards its entry point behind `$MyInvocation.InvocationName -ne '.'`, so
 # dot-sourcing here loads the functions without running the gate against the real repo.
 #
