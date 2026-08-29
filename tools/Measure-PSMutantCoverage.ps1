@@ -42,11 +42,26 @@ $cfg.Should.DisableV5 = $true
 $cfg.CodeCoverage.Enabled = $true
 $cfg.CodeCoverage.UseBreakpoints = $true
 $cfg.CodeCoverage.Path = (Get-ChildItem (Join-Path $root 'src') -Filter *.ps1).FullName
-# Steer the XML to temp: Pester's default output path would drop a coverage.xml in the
-# working tree on every local run.
-$cfg.CodeCoverage.OutputPath = Join-Path ([System.IO.Path]::GetTempPath()) "psmutant-coverage-$PID.xml"
+# Steer the XML out of the working tree -- Pester's default would drop a coverage.xml there on
+# every local run -- and then DELETE IT, which the previous version did not.
+#
+# It used to be "psmutant-coverage-$PID.xml" in shared temp, and nothing removed it. The runner's
+# sweep matches 'psmut-coverage-*.xml', a different prefix, so it could not match this by
+# construction: 56 of them, 4.2 MB, had accumulated on the machine this was found on -- the same
+# shape as the leak that fix was written for, one prefix along.
+#
+# Nothing ever reads the file back: coverage comes from the result object below. So the honest
+# fix is to remove it rather than to teach the sweep a second name, which would leave a file
+# nobody wants living just long enough for somebody else's sweep to find.
+$coverageXml = Join-Path ([System.IO.Path]::GetTempPath()) "psmutant-coverage-$PID-$([System.Guid]::NewGuid().ToString('N')).xml"
+$cfg.CodeCoverage.OutputPath = $coverageXml
 
-$result = Invoke-Pester -Configuration $cfg
+try { $result = Invoke-Pester -Configuration $cfg }
+finally {
+    # In a finally, so a failing run cleans up too -- the case that produced the pile, since a
+    # coverage gate is most often run when it is about to fail.
+    Remove-Item -LiteralPath $coverageXml -Force -ErrorAction SilentlyContinue
+}
 
 $covered = $result.CodeCoverage.CommandsExecuted
 $missed = $result.CodeCoverage.CommandsMissed

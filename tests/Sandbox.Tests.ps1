@@ -282,15 +282,37 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-test-abc') | Should-BeFalse
     }
 
-    It 'reclaims a directory already holding our own process id' {
-        # A leftover from an earlier process that happened to get this id; we are
-        # about to recreate the path anyway.
-        Test-PSMutationSandboxAbandoned -Directory (NewDir "psmut-sandbox-$PID") -CurrentProcessId $PID | Should-BeTrue
+    It 'SPARES a directory holding our own process id, because a live sibling run may own it' {
+        # This assertion is INVERTED from what it used to be, and the inversion is the fix. It
+        # read "reclaims a directory already holding our own process id", on the argument that
+        # such a directory was a leftover from an earlier process that happened to get this id
+        # and that we were about to recreate the path anyway.
+        #
+        # The second half stopped being true when the sandbox name gained 128 bits of randomness:
+        # a new run creates a DIFFERENT directory, so there is nothing to recreate. What the
+        # carve-out still did was make this process's own live sandboxes reclaimable -- measured,
+        # a sibling run's sandbox and the caller's own both read as abandoned, which is what
+        # deletes a nested run's working files mid-flight.
+        #
+        # What is given up is reclaiming a crashed run's leftovers while the same process is
+        # still alive. With the process alive there is no way to tell that from a live sibling,
+        # and deleting a live run's files is worse than leaving a directory until the process
+        # exits.
+        Test-PSMutationSandboxAbandoned -Directory (NewDir "psmut-sandbox-$PID") |
+            Should-BeFalse
+    }
+
+    It 'still reclaims a directory whose owner really is gone, same shape' {
+        # The pairing: without it, a predicate that spared everything would satisfy the test
+        # above. Same name shape, an owner id that no live process holds.
+        Mock Get-Process { $null }
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-424242') |
+            Should-BeTrue
     }
 
     It 'reclaims a sandbox whose owning process is gone' {
         Mock Get-Process { $null }
-        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242') -CurrentProcessId 1 | Should-BeTrue
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242') | Should-BeTrue
     }
 
     It 'SPARES a sandbox whose owning process is still running' {
@@ -299,7 +321,7 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         # missing-file error.
         $dirCreated = Get-Date
         Mock Get-Process { [pscustomobject]@{ StartTime = $dirCreated.AddMinutes(-5) } }
-        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $dirCreated) -CurrentProcessId 1 |
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $dirCreated) |
             Should-BeFalse
     }
 
@@ -308,7 +330,7 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         # cannot be the owner. Without this, a recycled id leaks the directory forever.
         $dirCreated = Get-Date
         Mock Get-Process { [pscustomobject]@{ StartTime = $dirCreated.AddMinutes(5) } }
-        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $dirCreated) -CurrentProcessId 1 |
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $dirCreated) |
             Should-BeTrue
     }
 
@@ -321,7 +343,7 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         # added to fix, reintroduced from the other side.
         $dirCreated = Get-Date
         Mock Get-Process { [pscustomobject]@{ StartTime = $dirCreated } }
-        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $dirCreated) -CurrentProcessId 1 |
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $dirCreated) |
             Should-BeFalse
     }
 
@@ -334,7 +356,7 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         $proc = New-Object psobject
         $proc | Add-Member ScriptProperty StartTime { throw 'Access is denied' }
         Mock Get-Process { $proc }
-        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242') -CurrentProcessId 1 | Should-BeFalse
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242') | Should-BeFalse
     }
 
     It 'treats an unreadable start time as the distant past' {

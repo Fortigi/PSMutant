@@ -193,15 +193,31 @@ function Test-PSMutationSandboxAbandoned {
     # runs on one machine delete each other's working files mid-flight.
     [OutputType([bool])]
     [CmdletBinding()]
-    param(
-        [Parameter(Mandatory)] $Directory,
-        [int]$CurrentProcessId = $PID
-    )
+    # No -CurrentProcessId parameter any more. It existed only for the carve-out that compared a
+    # sandbox's owner against our own id, and with that gone nothing read it -- lint said so. A
+    # seam kept for a future caller that nothing exercises is the shape this repo refuses
+    # elsewhere; #1 can add one that does something when it needs one.
+    param([Parameter(Mandatory)] $Directory)
     $owner = Get-PSMutationSandboxOwnerId -Name $Directory.Name
     if ($null -eq $owner) { return $false }
-    # Our own id: any directory already holding it is a leftover from a previous
-    # process that happened to get this id, and we are about to recreate it anyway.
-    if ($owner -eq $CurrentProcessId) { return $true }
+    # NO CARVE-OUT FOR OUR OWN ID, and its removal is the point of this change. It used to
+    # return $true here, on the argument that "a directory already holding our id is a leftover
+    # from a previous process that happened to get it, and we are about to recreate it anyway".
+    # That was true while the name was exactly psmut-sandbox-<pid>, where a new run DID land on
+    # the same path. Since the name gained 128 bits of randomness the second half stopped being
+    # true -- a new run creates a different directory -- and all the first half did was make this
+    # process's OWN live sandboxes reclaimable. Measured: with the carve-out, a sibling run's
+    # sandbox and the caller's own both read as abandoned.
+    #
+    # Falling through instead answers correctly for both. Our process is alive, so Get-Process
+    # finds it, and it started BEFORE the sandbox it created -- so the recycled-id test below
+    # says "not abandoned" and the directory is left alone.
+    #
+    # What is given up is reclaiming a crashed run's leftovers while the same process still runs.
+    # That is the right trade: with the process alive there is no way to tell a dead run's
+    # directory from a live sibling's, and deleting a live run's working files is worse than
+    # leaving one directory until the process exits. This is clause 4 of "Process, state and
+    # concurrency" narrowing from "one run per process" toward "one run per RUN".
     $proc = Get-Process -Id $owner -ErrorAction SilentlyContinue
     if (-not $proc) { return $true }
     # The id is live but may have been RECYCLED onto an unrelated process. A process

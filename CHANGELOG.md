@@ -78,6 +78,42 @@ the complete list is evidence of weakness rather than proof of uselessness.
 
 ### Internal
 
+**A leaking temp file, and the rule that should have caught it.** `tools/Measure-PSMutantCoverage.ps1`
+wrote `psmutant-coverage-<pid>.xml` into shared temp and nothing removed it. The runner's sweep
+matches `psmut-coverage-*.xml` -- one letter different -- so it could not match by construction:
+**56 files, 4.2 MB** had accumulated on the machine this was found on. That is the second time this
+exact leak has happened here; the first was the runner's own coverage XML, fixed by moving it into
+the sandbox, and this one appeared beside it under a name the fix could not see.
+
+Nothing ever reads the file back -- coverage comes from the result object -- so it is now deleted in
+a `finally`, which also covers the failing run, the case that produced the pile.
+
+**The process and state stance is written down.** It existed only as a sentence in a retired
+sequencing document, framed as a limitation to be scheduled rather than a property to be preserved.
+CLAUDE.md now carries a `Process, state and concurrency` section: four clauses, each with the line
+that enforces it and what would have to change for it to stop being right.
+
+The one that matters is that **sequential evaluation is a correctness mechanism, not a performance
+default** -- mutants share one sandbox copy, so two evaluated at once would not be independent and a
+"Survived" verdict would be a verdict about a double mutant. Reading it as a tuning knob is the most
+plausible way to break the headline claim while improving a benchmark.
+
+One clause had already stopped being true: rows are no longer held to the end of the run, because
+an interrupted run writes a partial report. And the self-config's comment cited a closed issue for
+an assumption that is still open; it now names the clause and the issue that owns it.
+
+**Writing clause 4 down closed half of it.** The sweep treated any directory holding our OWN process
+id as reclaimable, on the argument that it was a leftover we were about to recreate anyway. That was
+true while the sandbox name was exactly `psmut-sandbox-<pid>`; once the name gained 128 bits of
+randomness a new run creates a different directory, so the second half stopped being true and all
+the first half did was make this process's own live sandboxes reclaimable. Measured: a sibling run's
+sandbox and the caller's own both read as abandoned.
+
+Removed, and a live sandbox now survives its own sweep -- which is what a nested run needs. What is
+given up is reclaiming a crashed run's leftovers while the same process still runs; with the process
+alive there is no way to tell that from a live sibling, and deleting a live run's files is worse
+than leaving a directory until the process exits.
+
 **The code every mutant runs is now real code.** The child body handed to each runspace was a
 here-string, so nothing ever examined it: PSScriptAnalyzer saw a string literal, the parser saw
 nothing until `AddScript` at run time, and the tests could only match substrings. A typo in it
