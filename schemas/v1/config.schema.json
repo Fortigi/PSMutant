@@ -4,24 +4,44 @@
   "title": "PSMutant configuration",
   "description": "The configuration format for PSMutant: every key Invoke-PSMutation -ConfigFile understands, what it means, and what it must hold. This is the definition a config is written against. Add a \"$schema\" key pointing here and the config becomes self-describing -- it can be checked before a run rather than several minutes into one, and the descriptions below are the reference without leaving the file. The module checks the same format again when it runs, so nothing depends on the config having been checked first, and because two things here cannot be expressed in a schema: the operator names come from the operator map itself rather than a copied list, and a misspelled key is answered with the nearest valid name instead of 'property not allowed'. The two are kept in step by a test, not by discipline.",
   "type": "object",
-  "required": ["mutate", "tests"],
+  "required": [
+    "mutate",
+    "tests"
+  ],
   "properties": {
     "mutate": {
       "description": "The source files to mutate. A bare string is accepted for a single file.",
-      "type": ["array", "string", "null"],
-      "items": { "type": "string" },
+      "type": [
+        "array",
+        "string",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      },
       "minItems": 1
     },
     "tests": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "Maps each mutated file to the test file(s) covering it. A mutant runs only its covering tests, which is most of what makes a run affordable.",
       "additionalProperties": {
-        "type": ["array", "string"],
-        "items": { "type": "string" }
+        "type": [
+          "array",
+          "string"
+        ],
+        "items": {
+          "type": "string"
+        }
       }
     },
     "operators": {
-      "type": ["array", "null"],
+      "type": [
+        "array",
+        "null"
+      ],
       "description": "Which mutation operators to apply. Omit for the default expression set. Four are opt-in because enabling one roughly doubles the mutant count and lowers the score, so a repo gating on thresholds.break would go red purely from turning one on.",
       "items": {
         "enum": [
@@ -37,43 +57,91 @@
       }
     },
     "coveredLinesOnly": {
-      "type": ["boolean", "null"],
+      "type": [
+        "boolean",
+        "null"
+      ],
       "description": "Mutate only lines the baseline suite covers. Default true. A string here is NOT a boolean: any non-empty string is truthy in PowerShell, so 'no' would mean yes.",
       "default": true
     },
     "sandboxSubtrees": {
-      "type": ["array", "null"],
-      "items": { "type": "string" },
+      "type": [
+        "array",
+        "null"
+      ],
+      "items": {
+        "type": "string"
+      },
       "description": "Which directories are copied into the temp sandbox. Default ['src','tests']. A covering suite that reaches outside these finds nothing there, proves nothing, and leaves its file silently unmutated."
     },
     "timeoutFactor": {
-      "type": ["number", "null"],
+      "type": [
+        "number",
+        "null"
+      ],
       "exclusiveMinimum": 0,
       "description": "Per-mutant deadline as a multiple of the baseline duration. A mutant that hits the deadline is scored KILLED, so this is a number to raise rather than shave."
     },
     "timeoutFloorSeconds": {
-      "type": ["number", "null"],
+      "type": [
+        "number",
+        "null"
+      ],
       "exclusiveMinimum": 0,
       "description": "Lower bound on that deadline. It matters for fast suites: a 0.2s baseline would otherwise give a near-zero budget and kill every mutant on time rather than on behaviour, scoring 100% against tests that never ran."
     },
     "equivalents": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "Mutants that provably cannot change behaviour, excluded from the denominator. Keyed 'File:Function:Description' (preferred) or 'File:Line:Description'. Each value is the written ARGUMENT for the claim -- the run fails if a declared mutant is ever killed, stops matching, or matches more than one, so this is a checkable claim rather than a mute button.",
-      "additionalProperties": { "type": "string", "minLength": 1 }
+      "additionalProperties": {
+        "type": "string",
+        "minLength": 1
+      }
     },
     "thresholds": {
-      "type": ["object", "null"],
+      "type": [
+        "object",
+        "null"
+      ],
       "description": "The score bands. 'break' unset means report-only: the run does not fail on the score.",
       "properties": {
-        "high": { "type": ["number", "null"], "description": "At or above this, the score prints green. Default 85." },
-        "low": { "type": ["number", "null"], "description": "At or above this, yellow; below it, red. Default 70." },
-        "break": { "type": ["number", "null"], "description": "Below this, the run FAILS. Omit for report-only." }
+        "high": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "At or above this, the score prints green. Default 85."
+        },
+        "low": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "At or above this, yellow; below it, red. Default 70."
+        },
+        "break": {
+          "type": [
+            "number",
+            "null"
+          ],
+          "description": "Below this, the run FAILS. Omit for report-only."
+        }
       },
       "additionalProperties": false
     },
     "reportPath": {
-      "type": ["string", "null"],
+      "type": [
+        "string",
+        "null"
+      ],
       "description": "Where the JSON report is written, relative to the source root. A -RecheckFrom run writes a sibling and never overwrites this file."
+    },
+    "recordAllKillers": {
+      "type": "boolean",
+      "description": "Record every test that kills a mutant rather than only the first. Default false. Setting it forfeits Pester's early stop on failure, which costs roughly 63% more wall clock."
     }
   },
   "patternProperties": {

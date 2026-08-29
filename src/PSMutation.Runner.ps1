@@ -202,9 +202,13 @@ function Invoke-PSBoundedPester {
     .OUTPUTS
         The Pester result string ('Passed'/'Failed'/...), or 'TimedOut'.
     #>
-    [OutputType([string])]
+    [OutputType([pscustomobject])]
     [CmdletBinding()]
-    param([Parameter(Mandatory)] [string[]]$CoveringTests, [Parameter(Mandatory)] [int]$TimeoutSeconds)
+    param(
+        [Parameter(Mandatory)] [string[]]$CoveringTests, [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        # Passed through to the child body, which drops SkipRemainingOnFailure when it is set.
+        [switch]$RecordAllKillers
+    )
     # The runspace is REUSED across mutants and Pester is imported into it once. Creating one and
     # importing Pester per mutant cost about 396 ms every time -- 27% of a measured 801s run over
     # PSComplexity -- to re-import a module that does not change between mutants.
@@ -214,16 +218,20 @@ function Invoke-PSBoundedPester {
     # interval to bound any state a suite leaves behind.
     $ps = Get-PSMutationWarmShell
     $ps.Commands.Clear()
-    [void]$ps.AddScript((Get-PSMutationWarmPesterScript)).AddParameter('tests', $CoveringTests)
+    [void]$ps.AddScript((Get-PSMutationWarmPesterScript -RecordAllKillers:$RecordAllKillers)).AddParameter('tests', $CoveringTests)
     $async = $ps.BeginInvoke()
     if (-not $async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))) {
         $ps.Stop()
         # Stop() leaves the runspace unusable, so it is discarded rather than handed to the next
         # mutant. A timeout is rare; paying a cold start after one is the cheap half of the trade.
         Close-PSMutationWarmRunspace
-        return 'TimedOut'
+        # No killers on a timeout, and an EMPTY list rather than none: the caller reads .Killers
+        # unconditionally, and a missing property would make "nothing killed it" and "we never
+        # looked" the same answer at the one point where they differ most.
+        return [pscustomobject]@{ Result = 'TimedOut'; Killers = @() }
     }
-    $outcome = [string]($ps.EndInvoke($async) | Select-Object -Last 1)
+    $result = $ps.EndInvoke($async) | Select-Object -Last 1
+    $outcome = [string]$result.Result
     # A child that returned no verdict proved nothing about the mutant. Handing
     # that back would classify it Killed -- anything but 'Passed' is a kill -- so a
     # broken child reads as a perfect score. That is exactly how the Pester version
@@ -233,7 +241,7 @@ function Invoke-PSBoundedPester {
         Close-PSMutationWarmRunspace
         throw "The covering tests produced no result: $why"
     }
-    return $outcome
+    return [pscustomobject]@{ Result = $outcome; Killers = @($result.Killers) }
 }
 
 function Invoke-PSMutant {
@@ -248,7 +256,7 @@ function Invoke-PSMutant {
         and "the suite hung and we assumed so" are different claims and only the first is
         evidence. Folded together, a suite that is merely too slow inflates the score.
     #>
-    [OutputType([string])]
+    [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Candidate,
@@ -262,15 +270,21 @@ function Invoke-PSMutant {
         # is worst.
         [Parameter(Mandatory)] [AllowEmptyString()] [string]$OriginalContent,
         [Parameter(Mandatory)] [string[]]$CoveringTests,
-        [Parameter(Mandatory)] [int]$TimeoutSeconds
+        [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        [switch]$RecordAllKillers
     )
     try {
         [System.IO.File]::WriteAllText($Candidate.File, $MutatedContent)
-        $outcome = Invoke-PSBoundedPester -CoveringTests $CoveringTests -TimeoutSeconds $TimeoutSeconds
-        if ($outcome -eq 'Passed') { return 'Survived' }
+        $run = Invoke-PSBoundedPester -CoveringTests $CoveringTests -TimeoutSeconds $TimeoutSeconds `
+            -RecordAllKillers:$RecordAllKillers
+        $outcome = $run.Result
+        # The verdict and the killers travel together from here, so a caller cannot record one
+        # without the other. Survived and TimedOut carry an empty list rather than none, because
+        # "nothing killed it" and "we did not look" must not be the same value.
+        if ($outcome -eq 'Passed') { return [pscustomobject]@{ Status = 'Survived'; Killers = @() } }
         # Invoke-PSBoundedPester already distinguishes this; the verdict used to be
         # discarded one line later, which is the whole of the bug.
-        if ($outcome -eq 'TimedOut') { return 'TimedOut' }
+        if ($outcome -eq 'TimedOut') { return [pscustomobject]@{ Status = 'TimedOut'; Killers = @() } }
         # A CLOSED vocabulary. Everything above is a value this module understands; anything
         # else is an outcome nobody modelled, and the fall-through below scores it Killed --
         # toward the flattering answer, silently, with no test failing.
@@ -286,7 +300,7 @@ function Invoke-PSMutant {
                 "model: '$outcome'. Known outcomes are $($script:PSMutationKnownOutcomes -join ', '). " +
                 "Scoring it would guess, and the guess flatters the score.")
         }
-        return 'Killed'
+        return [pscustomobject]@{ Status = 'Killed'; Killers = @($run.Killers) }
     }
     finally {
         # Still restored per mutant, and deliberately. The next mutant writes the whole file anyway,
@@ -338,7 +352,8 @@ function Invoke-PSMutationLoop {
         # empty collection, so without this the loop threw on every single call.
         [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]]$Sink,
         [string]$SandboxRoot,
-        [switch]$Quiet
+        [switch]$Quiet,
+        [switch]$RecordAllKillers
     )
     $results = $Sink
     # One read per FILE, not per mutant. A file contributes many candidates -- 125 for the largest
@@ -356,8 +371,8 @@ function Invoke-PSMutationLoop {
         $content = $originals[$c.File]
         $mutated = Set-PSMutationText -Content $content -Candidate $c
         $covering = $TestsByFile.ContainsKey($c.File) ? $TestsByFile[$c.File] : $AllTests
-        $status = Invoke-PSMutant -Candidate $c -MutatedContent $mutated -OriginalContent $content `
-            -CoveringTests $covering -TimeoutSeconds $TimeoutSeconds
+        $verdict = Invoke-PSMutant -Candidate $c -MutatedContent $mutated -OriginalContent $content `
+            -CoveringTests $covering -TimeoutSeconds $TimeoutSeconds -RecordAllKillers:$RecordAllKillers
         $display = ConvertFrom-PSMutationSandboxPath -Path $c.File -SandboxRoot $SandboxRoot
         $row = [pscustomobject]@{
             # Function is carried so an equivalence declaration can address this mutant by
@@ -368,7 +383,17 @@ function Invoke-PSMutationLoop {
             # consumer may depend on, so a test asserts the exact list: widening should
             # cost a deliberate edit, not happen as a side effect of an internal rename.
             Id = $c.Id; Function = $c.Function; File = $display; Line = $c.Line
-            Operator = $c.Operator; Description = $c.Description; Status = $status
+            Operator = $c.Operator; Description = $c.Description; Status = $verdict.Status
+            # The tests that noticed. TRUNCATED under the default configuration and complete under
+            # -RecordAllKillers, which is stated at run level rather than inferred from the length
+            # of this list.
+            #
+            # Truncated is not the same as "exactly one", measured: over 118 killed mutants the
+            # default still reported more than one killer for 20 of them, because several tests can
+            # be marked failed before Pester's early stop takes hold. So the length here says
+            # nothing about how many tests really kill a mutant -- the same run with every killer
+            # recorded found 85. Read killersComplete, never the count.
+            KilledBy = @($verdict.Killers)
         }
         $results.Add($row)
         Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationProgressLine -Index $n `

@@ -36,12 +36,12 @@ Describe 'Invoke-PSMutant classification' {
     It 'reports Killed when the mutation breaks a strict test' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
         Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -OriginalContent $script:original -CoveringTests @($script:strictTest) -TimeoutSeconds 30 |
-            Should-Be 'Killed'
+            Select-Object -ExpandProperty Status | Should-Be 'Killed'
     }
     It 'reports Survived when a weak test misses the mutation' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
         Invoke-PSMutant -Candidate $script:cand -MutatedContent $mutated -OriginalContent $script:original -CoveringTests @($script:weakTest) -TimeoutSeconds 30 |
-            Should-Be 'Survived'
+            Select-Object -ExpandProperty Status | Should-Be 'Survived'
     }
 }
 
@@ -67,7 +67,7 @@ Describe 'Timeout safety (the loop-body hang the loop guard cannot catch)' {
         # still scores with the kills; it is reported apart from them.
         $infinite = $script:original -replace '\$i = \$i \+ 1', '$i = $i - 1'
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $status = Invoke-PSMutant -Candidate $script:cand -MutatedContent $infinite -OriginalContent $script:original -CoveringTests @($script:countTest) -TimeoutSeconds 3
+        $status = (Invoke-PSMutant -Candidate $script:cand -MutatedContent $infinite -OriginalContent $script:original -CoveringTests @($script:countTest) -TimeoutSeconds 3).Status
         $sw.Stop()
         $status | Should-Be 'TimedOut'
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 20   # bounded, not hung
@@ -76,7 +76,7 @@ Describe 'Timeout safety (the loop-body hang the loop guard cannot catch)' {
 
 Describe 'Invoke-PSBoundedPester' {
     It 'returns Passed for a passing suite' {
-        Invoke-PSBoundedPester -CoveringTests @($script:strictTest) -TimeoutSeconds 30 | Should-Be 'Passed'
+        (Invoke-PSBoundedPester -CoveringTests @($script:strictTest) -TimeoutSeconds 30).Result | Should-Be 'Passed'
     }
     It 'imports the Pester it is handed, not whatever the runspace resolves' {
         # A fresh runspace resolves "Pester" by NAME and gets the newest installed,
@@ -110,7 +110,7 @@ Describe 'Invoke-PSBoundedPester' {
         $infinite = $script:original -replace '\$i = \$i \+ 1', '$i = $i - 1'
         [System.IO.File]::WriteAllText($script:modPath, $infinite)
         try {
-            Invoke-PSBoundedPester -CoveringTests @($script:countTest) -TimeoutSeconds 3 | Should-Be 'TimedOut'
+            (Invoke-PSBoundedPester -CoveringTests @($script:countTest) -TimeoutSeconds 3).Result | Should-Be 'TimedOut'
         }
         finally { [System.IO.File]::WriteAllText($script:modPath, $script:original) }
     }

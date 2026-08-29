@@ -221,6 +221,17 @@
     "planned": {
       "type": "integer",
       "description": "Partial runs only. Mutants the run intended to evaluate."
+    },
+    "killersComplete": {
+      "type": "boolean",
+      "description": "Whether KilledBy lists every killing test rather than only the first. False unless the config set recordAllKillers."
+    },
+    "testsWithoutKills": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Full runs only, and present only when killersComplete is true. Mapped test files that killed no mutant in this run. A test may still be the only thing covering a file outside the mutate list, so this is evidence of weakness rather than proof of uselessness."
     }
   },
   "allOf": [
@@ -297,6 +308,24 @@
           "mutationScore": false
         }
       }
+    },
+    {
+      "description": "testsWithoutKills may not appear unless killersComplete is true. With the default early stop, a test that would have killed but was skipped is indistinguishable from one that cannot kill at all, so the list would name working tests as dead weight -- and its stated use is deletion. Written as a boolean-false property schema rather than \"not\", which Test-Json silently ignores.",
+      "if": {
+        "properties": {
+          "killersComplete": {
+            "const": false
+          }
+        },
+        "required": [
+          "killersComplete"
+        ]
+      },
+      "then": {
+        "properties": {
+          "testsWithoutKills": false
+        }
+      }
     }
   ],
   "definitions": {
@@ -344,6 +373,13 @@
             "Survived"
           ],
           "description": "Killed means at least one covering test failed against the mutant. A mutant whose run timed out is counted Killed."
+        },
+        "KilledBy": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Tests that failed on this mutant. One entry unless killersComplete is true, since the run stops at the first failure by default. Empty for a survivor or a timeout."
         }
       }
     }

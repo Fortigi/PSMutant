@@ -382,7 +382,16 @@ function Write-PSMutationReport {
         # module walks a source tree, so a run cannot know about a file the config never
         # named -- and reporting a fraction like "8 of 9" would require exactly that
         # knowledge. What a report can honestly say is how many files it was pointed at.
-        [AllowEmptyCollection()] [string[]]$MutateFiles = @()
+        [AllowEmptyCollection()] [string[]]$MutateFiles = @(),
+        # Whether each row's KilledBy names every killing test, or a truncated set. Stated at run
+        # level rather than inferred from a row: the truncated form is not reliably one name --
+        # measured, 20 of 118 killed mutants still carried several -- so a row's length says
+        # nothing about how many tests really kill it.
+        [bool]$KillersComplete = $false,
+        # The mapped test files, so the report can name the ones that killed nothing. Only
+        # meaningful alongside a complete killer list, which is why the schema forbids the
+        # derived list without it.
+        [AllowEmptyCollection()] [string[]]$MappedTests = @()
     )
     # The only place holding EVERY row, so the only place that can ask whether a
     # declaration matched nothing. The per-set fold no longer answers it.
@@ -414,6 +423,9 @@ function Write-PSMutationReport {
         # Beside skippedAsUncovered and declaredEquivalent, for the same reason: a number
         # cannot be read without knowing what it was computed over.
         filesMutated = @($MutateFiles | Where-Object { $_ }).Count
+        # The disclosure that makes every KilledBy list readable. Always written, so a consumer
+        # never has to guess which shape it is holding.
+        killersComplete = $KillersComplete
         skippedAsUncovered = [int]$Exclusion.Skipped
         filesWithNoMutants = ConvertTo-PSMutationList -Value $Exclusion.FilesWithNoMutants
         # Recorded beside the other disclosures: a run that took twice as long for a reason
@@ -430,6 +442,19 @@ function Write-PSMutationReport {
         sourceHashes = $SourceHashes
         survivors = @($Results | Where-Object Status -eq 'Survived')
         mutants = $Results
+    }
+    # ADDED ONLY WHEN THE KILLER LISTS ARE COMPLETE, and the schema refuses it otherwise. Under
+    # the default early stop a test that would have killed but was skipped is indistinguishable
+    # from one that cannot kill at all, so this list would name working tests as dead weight --
+    # and what a reader does with it is delete them. Absent is the honest answer there.
+    if ($KillersComplete) {
+        $killers = [System.Collections.Generic.HashSet[string]]::new(
+            [string[]]@($Results | ForEach-Object { $_.KilledBy } | Where-Object { $_ }))
+        # Compared on the mapped list rather than on the killers, so a test that ran and killed
+        # nothing is named and one that was never mapped is not: the second is a config question,
+        # not a test-quality one.
+        $document | Add-Member -NotePropertyName testsWithoutKills -NotePropertyValue (
+            ConvertTo-PSMutationList -Value @($MappedTests | Where-Object { -not $killers.Contains($_) }))
     }
     Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath
     return $summary
