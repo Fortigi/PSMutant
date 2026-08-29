@@ -954,3 +954,49 @@ Describe 'Get-PSMutationRecordEveryKiller' {
             Should-Be $Expected
     }
 }
+
+Describe 'Get-PSMutationSurvivorBaselinePath' {
+    BeforeAll { $script:sbRoot = [System.IO.Path]::GetTempPath().TrimEnd([System.IO.Path]::DirectorySeparatorChar) }
+
+    It 'returns nothing when the config names no baseline, so the gate stays off' {
+        # The presence of the key IS the switch. There is no separate enable flag, because two
+        # settings that can disagree are two somebody has to reconcile -- and the disagreement is
+        # silent in the direction that matters: a path with the feature off enforces nothing.
+        Should-BeNull -Actual (Get-PSMutationSurvivorBaselinePath -Cfg ([pscustomobject]@{}) -SourceRoot $script:sbRoot)
+    }
+
+    It 'resolves a relative path against the source root' {
+        # So the same config works from any working directory, exactly as reportPath does.
+        (Get-PSMutationSurvivorBaselinePath -Cfg ([pscustomobject]@{ survivorBaseline = '.psmutant-survivors.json' }) `
+                -SourceRoot $script:sbRoot) |
+            Should-Be (Join-Path $script:sbRoot '.psmutant-survivors.json')
+    }
+
+    It 'honours an ABSOLUTE path instead of rebasing it under the source root' {
+        # PowerShell's Join-Path concatenates rather than letting a rooted right-hand side win, so
+        # an absolute path would otherwise be silently rewritten to sit inside the tree being
+        # mutated -- the same trap reportPath documents.
+        $abs = Join-Path $script:sbRoot 'shared-baseline.json'
+        (Get-PSMutationSurvivorBaselinePath -Cfg ([pscustomobject]@{ survivorBaseline = $abs }) -SourceRoot '/elsewhere') |
+            Should-Be $abs
+    }
+
+    It 'treats an empty or whitespace value as "no baseline", not as a path' {
+        # Whitespace is how a key gets half-deleted. Reading it as a path would resolve to the
+        # source root itself and then try to write a baseline over a directory.
+        foreach ($v in '', '   ') {
+            Should-BeNull -Actual (Get-PSMutationSurvivorBaselinePath -Cfg ([pscustomobject]@{ survivorBaseline = $v }) `
+                    -SourceRoot $script:sbRoot)
+        }
+    }
+
+    It 'routes a bad path through the shared rule rather than growing its own opinion' {
+        # Every other config path is checked by Get-PSMutationPathFault; a second opinion here
+        # would be a second place for the two to disagree about what a path may be.
+        # A wildcard metacharacter, which the shared rule refuses because PowerShell's path
+        # cmdlets would glob it rather than treat it as a name -- naming neither the key nor the
+        # cause when it then matches nothing.
+        { Get-PSMutationSurvivorBaselinePath -Cfg ([pscustomobject]@{ survivorBaseline = 'base[1].json' }) `
+                -SourceRoot $script:sbRoot } | Should-Throw -ExceptionMessage '*survivorBaseline*'
+    }
+}

@@ -51,6 +51,19 @@ Describe 'Invoke-PSMutation' {
             reportPath = 'reports/run.json'
         } | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
 
+        function script:UseBaselineConfig {
+            # The fixture config plus the one key that turns the gate on. Written here rather than
+            # in BeforeEach so the default tests keep proving the gate stays off without it.
+            [ordered]@{
+                mutate           = @('src/a.ps1')
+                tests            = @{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
+                operators        = @('BinaryOperator')
+                thresholds       = @{ high = 85; low = 70; break = $null }
+                reportPath       = 'reports/run.json'
+                survivorBaseline = 'baseline.json'
+            } | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        }
+
         # Everything touching a real Pester run, the clock or the sandbox is mocked.
         # What is left executing is the orchestration this file is responsible for.
         Mock Assert-PSMutationPester { }
@@ -197,6 +210,77 @@ Describe 'Invoke-PSMutation' {
         Should-Invoke Write-PSMutationOutput -Times 1 -ParameterFilter {
             $Quiet -eq $false -and (($Lines | ForEach-Object { $_.Text }) -join ' ') -like '*PARTIAL report*'
         }
+    }
+
+    It 'ignores the survivor baseline entirely when the config names none' {
+        # The default. Presence of the key is the switch, so an ordinary config must not acquire
+        # a new way to fail -- nor a new file on disk.
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Id = 1; Function = 'F'; File = 'src/a.ps1'
+                    Line = 1; Operator = 'BinaryOperator'; Description = 'd'; Status = 'Survived'; KilledBy = @() }) }
+        # Asserted on the CALL, not only on the absence of a file. Forcing the "is a baseline
+        # configured" guard true leaves no file behind either -- there is nothing to write -- so a
+        # file-based assertion alone passes for a run that read and evaluated a baseline it was
+        # never given.
+        Mock Get-PSMutationSurvivorBaselineFault { @() }
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet
+        $r.FailureReason | Should-Be 'None'
+        Should-BeFalse -Actual (Test-Path (Join-Path $script:root '.psmutant-survivors.json'))
+        Should-Invoke Get-PSMutationSurvivorBaselineFault -Exactly 0
+    }
+
+    It 'treats a configured baseline that does not exist yet as empty, not as unreadable' {
+        # The ordinary FIRST run, before -UpdateBaseline has written anything. It must report the
+        # survivors as new rather than failing to read a file nobody has created.
+        script:UseBaselineConfig
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Id = 1; Function = 'F'; File = 'src/a.ps1'
+                    Line = 1; Operator = 'BinaryOperator'; Description = 'd'; Status = 'Survived'; KilledBy = @() }) }
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet
+        $r.FailureReason | Should-Be 'SurvivorBaseline'
+    }
+
+    It 'says why it failed even under -Quiet' {
+        # -Quiet silences the progress log; a finding is not log. The faults name the mutants a
+        # reader has to act on, and in CI this is the only place they appear.
+        script:UseBaselineConfig
+        '{ "schemaVersion": 1, "survivors": {} }' | Set-Content (Join-Path $script:root 'baseline.json') -Encoding utf8
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Id = 1; Function = 'F'; File = 'src/a.ps1'
+                    Line = 1; Operator = 'BinaryOperator'; Description = 'd'; Status = 'Survived'; KilledBy = @() }) }
+        Mock Write-PSMutationOutput { }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        Should-Invoke Write-PSMutationOutput -Times 1 -ParameterFilter {
+            $Quiet -eq $false -and (($Lines | ForEach-Object { $_.Text }) -join ' ') -like '*NEW survivor*'
+        }
+    }
+
+    It 'writes the baseline under -UpdateBaseline, even on a run with survivors' {
+        # PHPStan's stance for --generate-baseline: accepting today's mess on a codebase that is
+        # already red is the whole use case, and refusing would make the first run impossible.
+        script:UseBaselineConfig
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Id = 1; Function = 'F'; File = 'src/a.ps1'
+                    Line = 1; Operator = 'BinaryOperator'; Description = 'd'; Status = 'Survived'; KilledBy = @() }) }
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet -UpdateBaseline
+        $r.ExitCode | Should-Be 0
+        $doc = Get-Content (Join-Path $script:root 'baseline.json') -Raw | ConvertFrom-Json
+        @($doc.survivors.PSObject.Properties.Name) | Should-BeCollection @('src/a.ps1:F:d')
+    }
+
+    It 'passes when every survivor is recorded, and fails when one is not' {
+        # The two halves in one test because the second is only meaningful against the first:
+        # a gate that failed on everything would satisfy the failing half on its own.
+        script:UseBaselineConfig
+        '{ "schemaVersion": 1, "survivors": { "src/a.ps1:F:d": "" } }' |
+            Set-Content (Join-Path $script:root 'baseline.json') -Encoding utf8
+
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Id = 1; Function = 'F'; File = 'src/a.ps1'
+                    Line = 1; Operator = 'BinaryOperator'; Description = 'd'; Status = 'Survived'; KilledBy = @() }) }
+        (Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet).FailureReason |
+            Should-Be 'None'
+
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Id = 2; Function = 'G'; File = 'src/a.ps1'
+                    Line = 2; Operator = 'BinaryOperator'; Description = 'new'; Status = 'Survived'; KilledBy = @() }) }
+        $bad = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet
+        $bad.FailureReason | Should-Be 'SurvivorBaseline'
+        $bad.ExitCode | Should-Be 1
     }
 
     It 'checks Pester and sweeps stale sandboxes before it starts' {

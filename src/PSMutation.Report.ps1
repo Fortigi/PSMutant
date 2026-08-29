@@ -215,6 +215,109 @@ function Get-PSMutationScore {
     }
 }
 
+function Get-PSMutationSurvivorBaselineFault {
+    <#
+    .SYNOPSIS
+        Every way a run disagrees with a committed list of accepted survivors.
+    #>
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
+        # The baseline document's `survivors` map: key -> anything. Only the keys are read.
+        $Baseline,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$MutateFiles,
+        # The equivalence declarations, so an entry that is BOTH can be refused.
+        $Equivalents
+    )
+    # A SET, NOT A RATIO, and that is the whole design decision. A per-file SCORE cannot be
+    # ratcheted honestly because its denominator moves with the source: measured against a file
+    # baselined at 90%, deleting ten well-tested lines reads as a regression to 88.9% though
+    # nothing got worse, and adding ten well-tested lines reads as an improvement that must be
+    # re-recorded. Three of four ordinary edits failed, one of them usefully.
+    #
+    # Baselining the surviving MUTANTS instead behaves the way PHPStan's and Psalm's baselines do,
+    # and for the same reason -- they list specific findings rather than a percentage. Deleting
+    # code removes entries; adding under-tested code adds one. One true positive, no false ones.
+    #
+    # This is DEBT, not equivalence. `equivalents` means "this mutant cannot be killed" and
+    # carries a written argument; an entry here means "this mutant is not killed YET". Conflating
+    # them is what forces people to lie in `equivalents`, which corrupts the one list whose
+    # entries are supposed to be checkable claims.
+    $faults = [System.Collections.Generic.List[string]]::new()
+    if ($null -eq $Baseline) { return $faults.ToArray() }
+
+    $accepted = [System.Collections.Generic.HashSet[string]]::new(
+        [string[]]@($Baseline.PSObject.Properties.Name))
+    $mutating = [System.Collections.Generic.HashSet[string]]::new([string[]]@($MutateFiles))
+
+    # Keyed by the SAME builder equivalence declarations use, so an entry survives a line moving.
+    # Get-PSMutationEquivalentKey returns the function-keyed form first and the line-keyed form
+    # second; only the first is written here, because a baseline is committed once and reviewed
+    # rarely, and a key that churns on every edit above it is a key nobody can trust.
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
+    foreach ($r in $Results) {
+        if ($r.Status -ne 'Survived') { continue }
+        $key = @(Get-PSMutationEquivalentKey -Result $r)[0]
+        [void]$seen.Add($key)
+        if (-not $accepted.Contains($key)) {
+            $faults.Add("NEW survivor not in the baseline: $key. Kill it, or record it as accepted debt with -UpdateBaseline.")
+        }
+    }
+    $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
+    foreach ($key in $accepted) {
+        # No split LIMIT: taking element [0] makes the limit inert, so a literal there is a
+        # number no test can distinguish -- self-mutation reported it as a survivor.
+        $file = ($key -split ':')[0]
+        # BOTH AT ONCE PERMITS NOTHING. An equivalence already excuses the mutant outright, so a
+        # baseline entry beside it records debt that is not owed -- and the two would then disagree
+        # the day somebody deletes one. Adopted from the paired module, whose baseline refuses the
+        # same overlap for the same reason.
+        if ($declared.Contains($key)) {
+            $faults.Add("$key is both declared equivalent and accepted in the baseline. The declaration already excuses it, so the baseline entry permits nothing -- delete one.")
+            continue
+        }
+        # SCOPE SHRINK. Without this, the cheapest way to green a failing gate is to drop the weak
+        # file from `mutate`: its survivors stop being reported and nothing notices the code
+        # stopped being measured at all.
+        if (-not $mutating.Contains($file)) {
+            $faults.Add("$key is accepted in the baseline but $file is no longer in mutate. Dropping a file hides its survivors rather than fixing them.")
+            continue
+        }
+        # FIXED, and still recorded. Discrete and meaningful, unlike the same rule over a score:
+        # this fires exactly when somebody kills a mutant, and leaving the entry would let that
+        # mutant start surviving again later with nothing failing. PHPStan reports an unmatched
+        # baseline entry for the same reason.
+        if (-not $seen.Contains($key)) {
+            $faults.Add("$key is accepted in the baseline but no longer survives. Re-run with -UpdateBaseline so it cannot quietly come back.")
+        }
+    }
+    return $faults.ToArray()
+}
+
+function Get-PSMutationUpdatedSurvivorBaseline {
+    <#
+    .SYNOPSIS
+        The baseline this run would record: exactly the mutants that survived it.
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results)
+    # GENERATED, with no per-entry prose, and that is the difference from `equivalents`. An
+    # equivalence is an argument a person makes and the gate checks; debt is a fact a run
+    # observed. Demanding a sentence per entry would make the file impossible to generate and
+    # would turn every accepted survivor into a claim nobody actually wrote.
+    $map = [ordered]@{}
+    foreach ($r in ($Results | Where-Object Status -eq 'Survived' |
+                Sort-Object -Property @{ Expression = 'File' }, @{ Expression = 'Function' }, @{ Expression = 'Description' })) {
+        $map[@(Get-PSMutationEquivalentKey -Result $r)[0]] = ''
+    }
+    return [pscustomobject]@{
+        schemaVersion = 1
+        survivors = [pscustomobject]$map
+    }
+}
+
 function Get-PSMutationPerFileScore {
     <#
     .SYNOPSIS
@@ -267,10 +370,16 @@ function Get-PSMutationFailureReason {
     # config is what needs editing.
     [OutputType([string])]
     [CmdletBinding()]
-    param([Parameter(Mandatory)] $Summary, $Thresholds)
+    param([Parameter(Mandatory)] $Summary, $Thresholds, [AllowEmptyCollection()] [string[]]$BaselineFault = @())
     # Filter before counting: @($null).Count is 1, not 0, so a summary that carries
     # no stale list at all would otherwise fail every run.
     if (@($Summary.StaleEquivalents | Where-Object { $_ }).Count -gt 0) { return 'StaleEquivalents' }
+    # BEFORE the threshold, deliberately. A baseline fault says this run disagrees with a list the
+    # project committed to; a threshold says the blended number is under a configured one. Both can
+    # be true at once, and the first is the more specific fact -- reporting 'BelowThreshold' for a
+    # run that grew a new survivor sends the reader to argue about the number instead of reading
+    # the mutant it grew.
+    if (@($BaselineFault | Where-Object { $_ }).Count -gt 0) { return 'SurvivorBaseline' }
     if ($null -ne $Thresholds.break -and $Summary.Score -lt $Thresholds.break) { return 'BelowThreshold' }
     return 'None'
 }
@@ -284,8 +393,8 @@ function Get-PSMutationExitCode {
     # the other grew. The exit code is a projection of the reason, so it cannot disagree with it.
     [OutputType([int])]
     [CmdletBinding()]
-    param([Parameter(Mandatory)] $Summary, $Thresholds)
-    if ((Get-PSMutationFailureReason -Summary $Summary -Thresholds $Thresholds) -eq 'None') { return 0 }
+    param([Parameter(Mandatory)] $Summary, $Thresholds, [AllowEmptyCollection()] [string[]]$BaselineFault = @())
+    if ((Get-PSMutationFailureReason -Summary $Summary -Thresholds $Thresholds -BaselineFault $BaselineFault) -eq 'None') { return 0 }
     return 1
 }
 

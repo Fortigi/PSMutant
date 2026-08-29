@@ -308,6 +308,34 @@ function Get-PSMutationRecordEveryKiller {
     return [bool]$Cfg.recordAllKillers
 }
 
+function Get-PSMutationSurvivorBaselinePath {
+    <#
+    .SYNOPSIS
+        The accepted-survivor baseline this config asks for, or $null when it asks for none.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Cfg, [Parameter(Mandatory)] [string]$SourceRoot)
+    # ITS PRESENCE IS THE SWITCH. There is no separate enable flag, because two settings that can
+    # disagree are two somebody has to reconcile -- and the disagreement is silent in the direction
+    # that matters: a path with the feature off is a baseline nobody enforces.
+    #
+    # A path in the CONFIG, and the file itself kept out of it. A config is a declaration of
+    # intent; a baseline is recorded state. A tool that rewrites its own config makes the user's
+    # hand-authored file something the machine edits, and then nobody can tell which lines a
+    # person meant. Naming the path rather than fixing it also lets a monorepo keep one per
+    # package.
+    if ([string]::IsNullOrWhiteSpace($Cfg.survivorBaseline)) { return $null }
+    $raw = [string]$Cfg.survivorBaseline
+    $fault = Get-PSMutationPathFault -Value $raw -Key 'survivorBaseline'
+    if ($fault) { throw $fault }
+    # Resolved exactly as reportPath is, honouring a ROOTED path as given: Join-Path concatenates
+    # rather than letting a rooted right-hand side win, so an absolute path would otherwise be
+    # silently rewritten to sit inside the source tree.
+    if ([System.IO.Path]::IsPathRooted($raw)) { return [System.IO.Path]::GetFullPath($raw) }
+    return [System.IO.Path]::GetFullPath((Join-Path $SourceRoot $raw))
+}
+
 function Get-PSMutationPathFault {
     <#
     .SYNOPSIS

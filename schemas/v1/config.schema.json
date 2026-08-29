@@ -142,6 +142,10 @@
     "recordAllKillers": {
       "type": "boolean",
       "description": "Record every test that kills a mutant rather than only the first. Default false. Setting it forfeits Pester's early stop on failure, which costs roughly 63% more wall clock."
+    },
+    "survivorBaseline": {
+      "type": "string",
+      "description": "Path to a committed list of accepted surviving mutants, relative to the source root unless rooted. Its presence enables the baseline gate: a survivor not listed fails the run, and a listed one that is fixed, whose file leaves mutate, or that is also declared equivalent, fails too. Written by -UpdateBaseline. Absent means no baseline gate."
     }
   },
   "patternProperties": {

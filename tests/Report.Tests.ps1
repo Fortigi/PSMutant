@@ -1378,3 +1378,142 @@ Describe 'Get-PSMutationWeakFileLine' {
         $lines.Count | Should-Be 0
     }
 }
+
+Describe 'Get-PSMutationSurvivorBaselineFault' {
+    BeforeAll {
+        function script:Sv([string]$File, [string]$Fn, [string]$Desc, [string]$Status) {
+            [pscustomobject]@{ File = $File; Function = $Fn; Description = $Desc; Status = $Status; Line = 1 }
+        }
+        $script:key = 'src/a.ps1:Get-Thing:-gt -> -le'
+        $script:base = ('{ "' + $script:key + '": "" }') | ConvertFrom-Json
+        $script:mutate = @('src/a.ps1')
+    }
+
+    It 'says nothing when no baseline is configured' {
+        # The default. The gate is off unless the config names a path, so an ordinary run must not
+        # acquire a new way to fail.
+        $f = Get-PSMutationSurvivorBaselineFault -Results @(script:Sv -File 'src/a.ps1' -Fn 'X' -Desc 'd' -Status 'Survived') `
+            -Baseline $null -MutateFiles $script:mutate
+        @($f).Count | Should-Be 0
+    }
+
+    It 'accepts a survivor that is recorded' {
+        $f = Get-PSMutationSurvivorBaselineFault `
+            -Results @(script:Sv -File 'src/a.ps1' -Fn 'Get-Thing' -Desc '-gt -> -le' -Status 'Survived') `
+            -Baseline $script:base -MutateFiles $script:mutate
+        @($f).Count | Should-Be 0
+    }
+
+    It 'reports a survivor that is NOT recorded' {
+        # The core rule. Adding under-tested code adds a survivor, and that is the one thing this
+        # gate exists to fail on.
+        $f = Get-PSMutationSurvivorBaselineFault -Results @(
+            (script:Sv -File 'src/a.ps1' -Fn 'Get-Thing' -Desc '-gt -> -le' -Status 'Survived')
+            (script:Sv -File 'src/a.ps1' -Fn 'New-Thing' -Desc '+ -> -' -Status 'Survived')
+        ) -Baseline $script:base -MutateFiles $script:mutate
+        ($f -join ' ') | Should-MatchString 'NEW survivor not in the baseline: src/a.ps1:New-Thing'
+    }
+
+    It 'reports a recorded survivor that has been FIXED' {
+        # Otherwise the ratchet has slack: the entry stays, and the mutant can start surviving
+        # again later with nothing failing. Discrete and meaningful -- it fires exactly when
+        # somebody kills a mutant, unlike the same rule over a score.
+        $f = Get-PSMutationSurvivorBaselineFault `
+            -Results @(script:Sv -File 'src/a.ps1' -Fn 'Get-Thing' -Desc '-gt -> -le' -Status 'Killed') `
+            -Baseline $script:base -MutateFiles $script:mutate
+        ($f -join ' ') | Should-MatchString 'no longer survives'
+    }
+
+    It 'reports a recorded survivor whose file has left the mutate list' {
+        # THE GAMING VECTOR. Dropping the weak file hides its survivors rather than fixing them,
+        # and the blended score goes up while less of the project is measured.
+        $f = Get-PSMutationSurvivorBaselineFault -Results @() -Baseline $script:base -MutateFiles @('src/other.ps1')
+        ($f -join ' ') | Should-MatchString 'no longer in mutate'
+    }
+
+    It 'refuses an entry that is ALSO declared equivalent' {
+        # Both at once permits nothing: the declaration already excuses the mutant outright, so
+        # the baseline entry records debt that is not owed -- and the two would disagree the day
+        # somebody deletes one.
+        $eq = [pscustomobject]@{ $script:key = 'cannot be killed' }
+        $f = Get-PSMutationSurvivorBaselineFault `
+            -Results @(script:Sv -File 'src/a.ps1' -Fn 'Get-Thing' -Desc '-gt -> -le' -Status 'Survived') `
+            -Baseline $script:base -MutateFiles $script:mutate -Equivalents $eq
+        ($f -join ' ') | Should-MatchString 'both declared equivalent and accepted'
+    }
+
+    It 'ignores killed mutants that were never recorded' {
+        # The ordinary case: most mutants die and belong nowhere in this file. A rule that
+        # reported them would make the baseline a list of everything.
+        $f = Get-PSMutationSurvivorBaselineFault -Results @(
+            (script:Sv -File 'src/a.ps1' -Fn 'Get-Thing' -Desc '-gt -> -le' -Status 'Survived')
+            (script:Sv -File 'src/a.ps1' -Fn 'Other' -Desc 'x' -Status 'Killed')
+        ) -Baseline $script:base -MutateFiles $script:mutate
+        @($f).Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationUpdatedSurvivorBaseline' {
+    It 'records exactly the survivors, keyed stably and sorted' {
+        $b = Get-PSMutationUpdatedSurvivorBaseline -Results @(
+            [pscustomobject]@{ File = 'src/z.ps1'; Function = 'Z'; Description = 'd'; Status = 'Survived'; Line = 9 }
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'A'; Description = 'd'; Status = 'Survived'; Line = 1 }
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'K'; Description = 'd'; Status = 'Killed'; Line = 2 }
+        )
+        $b.schemaVersion | Should-Be 1
+        @($b.survivors.PSObject.Properties.Name) | Should-BeCollection @('src/a.ps1:A:d', 'src/z.ps1:Z:d')
+    }
+
+    It 'keys by FUNCTION, not by line, so an entry survives a line moving' {
+        # A baseline is committed once and reviewed rarely. A line-keyed entry churns whenever
+        # anything above it is edited, and an entry nobody can trust is one nobody reads.
+        $b = Get-PSMutationUpdatedSurvivorBaseline -Results @(
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'A'; Description = 'd'; Status = 'Survived'; Line = 400 })
+        @($b.survivors.PSObject.Properties.Name) | Should-BeCollection @('src/a.ps1:A:d')
+    }
+
+    It 'writes an empty map for a run with nothing surviving' {
+        # The state a project reaches when the debt is paid off. It must be representable, or
+        # -UpdateBaseline would refuse the one run everybody wants.
+        $b = Get-PSMutationUpdatedSurvivorBaseline -Results @(
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'A'; Description = 'd'; Status = 'Killed'; Line = 1 })
+        # @( ) around the PROPERTIES, not around their Names. Member enumeration over an empty
+        # collection yields $null, so @(....Properties.Name).Count is 1 where there are none; and
+        # the collection exposes no .Count of its own, which comes back $null. Measured all three.
+        @($b.survivors.PSObject.Properties).Count | Should-Be 0
+        # And it must serialise as {} rather than null -- this is the state a project reaches when
+        # the debt is paid off, and a null there would read as "no baseline" on the next run.
+        ($b | ConvertTo-Json -Compress) | Should-MatchString '"survivors":\{\}'
+    }
+}
+
+Describe 'a survivor-baseline fault decides the run' {
+    BeforeAll { $script:cleanSummary = [pscustomobject]@{ Score = 100; StaleEquivalents = @() } }
+
+    It 'reports SurvivorBaseline, and does so BEFORE the threshold' {
+        # Both can be true at once, and the baseline fault is the more specific one: reporting
+        # 'BelowThreshold' for a run that grew a new survivor sends the reader to argue about the
+        # number instead of reading the mutant it grew. The summary here is deliberately BELOW
+        # the break threshold, so the ordering is what the assertion tests.
+        $low = [pscustomobject]@{ Score = 10; StaleEquivalents = @() }
+        Get-PSMutationFailureReason -Summary $low -Thresholds @{ break = 90 } -BaselineFault @('new survivor') |
+            Should-Be 'SurvivorBaseline'
+    }
+
+    It 'leaves an ordinary run alone' {
+        # The pairing: without it, a decision that always returned SurvivorBaseline would satisfy
+        # the test above.
+        Get-PSMutationFailureReason -Summary $script:cleanSummary -Thresholds @{ break = 90 } |
+            Should-Be 'None'
+        Get-PSMutationFailureReason -Summary $script:cleanSummary -Thresholds @{ break = 90 } -BaselineFault @() |
+            Should-Be 'None'
+    }
+
+    It 'turns a baseline fault into a non-zero exit code' {
+        # The exit code is what a CI job reads. A reason nobody can act on is a reason nobody sees.
+        Get-PSMutationExitCode -Summary $script:cleanSummary -Thresholds @{ break = 90 } -BaselineFault @('x') |
+            Should-Be 1
+        Get-PSMutationExitCode -Summary $script:cleanSummary -Thresholds @{ break = 90 } |
+            Should-Be 0
+    }
+}
