@@ -56,6 +56,9 @@ if ($faults) {
     $body = ($faults | ForEach-Object { "  - $_" }) -join [Environment]::NewLine
     throw "CI parity gate: $($faults.Count) fault(s) across $($files.Count) workflow(s).$([Environment]::NewLine)$body"
 }
-# Write-Output, not Write-Host: PSAvoidUsingWriteHost is NOT excluded in this repo, and the gate
-# scripts print through the pipeline for exactly that reason.
+# Write-Output rather than Write-Host, though this repo DOES exclude PSAvoidUsingWriteHost and its
+# other gate scripts print with Write-Host. Kept as-is because a caller may want to capture this
+# line, and because the sibling copy of this gate cannot use Write-Host at all -- the two scripts
+# stay swappable that way. (This comment previously asserted the exclusion was absent here, which
+# was true of the repo it was ported from and false the moment it landed.)
 Write-Output "CI parity: $($files.Count) workflow(s) hold every shared capability."
