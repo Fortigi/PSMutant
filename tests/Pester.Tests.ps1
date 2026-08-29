@@ -267,13 +267,15 @@ Describe 'the child script the warm runspace runs' {
         # tests produced no result". Parsing it here is the cheapest possible guard.
         $errors = $null
         $null = [System.Management.Automation.Language.Parser]::ParseInput(
-            (Get-PSMutationWarmPesterScript), [ref]$null, [ref]$errors)
+            (Get-PSMutationWarmPesterScript).ToString(), [ref]$null, [ref]$errors)
         @($errors).Count | Should-Be 0
     }
 
-    It 'asks Pester to stop at the first failure, when this Pester can' {
-        (Get-PSMutationWarmPesterScript) | Should-BeLikeString '*SkipRemainingOnFailure*'
-    }
+    # The substring check that used to sit here is gone, superseded by the AST assertion above.
+    # It matched '*SkipRemainingOnFailure*' anywhere in the text, which stayed true after the
+    # early-stop decision moved inside the script and became conditional -- so it would have
+    # passed with the condition inverted. That is the weakness #49 is about: a string admits no
+    # better assertion, and once the thing is real code there is no reason to settle for one.
 
     It 'sets the property when the configuration has it' {
         # Both arms of the guard, exercised against stand-ins rather than against a real old
@@ -294,22 +296,93 @@ Describe 'the child script the warm runspace runs' {
     }
 }
 
-Describe 'Get-PSMutationWarmPesterScript honours -RecordAllKillers' {
-    It 'keeps the early stop by default and drops it when every killer is wanted' {
-        # The switch has exactly one job: decide whether the child stops at the first failing
-        # test. Asserted in BOTH directions -- a generator that ignored the switch would satisfy
-        # either half alone, and the expensive path would silently never be taken.
-        (Get-PSMutationWarmPesterScript) | Should-MatchString 'SkipRemainingOnFailure'
-        (Get-PSMutationWarmPesterScript -RecordAllKillers) | Should-NotMatchString 'SkipRemainingOnFailure'
+Describe 'the child script every mutant runs' {
+    It 'PARSES' {
+        # THE point of #49. This text is handed to a runspace at run time, and as a here-string
+        # nothing ever examined it: the analyzer saw a string literal, the parser saw nothing
+        # until AddScript, and the tests could only match substrings. A typo failed no lint, no
+        # parse and no test, and appeared on a consumer's machine mid-run.
+        #
+        # A real assertion, and cheap, unlike the substring checks it replaces. Written as a
+        # scriptblock the parser already catches this when the file is dot-sourced -- so this
+        # test is the guard against someone converting it back to a string.
+        $errors = $null
+        $null = [System.Management.Automation.Language.Parser]::ParseInput(
+            (Get-PSMutationWarmPesterScript).ToString(), [ref]$null, [ref]$errors)
+        @($errors) | Should-BeCollection -Count 0
     }
 
-    It 'returns the verdict AND the killers either way' {
-        # The shape the caller reads is the same whichever path is taken; only how much of it is
-        # populated differs. A child that returned a bare string on one path would make
-        # Invoke-PSBoundedPester read $null and refuse the run.
-        foreach ($text in (Get-PSMutationWarmPesterScript), (Get-PSMutationWarmPesterScript -RecordAllKillers)) {
-            $text | Should-MatchString 'Result'
-            $text | Should-MatchString 'Killers'
-        }
+    It 'actually RUNS, and answers with the verdict and the killers' -ForEach @(
+        @{ All = $false; Because = 'the default path' }
+        @{ All = $true; Because = 'the record-every-killer path' }
+    ) {
+        # Invoked in-process against a real fixture, which an opaque string never allowed and
+        # which #49 named as the payoff for making it code. It is also what COVERS these lines:
+        # the block otherwise executes only inside a child runspace, where the parent's coverage
+        # cannot see it -- so before this test the file sat at 98.95% with the body untouched.
+        #
+        # A nested Invoke-Pester is safe here because the coverage gate sets
+        # CodeCoverage.UseBreakpoints, which exists for exactly this hazard.
+        $fixture = Join-Path $TestDrive "child-$([System.Guid]::NewGuid().ToString('N')).Tests.ps1"
+        @'
+Describe 'fixture' {
+    It 'passes' { 1 | Should-Be 1 }
+    It 'fails first' { 1 | Should-Be 2 }
+    It 'fails second' { 1 | Should-Be 2 }
+}
+'@ | Set-Content -LiteralPath $fixture -Encoding utf8
+
+        # The ORIGINAL block, not a copy made from its text: a re-created scriptblock has no
+        # file association, so nothing it runs is attributed to the lines under test.
+        $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $All
+
+        $out.Result | Should-Be 'Failed' -Because "a failing suite is what kills a mutant, on $Because"
+        # The COUNT is the assertion, not merely that some killer came back. The fixture has two
+        # failing tests, so the two modes differ observably -- 1 against 2 -- and that difference
+        # is the only thing the guard inside the script controls. Asserting non-emptiness instead
+        # left both of the guard's mutants alive: inverted or widened to -or, some killer still
+        # comes back and every weaker assertion still passes.
+        @($out.Killers).Count | Should-Be ($All ? 2 : 1)
+        # The FIRST failing test is the one the early stop keeps, so it is present either way.
+        ($out.Killers -join ' ') | Should-MatchString 'fails first'
+        # And the second is exactly what the expensive mode buys.
+        if ($All) { ($out.Killers -join ' ') | Should-MatchString 'fails second' }
+        else { ($out.Killers -join ' ') | Should-NotMatchString 'fails second' }
+    }
+
+    It 'answers Passed with no killers when nothing notices' {
+        # The survivor path, which is the one a wrong verdict flatters. Asserted separately
+        # because the failing case above would pass just as well if Killers were always
+        # populated from somewhere.
+        $fixture = Join-Path $TestDrive "green-$([System.Guid]::NewGuid().ToString('N')).Tests.ps1"
+        "Describe 'g' { It 'passes' { 1 | Should-Be 1 } }" | Set-Content -LiteralPath $fixture -Encoding utf8
+
+        $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $false
+        $out.Result | Should-Be 'Passed'
+        @($out.Killers) | Should-BeCollection -Count 0
+    }
+
+    It 'declares the two parameters the runner binds by name' {
+        # AddParameter binds by NAME, so a rename here fails at run time with a binding error
+        # rather than at parse time. These two are the contract between this file and the runner.
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput(
+            (Get-PSMutationWarmPesterScript).ToString(), [ref]$null, [ref]$null)
+        $params = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
+        $params | Should-BeCollection @('tests', 'recordAllKillers')
+    }
+
+    It 'keeps the early stop unless every killer is wanted' {
+        # Asserted on the AST rather than on the text: the decision is now INSIDE the script, so
+        # the string always mentions SkipRemainingOnFailure and a substring check would pass
+        # whatever the condition said. What matters is that the assignment is guarded by the
+        # parameter -- flip the guard and the expensive path becomes the only path.
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput(
+            (Get-PSMutationWarmPesterScript).ToString(), [ref]$null, [ref]$null)
+        $guarded = @($ast.FindAll({
+                    param($n) $n -is [System.Management.Automation.Language.IfStatementAst] -and
+                    $n.Extent.Text -match 'SkipRemainingOnFailure'
+                }, $true))
+        $guarded | Should-BeCollection -Count 1
+        $guarded[0].Clauses[0].Item1.Extent.Text | Should-MatchString 'recordAllKillers'
     }
 }

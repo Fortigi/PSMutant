@@ -22,6 +22,38 @@ and what a reader does with such a list is delete things -- so the honest answer
 one. A test may also be the only thing covering a file outside `mutate` entirely, which is why even
 the complete list is evidence of weakness rather than proof of uselessness.
 
+### Internal
+
+**The code every mutant runs is now real code.** The child body handed to each runspace was a
+here-string, so nothing ever examined it: PSScriptAnalyzer saw a string literal, the parser saw
+nothing until `AddScript` at run time, and the tests could only match substrings. A typo in it
+failed no lint, no parse and no test -- it surfaced on a consumer's machine mid-run as "the
+covering tests produced no result", a message pointing at the mutant rather than at the script.
+The version-resolution bug behind #16 lived in this script's predecessor.
+
+The same typo, measured in both shapes:
+
+```
+here-string (before)   parse errors: 0
+scriptblock (after)    parse errors: 2
+```
+
+It is now a `{ }` scriptblock passed as `.ToString()`, so the parser checks it when the file is
+dot-sourced and the analyzer lints it -- both verified by planting a syntax error inside the block
+and watching the lint gate fail. A test asserts it parses, which is a real assertion and cheaper
+than the substring checks it replaces.
+
+Coverage is what forced the child body to be tested at all. As a string it was invisible to the
+instrumentation, so nothing noticed it had never been executed in-process; as code it dropped the
+gate to 98.95% until a test invoked it against a real fixture. The function returns the
+**scriptblock**, not its text: a caller can only run text by re-creating it, and a re-created block
+has no file association, so nothing it executes is attributed back.
+
+The early-stop decision moved **inside** the block and became a parameter. It had briefly been a
+line the caller concatenated in or left out, which made the thing handed to the runspace assembled
+text again -- one conditional away from the problem this fixes. There is now exactly one script and
+it is always the same one.
+
 ## [0.5.0] - 2026-08-29
 
 ### For consumers
