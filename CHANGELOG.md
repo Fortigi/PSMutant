@@ -49,6 +49,35 @@ missed; the fraction is yours to compute against your own file count.
 
 ### Internal
 
+**Every Describe and Context now has to pass on its own, and four did not.** #43 fixed two
+shared-state instances somebody happened to notice; nothing then checked whether there were more.
+Measured across the nine covering suites: **4 of 102 blocks failed when run alone**, 14 tests, all
+from one cause in `Config.Tests.ps1`.
+
+The cause is worse than the ergonomics complaint #43 recorded. A top-level `$script:` assignment in
+a Pester 5+ file runs during **discovery** and never reaches the run phase, so such a block does not
+merely lose its fixture -- it silently reads whatever a sibling Describe's `BeforeAll` left under the
+same name. Four Describes naming `GetTempPath()` were reading a fake repo under `TestDrive`, and had
+been for two releases, because their assertions only ever check a file name. Reordering the Describes
+would have broken them.
+
+Guarded on both sides, the way order independence already is:
+
+- `tests/SuiteHygiene.Tests.ps1` catches the **cause** statically -- no `$script:` assignment at the
+  top level of a test file -- and fires on a file that leaks whether or not anything reads it yet.
+- `tools/Test-PSMutantBlockIsolation.ps1` catches the **symptom** by running each block alone. 19s
+  for 102 blocks. It is a probe over the blocks that exist rather than a proof, which is why the
+  static half is not redundant.
+
+Both were verified against a planted defect rather than by reading the code, and the planted case
+was made faithful: the intact suite stays green while the isolated block fails, which is what made
+the original invisible to every other gate.
+
+The block-isolation gate was first built to unblock coverage-driven test selection, which was then
+measured and abandoned as costing more than it saves. It is kept for the reason #43 gave in the
+first place: running one Describe is the normal inner loop, and a block that passes only in company
+fails for reasons unrelated to what it asserts.
+
 **Schema `description` fields say what a field IS, not why it exists.** The rationale moved to the
 code and to this file. `filesMutated` shipped last release with 862 characters of design argument in
 its description, which every consumer validating a document had to read past.

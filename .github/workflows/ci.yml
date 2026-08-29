@@ -202,6 +202,25 @@ jobs:
       # Coverage is measured by a committed script, not by a snippet living only here, so
       # that a developer checking by hand runs exactly what the gate runs. The figure used
       # to be folklore; it is now enforced at 100.
+      # The SYMPTOM half of the shared-state guard; tests/SuiteHygiene.Tests.ps1 catches the
+      # cause statically in the ordinary suite. Both, for the reason the order-independence gate
+      # keeps its two halves: this one is a probe over the blocks that exist, while the static
+      # check fires on a file that leaks whether or not anything reads it yet.
+      #
+      # 19s for 102 blocks. Linux only: the property is about fixture scope, not about the
+      # platform, and the Windows leg already runs every block as part of the whole file.
+      #
+      # Kept on its own merits after the per-block test selection it was first built for was
+      # measured and abandoned. What it buys beyond the static check is a block that becomes
+      # dependent through some OTHER route -- a leaked mock, a filesystem fixture, module state --
+      # which a check written against one known cause cannot see.
+      - name: Block isolation (every Describe/Context passes alone)
+        if: matrix.os == 'ubuntu-latest'
+        shell: pwsh
+        run: |
+          Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
+          ./tools/Test-PSMutantBlockIsolation.ps1
+
       - name: Coverage gate (100%)
         shell: pwsh
         run: |

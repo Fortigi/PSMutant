@@ -15,7 +15,7 @@ BeforeAll {
 
 Describe 'Get-PSMutationSandboxPlan' {
     BeforeAll {
-        $script:root = Join-Path $TestDrive 'repo'
+        $script:planRoot = Join-Path $TestDrive 'repo'
         $script:sb = Join-Path $TestDrive 'sandbox'
         # Two mutate files with DIFFERENT mappings, one of them naming two test files.
         # A plan that merged the entries, or kept only the last, would still look
@@ -27,7 +27,7 @@ Describe 'Get-PSMutationSandboxPlan' {
                 'src/b.ps1' = @('tests/b1.Tests.ps1', 'tests/b2.Tests.ps1')
             }
         }
-        $script:plan = Get-PSMutationSandboxPlan -Cfg $script:cfg -SourceRoot $script:root -SandboxRoot $script:sb
+        $script:plan = Get-PSMutationSandboxPlan -Cfg $script:cfg -SourceRoot $script:planRoot -SandboxRoot $script:sb
     }
 
     It 'points every mutate path at the sandbox copy, never the tracked file' {
@@ -37,7 +37,7 @@ Describe 'Get-PSMutationSandboxPlan' {
         $expected = @('src/a.ps1', 'src/b.ps1') |
             ForEach-Object { [System.IO.Path]::GetFullPath((Join-Path $script:sb $_)) }
         $script:plan.Mutate | Should-BeCollection $expected
-        $script:plan.Mutate | Should-NotContainCollection ([System.IO.Path]::GetFullPath((Join-Path $script:root 'src/a.ps1')))
+        $script:plan.Mutate | Should-NotContainCollection ([System.IO.Path]::GetFullPath((Join-Path $script:planRoot 'src/a.ps1')))
     }
 
     It 'keys the per-file test map by the SANDBOXED source path' {
@@ -69,7 +69,7 @@ Describe 'Get-PSMutationSandboxPlan' {
             mutate = @('src/a.ps1')
             tests  = [pscustomobject]@{ 'src/a.ps1' = 'tests/a.Tests.ps1' }
         }
-        $plan = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $script:root -SandboxRoot $script:sb
+        $plan = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $script:planRoot -SandboxRoot $script:sb
         $key = [System.IO.Path]::GetFullPath((Join-Path $script:sb 'src/a.ps1'))
         $plan.TestsByFile[$key] |
             Should-BeCollection @([System.IO.Path]::GetFullPath((Join-Path $script:sb 'tests/a.Tests.ps1')))
@@ -77,20 +77,28 @@ Describe 'Get-PSMutationSandboxPlan' {
     }
 }
 
-$script:root = [System.IO.Path]::GetTempPath()
 
 Describe 'Get-PSMutationSubtree' {
+    BeforeAll {
+        # Set HERE rather than at file level. A top-level $script: assignment runs during
+        # DISCOVERY and never reaches the run phase, so this Describe was silently reading
+        # whatever a sibling's BeforeAll had left in $script:tempRoot -- a fake repo under
+        # TestDrive, not the temp path it names. It passed only because these assertions
+        # check the FILE NAME and never the root, and it failed the moment the block was
+        # run on its own.
+        $script:tempRoot = [System.IO.Path]::GetTempPath()
+    }
     It 'uses the subtrees the config names' {
-        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ([pscustomobject]@{ sandboxSubtrees = @('lib', 'spec') }) |
+        Get-PSMutationSubtree -SourceRoot $script:tempRoot -Cfg ([pscustomobject]@{ sandboxSubtrees = @('lib', 'spec') }) |
             Should-BeCollection @('lib', 'spec')
     }
     It 'falls back to the module convention when the config is silent' {
         # A consuming repo whose layout is src/ + tests/ should not have to say so.
-        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ([pscustomobject]@{}) | Should-BeCollection @('src', 'tests')
+        Get-PSMutationSubtree -SourceRoot $script:tempRoot -Cfg ([pscustomobject]@{}) | Should-BeCollection @('src', 'tests')
     }
     It 'wraps a single subtree as a list' {
         # JSON gives a bare string for a one-element array; the caller indexes it.
-        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ([pscustomobject]@{ sandboxSubtrees = 'onlysrc' }) |
+        Get-PSMutationSubtree -SourceRoot $script:tempRoot -Cfg ([pscustomobject]@{ sandboxSubtrees = 'onlysrc' }) |
             Should-BeCollection @('onlysrc')
     }
 }
@@ -361,6 +369,15 @@ Describe 'Get-PSMutationCoveredLinesOnly' {
 }
 
 Describe 'the defaults the README documents' {
+    BeforeAll {
+        # Set HERE rather than at file level. A top-level $script: assignment runs during
+        # DISCOVERY and never reaches the run phase, so this Describe was silently reading
+        # whatever a sibling's BeforeAll had left in $script:tempRoot -- a fake repo under
+        # TestDrive, not the temp path it names. It passed only because these assertions
+        # check the FILE NAME and never the root, and it failed the moment the block was
+        # run on its own.
+        $script:tempRoot = [System.IO.Path]::GetTempPath()
+    }
     # Turns the README config table into a checkable claim. It has drifted twice: the table
     # said coveredLinesOnly defaulted to true when the code had no resolver at all, and
     # sandboxSubtrees to ["tools","test","setup"], a value the code never had.
@@ -369,7 +386,7 @@ Describe 'the defaults the README documents' {
     }
 
     It 'defaults sandboxSubtrees to src and tests' {
-        Get-PSMutationSubtree -SourceRoot $script:root -Cfg ('{}' | ConvertFrom-Json) | Should-BeCollection @('src', 'tests')
+        Get-PSMutationSubtree -SourceRoot $script:tempRoot -Cfg ('{}' | ConvertFrom-Json) | Should-BeCollection @('src', 'tests')
     }
 
     It 'defaults timeoutFactor to 4 and timeoutFloorSeconds to 15' {
@@ -598,6 +615,15 @@ Describe 'a config value of the wrong type' {
 }
 
 Describe 'a config path answers for itself before anything uses it' {
+    BeforeAll {
+        # Set HERE rather than at file level. A top-level $script: assignment runs during
+        # DISCOVERY and never reaches the run phase, so this Describe was silently reading
+        # whatever a sibling's BeforeAll had left in $script:tempRoot -- a fake repo under
+        # TestDrive, not the temp path it names. It passed only because these assertions
+        # check the FILE NAME and never the root, and it failed the moment the block was
+        # run on its own.
+        $script:tempRoot = [System.IO.Path]::GetTempPath()
+    }
     # Every other config value got a resolver; paths did not, so each failed in its own place
     # and its own way -- and none of the messages named the key that caused it.
 
@@ -674,7 +700,7 @@ Describe 'a config path answers for itself before anything uses it' {
     }
 
     It 'refuses a sandboxSubtree that escapes the source root' {
-        { Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('src', '../outside') }) -SourceRoot $script:root } |
+        { Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('src', '../outside') }) -SourceRoot $script:tempRoot } |
             Should-Throw -ExceptionMessage '*resolves outside the source root*'
     }
 
@@ -682,14 +708,14 @@ Describe 'a config path answers for itself before anything uses it' {
         # Documented optional and, until this resolver, mandatory in practice: Join-Path with
         # $null returns the root itself, so the run failed at the very end trying to write a
         # report over a directory.
-        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{}) -SourceRoot $script:root) |
+        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{}) -SourceRoot $script:tempRoot) |
             Should-MatchString ([regex]::Escape('ps-mutation.json'))
     }
 
     It 'uses the configured reportPath when it is given' {
         # Paired with the case above: a resolver that ALWAYS returned the default would pass
         # that one and silently ignore every consumer's setting.
-        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/mine.json' }) -SourceRoot $script:root) |
+        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/mine.json' }) -SourceRoot $script:tempRoot) |
             Should-MatchString ([regex]::Escape('mine.json'))
     }
 
@@ -704,7 +730,7 @@ Describe 'a config path answers for itself before anything uses it' {
         # rootedness rather than about Unix, and still means something on Windows where an absolute
         # path starts with a drive letter.
         $absolute = Join-Path ([System.IO.Path]::GetTempPath()) 'psmut-abs-report.json'
-        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = $absolute }) -SourceRoot $script:root) |
+        (Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = $absolute }) -SourceRoot $script:tempRoot) |
             Should-Be ([System.IO.Path]::GetFullPath($absolute))
     }
 
@@ -712,28 +738,28 @@ Describe 'a config path answers for itself before anything uses it' {
         # The other half, and the one that fails if the guard is written the wrong way round. A
         # test for the absolute case alone would pass just as well if every path were now taken
         # literally, which would break every existing config.
-        $resolved = Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/mine.json' }) -SourceRoot $script:root
-        $resolved | Should-Be ([System.IO.Path]::GetFullPath((Join-Path $script:root 'out/mine.json')))
-        $resolved | Should-MatchString ([regex]::Escape($script:root))
+        $resolved = Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/mine.json' }) -SourceRoot $script:tempRoot
+        $resolved | Should-Be ([System.IO.Path]::GetFullPath((Join-Path $script:tempRoot 'out/mine.json')))
+        $resolved | Should-MatchString ([regex]::Escape($script:tempRoot))
     }
 
     It 'still resolves a path that climbs ABOVE the source root' {
         # Documented as reasonable -- a shared artifacts directory beside the repo -- and it was
         # never the broken case. Pinned so the fix for the rooted form cannot quietly take it away.
-        $resolved = Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = '../shared/r.json' }) -SourceRoot $script:root
-        $resolved | Should-Be ([System.IO.Path]::GetFullPath((Join-Path $script:root '../shared/r.json')))
-        $resolved | Should-NotMatchString ([regex]::Escape([System.IO.Path]::Combine($script:root, 'shared')))
+        $resolved = Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = '../shared/r.json' }) -SourceRoot $script:tempRoot
+        $resolved | Should-Be ([System.IO.Path]::GetFullPath((Join-Path $script:tempRoot '../shared/r.json')))
+        $resolved | Should-NotMatchString ([regex]::Escape([System.IO.Path]::Combine($script:tempRoot, 'shared')))
     }
 
     It 'throws through the reportPath resolver, not just the primitive' {
         # Through the resolver, because a fault function can be correct in both arms while
         # the caller ignores what it returns -- the caller is one line that deletes clean.
-        { Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/m[1].json' }) -SourceRoot $script:root } |
+        { Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/m[1].json' }) -SourceRoot $script:tempRoot } |
             Should-Throw -ExceptionMessage '*wildcards*'
     }
 
     It 'throws through the subtree resolver for a bracketed subtree' {
-        { Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('sr[c]') }) -SourceRoot $script:root } |
+        { Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('sr[c]') }) -SourceRoot $script:tempRoot } |
             Should-Throw -ExceptionMessage '*wildcards*'
     }
 
@@ -752,6 +778,15 @@ Describe 'a config path answers for itself before anything uses it' {
 }
 
 Describe 'the mutate list answers for itself' {
+    BeforeAll {
+        # Set HERE rather than at file level. A top-level $script: assignment runs during
+        # DISCOVERY and never reaches the run phase, so this Describe was silently reading
+        # whatever a sibling's BeforeAll had left in $script:tempRoot -- a fake repo under
+        # TestDrive, not the temp path it names. It passed only because these assertions
+        # check the FILE NAME and never the root, and it failed the moment the block was
+        # run on its own.
+        $script:tempRoot = [System.IO.Path]::GetTempPath()
+    }
     # Two config mistakes with no symptom. One doubles every published count and the run; the
     # other silently runs the entire suite for every mutant of the file it affects.
 
@@ -781,7 +816,7 @@ Describe 'the mutate list answers for itself' {
             mutate = @('src/a.ps1', 'src/a.ps1')
             tests  = [pscustomobject]@{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
         }
-        { Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $script:root -SandboxRoot (Join-Path $script:root 'sb') } |
+        { Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $script:tempRoot -SandboxRoot (Join-Path $script:tempRoot 'sb') } |
             Should-Throw -ExceptionMessage '*more than once*'
     }
 
@@ -792,7 +827,7 @@ Describe 'the mutate list answers for itself' {
             mutate = @('src/a.ps1', 'src/b.ps1')
             tests  = [pscustomobject]@{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
         }
-        $plan = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $script:root -SandboxRoot (Join-Path $script:root 'sb')
+        $plan = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $script:tempRoot -SandboxRoot (Join-Path $script:tempRoot 'sb')
         $plan.Mutate.Count | Should-Be 2
     }
 
