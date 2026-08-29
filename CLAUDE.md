@@ -1412,6 +1412,17 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   Keep such a bound LOOSE. It exists to end an overnight hang, not to trim a run having a bad day,
   and one that fires on a slow-but-working run is switched off within a week.
 
+- **A compatibility check that walks one side only is half a check.** The recheck gate iterated the
+  CURRENT mutate set against the report, so it saw a file added and a file changed -- and could not
+  see a file the REPORT covers that this run does not, because nothing asked about it. A config
+  mutating `a.ps1` accepted a report over `a.ps1` and `b.ps1` with zero reasons, and `-RecheckFrom`
+  would then evaluate `b.ps1`'s survivors with no tests mapped and no `b.ps1` in the sandbox.
+
+  The tell is in the shape rather than the logic: a `foreach` over one collection comparing into
+  another answers "is everything here also there", never "is everything there also here". Both
+  questions have to be asked, and both need a test, because the direction that is missing looks
+  exactly like the one that passes.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked

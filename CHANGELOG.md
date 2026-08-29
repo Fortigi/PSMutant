@@ -26,6 +26,22 @@ The limits are deliberately loose -- four times a mutant's budget with a thirty-
 twice the theoretical run time. A bound that fires on a slow-but-working run is one that gets
 switched off within a week.
 
+**A recheck now refuses a report that describes a different run.** The compatibility gate compared
+source hashes and the operator set, walking the files this run mutates -- so a file *added* to the
+mutate set was caught, and a file that *changed* was caught, but a file the **report** covers and
+this run does not was invisible. Measured: a config mutating `a.ps1` accepted a report over `a.ps1`
+and `b.ps1` with zero reasons.
+
+`-RecheckFrom` takes the report's whole survivor list, so that run would evaluate `b.ps1`'s
+survivors with no tests mapped for `b.ps1` and no `b.ps1` in the sandbox, then report "N of M
+previous survivors now killed" over a set it never had. A confident answer about the wrong thing is
+the failure this tool exists to prevent, so the gate now checks both directions and names every file
+that does not belong.
+
+It needs no concurrency to reach: a scoped local run and a full run sharing the default
+`reportPath` is enough. Two runs racing on that path remain last-writer-wins -- losing a report is
+visible, and the silent half was the recheck reading it.
+
 **A committed list of accepted survivors, so the gate is adoptable on code that is already red.**
 Point `survivorBaseline` at a path and its presence enables the gate; `-UpdateBaseline` writes it.
 
