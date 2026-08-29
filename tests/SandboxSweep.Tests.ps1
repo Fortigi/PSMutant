@@ -152,3 +152,40 @@ Describe 'the sweep reclaims the coverage files older versions left in temp' {
         }
     }
 }
+
+Describe 'Clear-PSMutationStaleSandbox under -WhatIf' {
+    It 'does not REACH the removal' {
+        # Asserted by mocking Remove-Item rather than by checking temp afterwards. -WhatIf
+        # propagates into nested cmdlets: with the outer ShouldProcess forced true, the inner
+        # Remove-Item is itself in WhatIf mode and still deletes nothing, so "the directory
+        # survived" proves only that PowerShell propagated the preference. A mock has no WhatIf
+        # semantics, so reaching it is observable.
+        #
+        # This is the mutant that appeared the moment this file became a covering suite: while it
+        # was mapped to nothing, its tests could cover the guard but never kill anything.
+        Mock Remove-Item { }
+        $dead = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-sandbox-424242-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $dead -Force | Out-Null
+        try {
+            Clear-PSMutationStaleSandbox -WhatIf
+            Should-Invoke Remove-Item -Times 0
+        }
+        finally { Remove-Item -LiteralPath $dead -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'DOES reach it without -WhatIf, so the test above is not vacuous' {
+        # The pairing. Without it, a sweep that never removed anything at all would satisfy the
+        # assertion above -- and this suite's whole subject is a function that deletes things.
+        Mock Remove-Item { }
+        $dead = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-sandbox-424242-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $dead -Force | Out-Null
+        try {
+            Clear-PSMutationStaleSandbox
+            # Path, not LiteralPath: the sweep passes the FullName positionally. Filtering on
+            # the wrong parameter name reports zero calls and reads exactly like a sweep that
+            # removed nothing.
+            Should-Invoke Remove-Item -Times 1 -ParameterFilter { $Path -eq $dead }
+        }
+        finally { Remove-Item -LiteralPath $dead -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
