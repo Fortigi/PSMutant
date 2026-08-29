@@ -336,6 +336,43 @@ function Get-PSMutationSurvivorBaselinePath {
     return [System.IO.Path]::GetFullPath((Join-Path $SourceRoot $raw))
 }
 
+function Get-PSMutationRunDeadlineBudget {
+    <#
+    .SYNOPSIS
+        The wall-clock budget for the WHOLE run, beyond which it is hung rather than slow.
+    #>
+    [OutputType([int])]
+    [CmdletBinding()]
+    param(
+        $Cfg,
+        [Parameter(Mandatory)] [int]$CandidateCount,
+        [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        [Parameter(Mandatory)] [double]$BaselineSeconds
+    )
+    # Every MUTANT is bounded and the RUN is not, which is a gap that only shows up as patience.
+    # Observed: a run suspended overnight -- 875 minutes elapsed against 333 seconds of CPU --
+    # with a zero-byte report, a sandbox its live pid kept the sweep from ever reclaiming, and no
+    # output to tell a hang from progress. The honest response to both is to wait, so the cost is
+    # measured in hours.
+    #
+    # Derived rather than configured by default, because the true upper bound is already implied
+    # by numbers the run has: no correct run can exceed its baseline plus one per-mutant budget
+    # for every mutant. Anything past that is not slow, it is stuck.
+    #
+    # The x2 is for per-mutant overhead outside the bounded child -- reading and splicing the
+    # file, restoring it, the progress line -- and for the baseline being measured once on a warm
+    # machine. It is deliberately loose: this exists to end an overnight hang, not to trim a run
+    # that is merely having a bad day, and a bound that fires on a slow-but-working run would be
+    # switched off within a week.
+    $derived = [int]([math]::Ceiling($BaselineSeconds) + ($CandidateCount * $TimeoutSeconds * 2))
+    # An explicit setting wins, including a deliberately small one, so a caller who knows their
+    # run's shape can tighten it. Zero disables the bound: a consumer running in a harness that
+    # already kills wedged jobs should be able to say so rather than tune a number they do not
+    # care about.
+    if ($null -ne $Cfg.runTimeoutSeconds) { return [int]$Cfg.runTimeoutSeconds }
+    return $derived
+}
+
 function Get-PSMutationPathFault {
     <#
     .SYNOPSIS

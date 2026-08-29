@@ -327,6 +327,65 @@ function Get-PSMutationProgressLine {
         -Text ("  [{0}/{1}] {2} {3}:{4} {5}" -f $Index, $Total, $glyph, $DisplayFile, $Result.Line, $Result.Description)
 }
 
+function Get-PSMutationStalledFault {
+    <#
+    .SYNOPSIS
+        The fault, if any, when one mutant's wall clock says the run stopped running.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [double]$MutantSeconds,
+        [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        [Parameter(Mandatory)] [int]$Index,
+        [Parameter(Mandatory)] [int]$Total
+    )
+    # The precise version of the run bound, and the one that fires within a single mutant instead
+    # of at the end of a budget nobody wants to wait out. Every mutant is already bounded: the
+    # child is given TimeoutSeconds and its handle is waited on for exactly that. So a mutant
+    # whose WALL CLOCK is far past its own budget did not run slowly -- the mechanism that was
+    # supposed to stop it did not fire.
+    #
+    # That is what an overnight hang looks like from inside: 875 minutes elapsed against 333
+    # seconds of CPU, because the machine slept mid-run and the handle never came back. Comparing
+    # the two numbers names the cause; a total-run deadline only reports the symptom, hours later.
+    #
+    # x4 and a +30s floor, so an ordinary overrun cannot trip it. A timed-out mutant already
+    # costs its full budget plus the cost of discarding and rebuilding the runspace, and a loaded
+    # machine can stretch that; four times the budget is not something a working run reaches.
+    $limit = [math]::Max(($TimeoutSeconds * 4), ($TimeoutSeconds + 30))
+    if ($MutantSeconds -le $limit) { return $null }
+    return ("Mutant $Index of $Total took $([int]$MutantSeconds)s against a per-mutant budget of " +
+        "${TimeoutSeconds}s. The bound on the child did not fire, which is what a suspended or " +
+        'wedged run looks like rather than a slow one -- a machine that slept mid-run leaves the ' +
+        'handle it was waiting on never signalling. Stopping here so the partial report says how ' +
+        'far the run got.')
+}
+
+function Get-PSMutationOverBudgetFault {
+    <#
+    .SYNOPSIS
+        The fault, if any, when the whole run has outlived its wall-clock budget.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [double]$ElapsedSeconds,
+        [Parameter(Mandatory)] [int]$DeadlineSeconds,
+        [Parameter(Mandatory)] [int]$Index,
+        [Parameter(Mandatory)] [int]$Total
+    )
+    # A pure decision rather than an inline comparison on a stopwatch, so its BOUNDARY can be
+    # tested. Written inline it could not: elapsed wall-clock never lands exactly on the budget,
+    # so nothing could tell -gt from -ge and self-mutation said so.
+    if ($DeadlineSeconds -le 0) { return $null }
+    if ($ElapsedSeconds -le $DeadlineSeconds) { return $null }
+    return ("This run passed its wall-clock budget of ${DeadlineSeconds}s after $Index of " +
+        "$Total mutant(s). Every mutant is bounded and the run was not, so a suspended or wedged " +
+        'run used to sit there indefinitely and look exactly like a slow one. Raise ' +
+        'runTimeoutSeconds, or set it to 0 if something else already kills wedged runs.')
+}
+
 function Invoke-PSMutationLoop {
     # Evaluate every candidate; return the result rows.
     [OutputType([object[]])]
@@ -354,8 +413,12 @@ function Invoke-PSMutationLoop {
         [Parameter(Mandatory)] [AllowEmptyCollection()] [System.Collections.Generic.List[object]]$Sink,
         [string]$SandboxRoot,
         [switch]$Quiet,
-        [switch]$RecordAllKillers
+        [switch]$RecordAllKillers,
+        # Wall-clock budget for the whole loop. Zero disables it. Checked BETWEEN mutants, so it
+        # can never interrupt one mid-flight and leave a spliced file behind.
+        [int]$DeadlineSeconds = 0
     )
+    $runClock = [System.Diagnostics.Stopwatch]::StartNew()
     $results = $Sink
     # One read per FILE, not per mutant. A file contributes many candidates -- 125 for the largest
     # in this repo's sibling -- and every one of them re-read the same unchanged bytes to splice
@@ -372,8 +435,10 @@ function Invoke-PSMutationLoop {
         $content = $originals[$c.File]
         $mutated = Set-PSMutationText -Content $content -Candidate $c
         $covering = $TestsByFile.ContainsKey($c.File) ? $TestsByFile[$c.File] : $AllTests
+        $mutantClock = [System.Diagnostics.Stopwatch]::StartNew()
         $verdict = Invoke-PSMutant -Candidate $c -MutatedContent $mutated -OriginalContent $content `
             -CoveringTests $covering -TimeoutSeconds $TimeoutSeconds -RecordAllKillers:$RecordAllKillers
+        $mutantClock.Stop()
         $display = ConvertFrom-PSMutationSandboxPath -Path $c.File -SandboxRoot $SandboxRoot
         $row = [pscustomobject]@{
             # Function is carried so an equivalence declaration can address this mutant by
@@ -399,6 +464,17 @@ function Invoke-PSMutationLoop {
         $results.Add($row)
         Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationProgressLine -Index $n `
                 -Total $Candidates.Count -Result $row -DisplayFile (Split-Path $display -Leaf))
+
+        # Both checks sit BETWEEN mutants, after the row is in the sink. A run stopped here has
+        # already recorded everything it finished, so the partial report written on the way out
+        # says how far it got -- which is the difference between a diagnosable stop and the
+        # zero-byte report an overnight hang leaves.
+        $stalled = Get-PSMutationStalledFault -MutantSeconds $mutantClock.Elapsed.TotalSeconds `
+            -TimeoutSeconds $TimeoutSeconds -Index $n -Total $Candidates.Count
+        if ($stalled) { throw $stalled }
+        $overBudget = Get-PSMutationOverBudgetFault -ElapsedSeconds $runClock.Elapsed.TotalSeconds `
+            -DeadlineSeconds $DeadlineSeconds -Index $n -Total $Candidates.Count
+        if ($overBudget) { throw $overBudget }
     }
     return , $results.ToArray()
 }
