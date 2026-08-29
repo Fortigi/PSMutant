@@ -99,6 +99,25 @@ function Test-PSMutationRecheckCompatible {
         if (-not $prior) { $reasons.Add("$name is not in the report (it was added to the mutate set since)") }
         elseif ($prior -ne $SourceHashes[$name]) { $reasons.Add("$name changed since the report was written") }
     }
+    # THE OTHER DIRECTION, and it was missing. The loop above walks the CURRENT mutate set, so it
+    # sees a file added and a file changed -- but a file the REPORT covers and this run does not is
+    # invisible, because nothing asks about it. A narrower config therefore accepted a wider
+    # report: measured, a config mutating a.ps1 accepted a report over a.ps1 and b.ps1 with zero
+    # reasons.
+    #
+    # That is not a cosmetic mismatch. -RecheckFrom takes the report's whole survivor list, so the
+    # run would evaluate b.ps1's survivors with no tests mapped for b.ps1 and no b.ps1 in the
+    # sandbox, then report "N of M previous survivors now killed" over a set it never had. A
+    # confident answer about the wrong thing is the failure this module is organised around.
+    #
+    # It is reachable without any concurrency at all -- a scoped local run and a full run sharing
+    # the default reportPath is enough -- which is why it is checked here rather than left to the
+    # advice that concurrent runs should choose distinct paths.
+    foreach ($name in (@($Report.sourceHashes.PSObject.Properties.Name) | Where-Object { $_ } | Sort-Object)) {
+        if (-not $SourceHashes.ContainsKey($name)) {
+            $reasons.Add("$name is in the report but not in this run's mutate set -- the report describes a different run, and its survivors for that file cannot be re-evaluated here")
+        }
+    }
     return , $reasons.ToArray()
 }
 

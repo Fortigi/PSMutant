@@ -578,3 +578,48 @@ Describe 'the recheck report path does not grow a suffix per round' {
         Get-PSMutationRecheckReportPath -ReportPath 'reports/run.json' | Should-NotBeLikeString 'reports/run.json'
     }
 }
+
+Describe 'the recheck gate refuses a report about a different run' {
+    BeforeAll {
+        function script:Rep([hashtable]$Hashes) {
+            $h = [ordered]@{}
+            foreach ($k in ($Hashes.Keys | Sort-Object)) { $h[$k] = $Hashes[$k] }
+            [pscustomobject]@{ schemaVersion = 1; operators = @('BinaryOperator'); sourceHashes = [pscustomobject]$h }
+        }
+    }
+
+    It 'refuses a report covering a file this run does not mutate' {
+        # The hole this closes. The gate walked only the CURRENT mutate set, so a file added or
+        # changed was caught and a file the REPORT covers but this run does not was invisible.
+        # -RecheckFrom takes the report's whole survivor list, so the run would evaluate that
+        # file's survivors with no tests mapped for it and no copy in the sandbox, then report
+        # "N of M previous survivors now killed" over a set it never had.
+        $reasons = Test-PSMutationRecheckCompatible -Report (script:Rep @{ 'src/a.ps1' = 'h1'; 'src/b.ps1' = 'h2' }) `
+            -SourceHashes @{ 'src/a.ps1' = 'h1' } -Operators @('BinaryOperator')
+        ($reasons -join ' ') | Should-MatchString 'src/b.ps1 is in the report but not in this run'
+    }
+
+    It 'accepts a report describing exactly this run' {
+        # The pairing. Without it, a gate that refused everything would satisfy the test above --
+        # and this gate's whole job is to let a legitimate recheck through.
+        $reasons = Test-PSMutationRecheckCompatible -Report (script:Rep @{ 'src/a.ps1' = 'h1' }) `
+            -SourceHashes @{ 'src/a.ps1' = 'h1' } -Operators @('BinaryOperator')
+        @($reasons).Count | Should-Be 0
+    }
+
+    It 'still catches the direction it always caught' {
+        # Both directions now, asserted together so neither can be lost while the other passes.
+        $reasons = Test-PSMutationRecheckCompatible -Report (script:Rep @{ 'src/a.ps1' = 'h1' }) `
+            -SourceHashes @{ 'src/a.ps1' = 'h1'; 'src/b.ps1' = 'h2' } -Operators @('BinaryOperator')
+        ($reasons -join ' ') | Should-MatchString 'src/b.ps1 is not in the report'
+    }
+
+    It 'names every file that does not belong, not just the first' {
+        # A reader fixes a config, and being told about one file at a time turns one edit into
+        # several runs of something that takes minutes.
+        $reasons = Test-PSMutationRecheckCompatible -Report (script:Rep @{ 'src/a.ps1' = 'h1'; 'src/b.ps1' = 'h2'; 'src/c.ps1' = 'h3' }) `
+            -SourceHashes @{ 'src/a.ps1' = 'h1' } -Operators @('BinaryOperator')
+        ($reasons -join ' ') | Should-MatchString 'src/b.ps1'
+        ($reasons -join ' ') | Should-MatchString 'src/c.ps1'
+    }
+}
