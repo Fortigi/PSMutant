@@ -231,7 +231,7 @@ function Invoke-PSMutation {
         $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $allKillers -MappedTests $t.AllTests
         $band = Get-PSMutationScoreBand -Cfg $cfg
         $summaryLines = Get-PSMutationSummaryLine -Summary $summary -Results $results `
-            -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents -Exclusion $exclusion
+            -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents -Exclusion $exclusion -PerFile (Get-PSMutationPerFileScore -Results $results -Equivalents $cfg.equivalents)
         Write-PSMutationOutput -Quiet:$Quiet -Lines $summaryLines
         # Annotations are NOT passed -Quiet, and that is the point rather than an oversight.
         # -Quiet exists so a CI log is not filled with several hundred progress lines, and CI is

@@ -215,6 +215,43 @@ function Get-PSMutationScore {
     }
 }
 
+function Get-PSMutationPerFileScore {
+    <#
+    .SYNOPSIS
+        The same score, folded per source file instead of over the whole run.
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
+        $Equivalents
+    )
+    # A blend hides the thing you most want to know. One strong file carries a weak one, and the
+    # gate passes on an average nobody would accept per file -- observed on a consumer at ~89%
+    # blended while individual files ranged from 39.6% to 100%.
+    #
+    # Grouping, not new arithmetic: Get-PSMutationScore is a fold over the rows it is handed and
+    # says so, deliberately, because asking a whole-run question inside it would make the answer
+    # wrong for any subset. Calling it per group is what that design was for.
+    $out = [System.Collections.Generic.List[object]]::new()
+    foreach ($group in ($Results | Group-Object -Property File)) {
+        $s = Get-PSMutationScore -Results @($group.Group) -Equivalents $Equivalents
+        $out.Add([pscustomobject]@{
+                file = $group.Name
+                score = $s.Score
+                killed = $s.Killed
+                survived = $s.Survived
+                total = $s.Total
+                timedOut = $s.TimedOut
+                declaredEquivalent = $s.DeclaredEquivalent
+            })
+    }
+    # WEAKEST FIRST, then by name. The point of the breakdown is the file that needs attention,
+    # so it should not be somewhere in the middle of an alphabetical list; the name is the
+    # tie-break so the order is deterministic and a diff of two reports is readable.
+    return , @($out | Sort-Object -Property @{ Expression = 'score' }, @{ Expression = 'file' })
+}
+
 function Get-PSMutationFailureReason {
     # WHY a run failed, as a value rather than as prose: 'None', 'StaleEquivalents' or
     # 'BelowThreshold'. Pure.
@@ -426,6 +463,13 @@ function Write-PSMutationReport {
         # The disclosure that makes every KilledBy list readable. Always written, so a consumer
         # never has to guess which shape it is holding.
         killersComplete = $KillersComplete
+        # Beside the blended score, not instead of it. The blend is what the thresholds gate on;
+        # this is what says whether the blend is hiding anything.
+        # ASSIGNED, not wrapped in @( ). The function returns `, @(...)` so an empty run yields an
+        # empty array rather than $null -- and wrapping that in @( ) gives a one-element array
+        # holding the array, which serialises as [[...]]. Measured: @($r).Count is 1 for a
+        # two-file run, and $r.Count is 2.
+        perFile = Get-PSMutationPerFileScore -Results $Results -Equivalents $Equivalents
         skippedAsUncovered = [int]$Exclusion.Skipped
         filesWithNoMutants = ConvertTo-PSMutationList -Value $Exclusion.FilesWithNoMutants
         # Recorded beside the other disclosures: a run that took twice as long for a reason
@@ -583,6 +627,35 @@ function Get-PSMutationTimeoutNote {
     return "   [$TimedOut killed on the clock, not by a failing test]"
 }
 
+function Get-PSMutationWeakFileLine {
+    <#
+    .SYNOPSIS
+        The console lines for files scoring below the good band, if any.
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile,
+        [Parameter(Mandatory)] [double]$High,
+        [Parameter(Mandatory)] [double]$Low
+    )
+    $lines = [System.Collections.Generic.List[object]]::new()
+    # ONE file mutated means the blend IS that file, so a breakdown would restate the score under
+    # a heading that implies it found something.
+    if (@($PerFile).Count -lt 2) { return , $lines.ToArray() }
+    $weak = @($PerFile | Where-Object { $_.score -lt $High })
+    if ($weak.Count -eq 0) { return , $lines.ToArray() }
+    $lines.Add((New-PSMutationLine -Role 'Muted' `
+                -Text ("  {0} of {1} file(s) score below {2}%:" -f $weak.Count, @($PerFile).Count, $High)))
+    foreach ($f in $weak) {
+        # Coloured by the same bands as the headline, so a file in the red reads as red even when
+        # the blend it sits inside is green -- which is the whole point of showing it.
+        $lines.Add((New-PSMutationLine -Role (Get-PSMutationScoreRole -Score $f.score -High $High -Low $Low) `
+                    -Text ("    {0,6}%  {1}  ({2} killed / {3})" -f $f.score, $f.file, $f.killed, $f.total)))
+    }
+    return , $lines.ToArray()
+}
+
 function Get-PSMutationSummaryLine {
     # What a completed run should say: the score, what qualified it, and the survivors to
     # go add assertions for. Pure -- it decides, Write-PSMutationOutput emits.
@@ -598,7 +671,8 @@ function Get-PSMutationSummaryLine {
         [Parameter(Mandatory)] [double]$Low,
         [string]$ReportPath,
         $Equivalents,
-        $Exclusion
+        $Exclusion,
+        [AllowEmptyCollection()] [object[]]$PerFile = @()
     )
     $lines = [System.Collections.Generic.List[object]]::new()
     $lines.Add((New-PSMutationLine -Role 'Rule' -Text "`n----------------------------------------------"))
@@ -613,6 +687,19 @@ function Get-PSMutationSummaryLine {
     # than the config asked for. This one removes far more mutants than declarations do.
     $skipLine = Get-PSMutationExclusionLine -Exclusion $Exclusion
     if ($skipLine) { $lines.Add((New-PSMutationLine -Role 'Muted' -Text $skipLine)) }
+    # The files the blend is hiding. Only those BELOW the good band, and only when more than one
+    # file was mutated: a blended score is an average, so a strong file carries a weak one and the
+    # gate passes on a number nobody would accept per file. Listing every file instead would put
+    # the one that needs attention somewhere in a wall of 100%s.
+    # ASSIGNED first, not wrapped in @( ). The callee returns `, $array` so an empty result stays
+    # an empty array rather than $null; wrapping THAT in @( ) yields a one-element array holding
+    # the array, and AddRange then adds the array itself as a line. The same trap the perFile
+    # field hit one function away, in the opposite direction.
+    # No emptiness guard: AddRange over an empty collection is already a no-op, so an `if` here
+    # would be a branch whose two arms do the same thing -- self-mutation reported all three of
+    # its mutants as survivors before it was removed.
+    $weakLines = Get-PSMutationWeakFileLine -PerFile $PerFile -High $High -Low $Low
+    $lines.AddRange([object[]]$weakLines)
     # Said next to the score, not buried in the report: a 100% built on a dozen declared
     # equivalents is a different claim from a 100% that killed everything.
     if ($Summary.DeclaredEquivalent -gt 0) {

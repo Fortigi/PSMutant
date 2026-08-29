@@ -1261,6 +1261,26 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   decision now lives inside the script, so the string always mentions `SkipRemainingOnFailure` and
   a substring check would pass whatever the condition said.
 
+- **`return , $array` preserves an empty result and breaks every caller that wraps or pipes it.**
+  The idiom is right -- without the comma an empty collection unrolls to `$null`, and `null` and
+  `[]` are different answers in JSON. What it costs is that `@(Get-Func)` yields a ONE-element
+  array holding the array. Measured: `$r = Get-Func; $r.Count` is 2, while `@(Get-Func).Count` is 1.
+
+  So a caller **assigns**, never wraps and never pipes. Both mistakes were made in one change: the
+  report field would have serialised `perFile` as `[[...]]`, and an `AddRange` two functions away
+  added the whole array as a single console line, which surfaced as "cannot bind Role because it is
+  an empty string" at the very end of an otherwise successful run.
+
+- **A per-file score is grouping, not new arithmetic, and `Get-PSMutationScore` was built for it.**
+  That function is a fold over the rows it is handed and says so: asking a whole-run question inside
+  it -- like whether a declaration matched nothing -- would make the answer wrong for any subset,
+  and per-file scores were named in its comments as the first thing that would hit that. Calling it
+  per group is what the design was for, so a declared equivalent still excuses only its own file.
+
+  The console prints only files BELOW the good band, and only when more than one file was mutated.
+  Listing every file puts the one needing attention inside a wall of 100%s; printing a breakdown for
+  a single file restates the headline under a heading implying it found something.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked

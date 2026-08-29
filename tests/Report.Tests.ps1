@@ -226,6 +226,33 @@ Describe 'Get-PSMutationSummaryLine' {
         ($lines.Text -join "`n") | Should-BeLikeString '*r.json*'
     }
 
+    It 'folds the weak-file breakdown into the summary it hands back' {
+        # The WIRING, not the formatter -- Get-PSMutationWeakFileLine is asserted on its own
+        # above. What this covers is that the summary actually includes those lines: the two
+        # were connected by an AddRange that no test reached, so the breakdown could have been
+        # computed and dropped on the floor with every other assertion still passing.
+        $perFile = @(
+            [pscustomobject]@{ file = 'src/strong.ps1'; score = 100; killed = 90; total = 90 }
+            [pscustomobject]@{ file = 'src/weak.ps1'; score = 39.6; killed = 19; total = 48 }
+        )
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $script:mixed) `
+            -Results $script:mixed -High 85 -Low 70 -ReportPath 'r.json' -PerFile $perFile
+        ($lines.Text -join "`n") | Should-BeLikeString '*1 of 2 file(s) score below 85*'
+        ($lines.Text -join "`n") | Should-BeLikeString '*src/weak.ps1*'
+    }
+
+    It 'leaves the summary unchanged when no file is weak' {
+        # The pairing this repo requires of every "X appears" assertion: without it, a breakdown
+        # that printed unconditionally would satisfy the test above just as well.
+        $perFile = @(
+            [pscustomobject]@{ file = 'src/a.ps1'; score = 100; killed = 9; total = 9 }
+            [pscustomobject]@{ file = 'src/b.ps1'; score = 90; killed = 9; total = 10 }
+        )
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $script:mixed) `
+            -Results $script:mixed -High 85 -Low 70 -ReportPath 'r.json' -PerFile $perFile
+        ($lines.Text -join "`n") | Should-NotBeLikeString '*score below*'
+    }
+
     It 'carries the survivor row as data, not only as text' {
         # What makes this a seam rather than a rename. A renderer emitting CI annotations
         # needs the file and line as values; if the only copy is inside the formatted
@@ -477,7 +504,7 @@ Describe 'the contract a consumer actually depends on' {
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
                     'mutationScore', 'total', 'killed', 'survived', 'timedOut',
-                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'skippedAsUncovered', 'filesWithNoMutants',
+                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'perFile', 'skippedAsUncovered', 'filesWithNoMutants',
                     'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
@@ -1221,5 +1248,133 @@ Describe 'the report discloses whether its killer lists are complete' {
         # produce an empty list and read as "every test pulls its weight".
         $doc = script:WriteKb -Complete $true -Rows $script:kbRows -Mapped @('a.Tests.ps1', 'b.Tests.ps1', 'c.Tests.ps1')
         @($doc.testsWithoutKills) | Should-BeCollection @('b.Tests.ps1', 'c.Tests.ps1')
+    }
+}
+
+Describe 'Get-PSMutationPerFileScore' {
+    BeforeAll {
+        function script:Row([string]$File, [string]$Status, [int]$Id) {
+            [pscustomobject]@{ Id = $Id; Function = 'f'; File = $File; Line = $Id
+                Operator = 'BinaryOperator'; Description = "d$Id"; Status = $Status; KilledBy = @() }
+        }
+        # strong.ps1 is perfect; weak.ps1 is half. Blended that is 75%, which is the number a
+        # single score would report and the reason this function exists.
+        $script:mixed = @(
+            (script:Row -File 'strong.ps1' -Status 'Killed' -Id 1), (script:Row -File 'strong.ps1' -Status 'Killed' -Id 2)
+            (script:Row -File 'weak.ps1' -Status 'Killed' -Id 3), (script:Row -File 'weak.ps1' -Status 'Survived' -Id 4)
+        )
+    }
+
+    It 'scores each file on its own rows, not on the blend' {
+        $byFile = @{}
+        foreach ($f in (Get-PSMutationPerFileScore -Results $script:mixed)) { $byFile[$f.file] = $f }
+        $byFile['strong.ps1'].score | Should-Be 100
+        $byFile['weak.ps1'].score | Should-Be 50
+        # And the blend really is the number that hides it, so the fixture discriminates.
+        (Get-PSMutationScore -Results $script:mixed).Score | Should-Be 75
+    }
+
+    It 'puts the WEAKEST file first' {
+        # The order is the feature. A file needing attention at the bottom of an alphabetical
+        # list is a file nobody reads about -- and 'strong' sorts before 'weak' alphabetically,
+        # so this fixture tells the two orderings apart.
+        $ordered = Get-PSMutationPerFileScore -Results $script:mixed
+        $ordered[0].file | Should-Be 'weak.ps1'
+    }
+
+    It 'carries the counts the score was computed over' {
+        # A percentage with no denominator cannot be read: 50% of two mutants and 50% of two
+        # hundred are different facts about a file.
+        $all = Get-PSMutationPerFileScore -Results $script:mixed
+        $weak = @($all | Where-Object file -eq 'weak.ps1')[0]
+        $weak.killed | Should-Be 1
+        $weak.survived | Should-Be 1
+        $weak.total | Should-Be 2
+    }
+
+    It 'honours a declared equivalent for the file it belongs to' {
+        # The reason Get-PSMutationScore was written as a per-SET fold: a declaration belongs to
+        # one file, and a per-file call must not count it against another. Here the declaration
+        # excuses weak.ps1's survivor, taking it to 100% while strong.ps1 is untouched.
+        $eq = [pscustomobject]@{ 'weak.ps1:f:d4' = 'excused for the test' }
+        $byFile = @{}
+        foreach ($f in (Get-PSMutationPerFileScore -Results $script:mixed -Equivalents $eq)) { $byFile[$f.file] = $f }
+        $byFile['weak.ps1'].declaredEquivalent | Should-Be 1
+        $byFile['weak.ps1'].score | Should-Be 100
+        $byFile['strong.ps1'].declaredEquivalent | Should-Be 0
+    }
+
+    It 'returns an empty collection for a run with no rows' {
+        # A run whose files contribute no covered candidates is legitimate, and must produce an
+        # empty list rather than $null -- the report serialises this straight into JSON, where
+        # null and [] are different answers.
+        $empty = Get-PSMutationPerFileScore -Results @()
+        Should-BeFalse -Actual ($null -eq $empty) -Because 'null and [] are different in JSON'
+        $empty.Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationWeakFileLine' {
+    BeforeAll {
+        $script:pf = @(
+            [pscustomobject]@{ file = 'src/strong.ps1'; score = 100; killed = 90; total = 90 }
+            [pscustomobject]@{ file = 'src/weak.ps1'; score = 39.6; killed = 19; total = 48 }
+            [pscustomobject]@{ file = 'src/middling.ps1'; score = 78; killed = 39; total = 50 }
+        )
+    }
+
+    It 'names only the files below the good band' {
+        $lines = Get-PSMutationWeakFileLine -PerFile $script:pf -High 85 -Low 70
+        $text = ($lines | ForEach-Object { $_.Text }) -join ' '
+        $text | Should-MatchString 'weak.ps1'
+        $text | Should-MatchString 'middling.ps1'
+        # The strong file is the noise this filter exists to remove: listing every file puts the
+        # one needing attention somewhere inside a wall of 100%s.
+        $text | Should-NotMatchString 'strong.ps1'
+    }
+
+    It 'colours a weak file by its OWN score, not the run''s' {
+        # The whole point. A file in the red must read as red even when the blend it sits inside
+        # is green -- reusing the headline's role would paint it with the average that hides it.
+        $lines = Get-PSMutationWeakFileLine -PerFile $script:pf -High 85 -Low 70
+        @($lines | Where-Object { $_.Text -match 'weak\.ps1' })[0].Role | Should-Be 'Bad'
+        @($lines | Where-Object { $_.Text -match 'middling\.ps1' })[0].Role | Should-Be 'Warn'
+    }
+
+    It 'treats a file exactly AT the band as good, not weak' {
+        # The boundary, and the direction matters: `high` is the score at which a file is
+        # considered good, so a file sitting exactly on it must not be listed as needing
+        # attention. Without this case the comparison can be relaxed to -le and nothing notices,
+        # because no other fixture scores exactly the threshold.
+        $atBand = @(
+            [pscustomobject]@{ file = 'src/exactly.ps1'; score = 85; killed = 85; total = 100 }
+            [pscustomobject]@{ file = 'src/under.ps1'; score = 84.9; killed = 849; total = 1000 }
+        )
+        $lines = Get-PSMutationWeakFileLine -PerFile $atBand -High 85 -Low 70
+        $text = ($lines | ForEach-Object { $_.Text }) -join ' '
+        $text | Should-NotMatchString 'exactly\.ps1'
+        # The neighbour a hair below IS listed, so this cannot pass by printing nothing at all.
+        $text | Should-MatchString 'under\.ps1'
+    }
+
+    It 'says nothing when every file is at or above the band' {
+        $lines = Get-PSMutationWeakFileLine -PerFile @($script:pf[0], $script:pf[0]) -High 85 -Low 70
+        $lines.Count | Should-Be 0
+    }
+
+    It 'says nothing when only ONE file was mutated' {
+        # With one file the blend IS that file, so a breakdown would restate the headline under a
+        # heading implying it found something. Asserted with a file that WOULD otherwise qualify,
+        # so this cannot pass for the reason the test above passes.
+        $lines = Get-PSMutationWeakFileLine -PerFile @($script:pf[1]) -High 85 -Low 70
+        $lines.Count | Should-Be 0
+    }
+
+    It 'returns an empty collection rather than $null' {
+        # The caller does AddRange on it. A $null there is a binding failure at the end of a run
+        # that otherwise succeeded, which is the worst possible moment for one.
+        $lines = Get-PSMutationWeakFileLine -PerFile @() -High 85 -Low 70
+        Should-BeFalse -Actual ($null -eq $lines)
+        $lines.Count | Should-Be 0
     }
 }
