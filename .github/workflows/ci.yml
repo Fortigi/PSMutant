@@ -157,7 +157,11 @@ jobs:
 
       - name: Release consistency (ModuleVersion, CHANGELOG, ReleaseNotes)
         shell: pwsh
-        run: ./tools/Test-PSMutantRelease.ps1 | Out-Null
+        # -CheckGallery here and not locally: the question is whether this version has already
+        # shipped, which the working tree cannot answer. It runs in ci.yml rather than only at
+        # publish time because the drift is introduced by the PR that merges work without
+        # bumping the version, and failing there is cheaper than failing at the tag.
+        run: ./tools/Test-PSMutantRelease.ps1 -CheckGallery | Out-Null
 
       - name: Lint (PSScriptAnalyzer)
         shell: pwsh

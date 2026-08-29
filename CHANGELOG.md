@@ -1,5 +1,7 @@
 ## [Unreleased]
 
+## [0.5.0] - 2026-08-29
+
 ### For consumers
 
 **An interrupted run now writes a partial report instead of nothing.** Ctrl-C, a cancelled CI job

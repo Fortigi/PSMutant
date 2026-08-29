@@ -508,3 +508,36 @@ Describe 'Get-PSMutantRewrittenManifest' {
             Should-Throw -ExceptionMessage '*no single-quoted ReleaseNotes value*'
     }
 }
+
+Describe 'Get-PSMutantStaleVersionFault' {
+    It 'says nothing when the version has not shipped' -ForEach @(
+        @{ Unreleased = $true }
+        @{ Unreleased = $false }
+    ) {
+        # A version not yet on the gallery is a release being prepared, whatever is under
+        # Unreleased. Both cases, because a rule that fired on one of them would be a rule
+        # about Unreleased wearing a gallery check's name.
+        Should-BeNull -Actual (Get-PSMutantStaleVersionFault -ModuleVersion '9.9.9' `
+                -IsPublished $false -HasUnreleasedContent $Unreleased)
+    }
+
+    It 'says nothing when a published version has no unreleased work above it' {
+        # The resting state between releases, and by far the most common one. A gate that
+        # failed here would fail on every ordinary day and be muted within a week.
+        Should-BeNull -Actual (Get-PSMutantStaleVersionFault -ModuleVersion '0.4.0' `
+                -IsPublished $true -HasUnreleasedContent $false)
+    }
+
+    It 'reports the pair: shipped AND carrying unreleased work' {
+        # The real 0.3.1: main carried two merged bug fixes at a version already on the
+        # gallery, and every other gate passed, because they all ask whether the manifest,
+        # the newest heading and ReleaseNotes agree with EACH OTHER.
+        $fault = Get-PSMutantStaleVersionFault -ModuleVersion '0.3.1' `
+            -IsPublished $true -HasUnreleasedContent $true
+        $fault | Should-MatchString 'already on the gallery'
+        # The consequence, not just the condition: the message has to say why it matters, or
+        # the obvious fix looks like deleting the Unreleased heading.
+        $fault | Should-MatchString 'different code'
+        $fault | Should-MatchString '0.3.1'
+    }
+}

@@ -31,6 +31,9 @@
 [CmdletBinding()]
 param(
     [switch]$Apply,
+    # Off by default so the gate runs offline. CI passes it: the question it answers -- has this
+    # version already shipped? -- cannot be answered from the working tree at all.
+    [switch]$CheckGallery,
     [string]$ManifestPath,
     [string]$ChangelogPath
 )
@@ -260,6 +263,36 @@ function Test-PSMutantUnreleasedEmpty {
     return [string]::IsNullOrWhiteSpace($body)
 }
 
+function Get-PSMutantStaleVersionFault {
+    <#
+    .SYNOPSIS
+        The fault, if any, when main claims a version that has already shipped.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$ModuleVersion,
+        [Parameter(Mandatory)] [bool]$IsPublished,
+        [Parameter(Mandatory)] [bool]$HasUnreleasedContent
+    )
+    # The question left open after ModuleVersion, the newest heading and ReleaseNotes all agree:
+    # has the version they agree on already shipped? It once had -- main carried two merged bug
+    # fixes at 0.3.1 while 0.3.1 was on the gallery, and every gate passed. The three answer
+    # "are these internally consistent", never "does this version already exist somewhere the
+    # world can install it".
+    #
+    # BOTH conditions, because either alone is a normal state. Sitting on a published version
+    # with nothing unreleased is exactly where a repo rests between releases; unreleased work
+    # under a version not yet shipped is a release being prepared. Only the pair is wrong, and a
+    # rule that fired on either would fail on every ordinary day and be muted within a week.
+    if (-not $IsPublished) { return $null }
+    if (-not $HasUnreleasedContent) { return $null }
+    return ("ModuleVersion $ModuleVersion is already on the gallery, and CHANGELOG.md has " +
+        "unreleased entries above it. Anyone installing $ModuleVersion gets different code " +
+        "depending on whether they took it from the gallery or from this repository. Bump " +
+        "ModuleVersion and give the entries their own heading.")
+}
+
 function Get-PSMutantRewrittenManifest {
     <#
     .SYNOPSIS
@@ -398,6 +431,22 @@ if ($MyInvocation.InvocationName -ne '.') {
     }
     $fault = Get-PSMutantManifestNotesFault -Actual $actual -Expected $bounded
     if ($fault) { throw $fault }
+
+    if ($CheckGallery) {
+        # REACHABILITY FIRST, and separately. Find-Module returns nothing both when a version was
+        # never published and when the gallery cannot be reached, and treating those alike is how
+        # a gate stops being able to fail: every offline run would report "not published" and
+        # pass, most loudly on the CI box where nobody is watching.
+        $any = @(Find-Module PSMutant -ErrorAction SilentlyContinue)
+        if ($any.Count -eq 0) {
+            throw ('Release gate cannot reach the PowerShell Gallery, so it cannot tell whether ' +
+                "$version has already shipped. Refusing rather than assuming it has not.")
+        }
+        $published = @(Find-Module PSMutant -RequiredVersion $version -ErrorAction SilentlyContinue).Count -gt 0
+        $stale = Get-PSMutantStaleVersionFault -ModuleVersion $version -IsPublished $published `
+            -HasUnreleasedContent (-not (Test-PSMutantUnreleasedEmpty -Changelog $changelog))
+        if ($stale) { throw $stale }
+    }
 
     # Emitted so the publish workflow can put them on the staged manifest, instead of anyone
     # maintaining a second copy of the same prose by hand.
