@@ -62,8 +62,16 @@ Write-Host "  all $($shipped.Count) shipped src file(s) are dot-sourced"
 # Both are public artifacts: the config schema defines the format consumers write, and the
 # report schema defines what they read back. Neither is any use left behind in the repo,
 # and the staging Copy-Item is the one place that decides whether they travel.
-foreach ($name in 'report.schema.json', 'config.schema.json') {
-    $schemaPath = Join-Path $stage 'schemas' -AdditionalChildPath 'v1', $name
+# Keyed by VERSION per schema, not one version for both. They move independently -- the report
+# format reached v2 while the config format is still v1 -- and a single hardcoded 'v1' here would
+# have kept passing against a directory the module no longer resolves.
+# v1/report.schema.json is listed although nothing writes v1 any more: an archived report says
+# schemaVersion 1, and the only schema that can validate it is the one shipped beside it. Dropping
+# it would make every report written before v2 unvalidatable by anyone who upgraded.
+foreach ($s in @{ Version = 'v2'; Name = 'report.schema.json' }, @{ Version = 'v1'; Name = 'report.schema.json' },
+    @{ Version = 'v1'; Name = 'config.schema.json' }) {
+    $name = "$($s.Version)/$($s.Name)"
+    $schemaPath = Join-Path $stage 'schemas' -AdditionalChildPath $s.Version, $s.Name
     if (-not (Test-Path $schemaPath)) {
         throw "The package does not ship schemas/$name. Add it to the staging Copy-Item in publish.yml."
     }
@@ -72,7 +80,7 @@ foreach ($name in 'report.schema.json', 'config.schema.json') {
     try { Get-Content $schemaPath -Raw | ConvertFrom-Json | Out-Null }
     catch { throw "The shipped schemas/$name is not valid JSON: $($_.Exception.Message)" }
 }
-Write-Host '  both schemas ship and parse'
+Write-Host '  every shipped schema version parses'
 
 # --- 3 and 4. import in a FRESH process and run a real mutation --------------------------
 # A fresh process, because importing here would be indistinguishable from the repo copy

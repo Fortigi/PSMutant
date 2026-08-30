@@ -505,7 +505,7 @@ Describe 'the contract a consumer actually depends on' {
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
                     'mutationScore', 'total', 'killed', 'survived', 'timedOut',
                     'declaredEquivalent', 'filesMutated', 'killersComplete', 'testFiles', 'perFile', 'skippedAsUncovered', 'filesWithNoMutants',
-                    'filesWithoutTestMapping',
+                    'filesWithNoCandidate', 'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
         }
@@ -965,7 +965,7 @@ Describe 'New-PSMutationProvenance' {
         # The point of the field: #20 had to reconcile two report shapes by hand, and #4
         # will have to tell a merged report from a plain one. Sniffing for keys is what a
         # version number exists to replace.
-        $script:prov.schemaVersion | Should-Be 1
+        $script:prov.schemaVersion | Should-Be 2
     }
 
     It 'attributes the report to a module build' {
@@ -1011,7 +1011,7 @@ Describe 'the provenance a report carries' {
             $prov = New-PSMutationProvenance -ModuleVersion '9.9.9' -BaselineSeconds 1 -TotalSeconds 2 -PerMutantTimeoutSeconds 15
             Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Provenance $prov | Out-Null
             $json = Get-Content $out -Raw | ConvertFrom-Json
-            $json.schemaVersion            | Should-Be 1
+            $json.schemaVersion            | Should-Be 2
             $json.producedBy.version       | Should-Be '9.9.9'
             $json.durations.totalSeconds   | Should-Be 2
             # Asserted against the FILE, not the parsed object: ConvertFrom-Json recognises
@@ -1164,7 +1164,7 @@ Describe 'Write-PSMutationPartialReport' {
         # somebody opens the file.
         $doc = script:WritePartial
         $doc.generatedFrom          | Should-Be 'PSMutant'
-        $doc.schemaVersion          | Should-Be 1
+        $doc.schemaVersion          | Should-Be 2
         $doc.producedBy.module      | Should-Be 'PSMutant'
         $doc.durations.totalSeconds | Should-Be 2
     }
@@ -1460,6 +1460,9 @@ Describe 'Get-PSMutationUpdatedSurvivorBaseline' {
             [pscustomobject]@{ File = 'src/a.ps1'; Function = 'A'; Description = 'd'; Status = 'Survived'; Line = 1 }
             [pscustomobject]@{ File = 'src/a.ps1'; Function = 'K'; Description = 'd'; Status = 'Killed'; Line = 2 }
         )
+        # ONE, while a report says two. The baseline is a different document with its own
+        # format, and it did not change here -- sharing the report's constant would have
+        # re-versioned a file nothing about which moved.
         $b.schemaVersion | Should-Be 1
         @($b.survivors.PSObject.Properties.Name) | Should-BeCollection @('src/a.ps1:A:d', 'src/z.ps1:Z:d')
     }
@@ -1588,5 +1591,270 @@ Describe 'Invoke-PSMutationSurvivorBaseline' {
             -MutateFiles @('src/a.ps1') -Quiet
         @($f).Count | Should-Be 1
         $f[0] | Should-MatchString 'src/a.ps1:F:d'
+    }
+}
+
+Describe 'the two vacuous-100% sets' {
+    BeforeAll {
+        $script:vac = @(
+            [pscustomobject]@{ File = 'src/ok.ps1'; Produced = 10; Kept = 8; ByOperator = [ordered]@{} }
+            [pscustomobject]@{ File = 'src/uncovered.ps1'; Produced = 6; Kept = 0; ByOperator = [ordered]@{} }
+            [pscustomobject]@{ File = 'src/nothing.ps1'; Produced = 0; Kept = 0; ByOperator = [ordered]@{} }
+        )
+    }
+
+    It 'separates a file coverage emptied from one that produced nothing' {
+        # Both contribute 0 of 0 and both look identical in a score. They are named apart
+        # because the fixes differ: one is a test to write, the other is a file that does not
+        # belong in `mutate` or holds nothing this module can mutate.
+        Get-PSMutationFileEmptiedByCoverage -PerFile $script:vac | Should-Be 'src/uncovered.ps1'
+        Get-PSMutationFileWithNoCandidate -PerFile $script:vac | Should-Be 'src/nothing.ps1'
+    }
+
+    It 'reports both on the exclusion object' {
+        $ex = Get-PSMutationCoverageExclusion -PerFile $script:vac
+        $ex.Skipped | Should-Be 8
+        $ex.FilesWithNoMutants | Should-Be 'src/uncovered.ps1'
+        $ex.FilesWithNoCandidate | Should-Be 'src/nothing.ps1'
+    }
+
+    It 'returns empty arrays rather than $null when neither applies' {
+        # A caller iterating these must not have to tell "none" from "the module stopped
+        # reporting it".
+        $ex = Get-PSMutationCoverageExclusion -PerFile @([pscustomobject]@{ File = 'a'; Produced = 3; Kept = 3 })
+        $ex.FilesWithNoMutants.Count | Should-Be 0
+        $ex.FilesWithNoCandidate.Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationExclusionLine with a no-candidate file' {
+    It 'reports a no-candidate file even when the coverage filter skipped NOTHING' {
+        # The arm that used to be unreachable. A file no operator matched contributes 0 of 0
+        # whether or not coveredLinesOnly is set, so a caveat that only printed alongside a
+        # coverage skip stayed silent on exactly the config that filters nothing.
+        $ex = Get-PSMutationCoverageExclusion -PerFile @(
+            [pscustomobject]@{ File = 'src/nothing.ps1'; Produced = 0; Kept = 0 })
+        Get-PSMutationExclusionLine -Exclusion $ex | Should-MatchString 'src/nothing\.ps1'
+    }
+
+    It 'still says nothing when there is nothing to say' {
+        $ex = Get-PSMutationCoverageExclusion -PerFile @(
+            [pscustomobject]@{ File = 'src/ok.ps1'; Produced = 3; Kept = 3 })
+        Get-PSMutationExclusionLine -Exclusion $ex | Should-Be ''
+    }
+
+    It 'reports BOTH when the filter skipped some and a file produced none' {
+        $ex = Get-PSMutationCoverageExclusion -PerFile @(
+            [pscustomobject]@{ File = 'src/partly.ps1'; Produced = 6; Kept = 2 }
+            [pscustomobject]@{ File = 'src/nothing.ps1'; Produced = 0; Kept = 0 })
+        $line = Get-PSMutationExclusionLine -Exclusion $ex
+        $line | Should-MatchString '4 mutant\(s\) skipped as uncovered'
+        $line | Should-MatchString 'src/nothing\.ps1'
+    }
+}
+
+Describe 'Get-PSMutationMutantListLine' {
+    BeforeAll {
+        $script:listRows = @(
+            [pscustomobject]@{ File = 'src/ok.ps1'; Produced = 10; Kept = 8
+                ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 7; Kept = 6 }; BooleanLiteral = @{ Produced = 3; Kept = 2 } }
+            }
+            [pscustomobject]@{ File = 'src/nothing.ps1'; Produced = 0; Kept = 0; ByOperator = [ordered]@{} }
+        )
+    }
+
+    It 'names every file and every operator that matched it' {
+        $text = (Get-PSMutationMutantListLine -PerFile $script:listRows -CoveredLinesOnly $true -BaselineMeasured $true |
+                ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString 'src/ok\.ps1'
+        $text | Should-MatchString 'src/nothing\.ps1'
+        $text | Should-MatchString 'BinaryOperator'
+        $text | Should-MatchString 'BooleanLiteral'
+    }
+
+    It 'totals what a run WOULD evaluate, which is the kept count' {
+        # Not the produced count. The number a reader acts on is the one the loop would pay for.
+        $text = (Get-PSMutationMutantListLine -PerFile $script:listRows -CoveredLinesOnly $true -BaselineMeasured $true |
+                ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString '8 mutant\(s\) over 2 file\(s\)'
+    }
+
+    It 'names a file that produced NO candidate as a vacuous 100%' {
+        $text = (Get-PSMutationMutantListLine -PerFile $script:listRows -CoveredLinesOnly $true -BaselineMeasured $true |
+                ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString 'vacuous 100%'
+    }
+
+    It 'names a file the coverage filter emptied, separately' {
+        $rows = @([pscustomobject]@{ File = 'src/uncovered.ps1'; Produced = 6; Kept = 0
+                ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 6; Kept = 0 } }
+            })
+        $text = (Get-PSMutationMutantListLine -PerFile $rows -CoveredLinesOnly $true -BaselineMeasured $true |
+                ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString 'removed by the coverage filter'
+        $text | Should-MatchString 'src/uncovered\.ps1'
+        # And NOT the other caveat: the file produced six, so nothing about it is vacuous in
+        # the sense the sibling line means.
+        $text | Should-NotMatchString 'vacuous 100%'
+    }
+
+    It 'warns a reader when the counts are PRE-filter' {
+        # coveredLinesOnly set but no coverage measured: the counts are an upper bound on what
+        # a run would evaluate, and a preview that let them read as filtered would be the
+        # confident wrong number this module exists to stop.
+        $text = (Get-PSMutationMutantListLine -PerFile $script:listRows -CoveredLinesOnly $true -BaselineMeasured $false |
+                ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString 'coverage was not measured'
+    }
+
+    It 'says nothing about coverage when the config does not filter on it' {
+        # Not merely absent from the caveat: the per-file rows must not show a "-> n covered"
+        # column for a filter that is off, or a reader sees a filter that did not run.
+        $text = (Get-PSMutationMutantListLine -PerFile $script:listRows -CoveredLinesOnly $false -BaselineMeasured $false |
+                ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-NotMatchString 'coverage was not measured'
+        $text | Should-NotMatchString 'covered'
+    }
+
+    It 'flags a zero-candidate file with a role a renderer can see' {
+        # The count is the thing to scan for, so the line carries it in the role rather than
+        # only in the prose -- an annotation renderer has no prose to read.
+        $lines = Get-PSMutationMutantListLine -PerFile $script:listRows -CoveredLinesOnly $false -BaselineMeasured $false
+        $zero = @($lines | Where-Object { $_.Text -match 'src/nothing\.ps1' })
+        $zero[0].Role | Should-Be 'Warn'
+    }
+}
+
+Describe 'ConvertTo-PSMutationListResult' {
+    BeforeAll {
+        $script:resRows = @(
+            [pscustomobject]@{ File = 'src/ok.ps1'; Produced = 10; Kept = 8; ByOperator = [ordered]@{} }
+            [pscustomobject]@{ File = 'src/uncovered.ps1'; Produced = 6; Kept = 0; ByOperator = [ordered]@{} }
+            [pscustomobject]@{ File = 'src/nothing.ps1'; Produced = 0; Kept = 0; ByOperator = [ordered]@{} }
+        )
+    }
+
+    It 'shares Mode, ExitCode and FailureReason with the other run shapes' {
+        # So a caller that did not choose the mode can still branch on the result.
+        $r = ConvertTo-PSMutationListResult -PerFile $script:resRows -BaselineMeasured $true
+        $r.Mode | Should-Be 'List'
+        $r.ExitCode | Should-Be 0
+        $r.FailureReason | Should-Be 'None'
+    }
+
+    It 'never manufactures a verdict, whatever it found' {
+        # It evaluated nothing. A preview that failed the build would be a verdict over a set
+        # nobody measured -- the same reason a recheck applies no thresholds. The two sets are
+        # handed over by name so a caller can fail its OWN build on them.
+        $r = ConvertTo-PSMutationListResult -PerFile $script:resRows -BaselineMeasured $true
+        $r.ExitCode | Should-Be 0
+        $r.FilesWithNoCandidate | Should-Be 'src/nothing.ps1'
+        $r.FilesEmptiedByCoverage | Should-Be 'src/uncovered.ps1'
+    }
+
+    It 'counts produced and would-be-evaluated separately' {
+        $r = ConvertTo-PSMutationListResult -PerFile $script:resRows -BaselineMeasured $true
+        $r.Files | Should-Be 3
+        $r.Produced | Should-Be 16
+        $r.Total | Should-Be 8
+    }
+
+    It 'carries whether Total is filtered or an upper bound' {
+        # A caller cannot re-derive this from the numbers.
+        (ConvertTo-PSMutationListResult -PerFile $script:resRows -BaselineMeasured $false).BaselineMeasured | Should-BeFalse
+        (ConvertTo-PSMutationListResult -PerFile $script:resRows -BaselineMeasured $true).BaselineMeasured | Should-BeTrue
+    }
+
+    It 'returns zeroes and empty arrays for an empty mutate set' {
+        $r = ConvertTo-PSMutationListResult -PerFile @() -BaselineMeasured $true
+        $r.Files | Should-Be 0
+        $r.Total | Should-Be 0
+        $r.FilesWithNoCandidate.Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationExclusionLine boundaries' {
+    It 'says nothing for a $null exclusion' {
+        # $null reaches here from callers that do no filtering at all. For them "nothing was
+        # skipped" is the true answer, and the empty string is what says it -- not $null, which
+        # a caller appending to a summary would render as a blank line it did not ask for.
+        Get-PSMutationExclusionLine -Exclusion $null | Should-Be ''
+    }
+
+    It 'does NOT append the no-candidate note when every file produced something' {
+        # The false arm of the second caveat, on the path where the FIRST one fired. Without it
+        # the guard can be forced true -- appending a note naming zero files -- and forced to
+        # -ge, which fires on the same zero. Both survived until this existed.
+        $ex = Get-PSMutationCoverageExclusion -PerFile @(
+            [pscustomobject]@{ File = 'src/partly.ps1'; Produced = 6; Kept = 2 })
+        $line = Get-PSMutationExclusionLine -Exclusion $ex
+        $line | Should-MatchString '4 mutant\(s\) skipped as uncovered'
+        $line | Should-NotMatchString 'vacuous 100%'
+    }
+}
+
+Describe 'Get-PSMutationMutantListRow' {
+    BeforeAll {
+        $script:row = [pscustomobject]@{ File = 'src/ok.ps1'; Produced = 10; Kept = 8
+            ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 7; Kept = 6 } }
+        }
+    }
+
+    It 'shows the covered count on both the file row and its operator rows' {
+        # EXACT text on both. The two tails are separate expressions a few lines apart, so an
+        # assertion on one certifies nothing about the other -- and each survived its own mutant
+        # while the other was asserted.
+        $t = @(Get-PSMutationMutantListRow -Row $script:row -ShowCovered $true | ForEach-Object { $_.Text })
+        $t[0] | Should-Be '     10 src/ok.ps1 -> 8 covered'
+        $t[1] | Should-Be '      7     BinaryOperator -> 6'
+    }
+
+    It 'omits it on both when coverage was not measured' {
+        $t = @(Get-PSMutationMutantListRow -Row $script:row -ShowCovered $false | ForEach-Object { $_.Text })
+        $t[0] | Should-Be '     10 src/ok.ps1'
+        $t[1] | Should-Be '      7     BinaryOperator'
+    }
+
+    It 'marks a file with candidates as Detail, not Warn' {
+        # The other arm of the role decision. Only the zero row was asserted, so forcing the
+        # condition true -- every file a warning -- passed.
+        (Get-PSMutationMutantListRow -Row $script:row -ShowCovered $false)[0].Role | Should-Be 'Detail'
+    }
+
+    It 'marks a file the filter emptied as Warn' {
+        $zero = [pscustomobject]@{ File = 'src/none.ps1'; Produced = 4; Kept = 0; ByOperator = [ordered]@{} }
+        (Get-PSMutationMutantListRow -Row $zero -ShowCovered $true)[0].Role | Should-Be 'Warn'
+    }
+}
+
+Describe 'Get-PSMutationMutantListLine, the covered column' {
+    BeforeAll {
+        $script:one = @([pscustomobject]@{ File = 'src/ok.ps1'; Produced = 10; Kept = 8
+                ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 10; Kept = 8 } }
+            })
+    }
+
+    It 'shows the covered column only when the config filters AND coverage was measured' -ForEach @(
+        @{ Covered = $true; Measured = $true; Shown = $true }
+        @{ Covered = $true; Measured = $false; Shown = $false }
+        # The row that tells -and from -or. Measured without a filter to apply is a real state --
+        # a full run of a config with coveredLinesOnly off -- and there is nothing to show for it.
+        @{ Covered = $false; Measured = $true; Shown = $false }
+        @{ Covered = $false; Measured = $false; Shown = $false }
+    ) {
+        $text = (Get-PSMutationMutantListLine -PerFile $script:one -CoveredLinesOnly $Covered -BaselineMeasured $Measured |
+                ForEach-Object { $_.Text }) -join "`n"
+        # The COLUMN, not the word: the pre-filter caveat says "coveredLinesOnly is set but
+        # coverage was not measured", so a bare 'covered' matches the very row that must not
+        # show a column.
+        if ($Shown) { $text | Should-MatchString '8 covered' } else { $text | Should-NotMatchString '-> 8 covered' }
+    }
+
+    It 'names no emptied file when the filter emptied none' {
+        # The false arm of the last caveat. Forced true it names zero files; forced to -ge it
+        # fires on the same zero. Neither had a test.
+        $text = (Get-PSMutationMutantListLine -PerFile $script:one -CoveredLinesOnly $true -BaselineMeasured $true |
+                ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-NotMatchString 'removed by the coverage filter'
     }
 }

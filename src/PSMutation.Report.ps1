@@ -9,7 +9,7 @@
 # when one is added, which readers survive. It exists so a consumer can branch on a number
 # instead of sniffing for keys -- this module already ships two report shapes, and anything
 # reconciling them has otherwise to recognise each by which keys it happens to carry.
-$script:PSMutationSchemaVersion = 1
+$script:PSMutationSchemaVersion = 2
 
 function New-PSMutationProvenance {
     # How a report was produced: which schema, which build, when, and how long it took.
@@ -464,7 +464,7 @@ function Get-PSMutationExitCode {
 function Get-PSMutationCoverageExclusion {
     <#
     .SYNOPSIS
-        What the coverage filter removed, so the score can answer for it.
+        What is NOT behind the score: what coverage removed, and what never existed.
     #>
     [OutputType([pscustomobject])]
     [CmdletBinding()]
@@ -473,15 +473,23 @@ function Get-PSMutationCoverageExclusion {
     # see how many mutants were excluded cannot tell a real 100% from an excluded one. The
     # coverage filter removes far more than declarations do and said nothing at all.
     $skipped = 0
-    $silent = [System.Collections.Generic.List[string]]::new()
-    foreach ($f in $PerFile) {
-        $skipped += $f.Produced - $f.Kept
-        # The dangerous case, and the reason this is file-level and not just a count: the file
-        # is still listed in `mutate` and still hashed into the report, so nothing downstream
-        # can tell it contributed nothing. A per-file score would read 0/0 and look fine.
-        if ($f.Produced -gt 0 -and $f.Kept -eq 0) { $silent.Add($f.File) }
+    foreach ($f in $PerFile) { $skipped += $f.Produced - $f.Kept }
+    # FilesWithNoMutants is file-level and not just a count for the dangerous case: the file is
+    # still listed in `mutate` and still hashed into the report, so nothing downstream can tell
+    # it contributed nothing. A per-file score would read 0/0 and look fine.
+    #
+    # Shared with the -ListOnly preview rather than spelled again here. This predicate had three
+    # copies at one point, which is two more than can be kept in step.
+    return [pscustomobject]@{
+        Skipped              = $skipped
+        FilesWithNoMutants   = Get-PSMutationFileEmptiedByCoverage -PerFile $PerFile
+        # The OTHER vacuous 100%, and it used to be reported by nobody. This field's sibling is
+        # named for what coverage removed; a file no operator matched was removed by nothing and
+        # so appeared in neither -- while the schema's description of the sibling claimed to
+        # cover it. Two sets, because the fixes differ: one is a test to write, the other is a
+        # file that does not belong in `mutate` or holds nothing this module can mutate.
+        FilesWithNoCandidate = Get-PSMutationFileWithNoCandidate -PerFile $PerFile
     }
-    return [pscustomobject]@{ Skipped = $skipped; FilesWithNoMutants = $silent.ToArray() }
 }
 
 function Get-PSMutationExclusionLine {
@@ -496,14 +504,188 @@ function Get-PSMutationExclusionLine {
     # nothing-excluded arm runs on every clean run and is asserted by none.
     # $null reaches here from the direct callers in tests, which do no filtering at all --
     # for them "nothing was skipped" is the true answer, not a guess.
-    if ($null -eq $Exclusion -or $Exclusion.Skipped -eq 0) { return '' }
+    if ($null -eq $Exclusion) { return '' }
+    # Reported even when NOTHING was skipped, because it does not depend on the filter at all:
+    # a file no operator matched contributes 0 of 0 whether or not coveredLinesOnly is set, and
+    # a caveat that only prints alongside a coverage skip would stay silent on exactly the
+    # config that filters nothing.
+    if ($Exclusion.Skipped -eq 0) {
+        return ($Exclusion.FilesWithNoCandidate.Count -gt 0) ? (Get-PSMutationNoCandidateNote -Exclusion $Exclusion) : ''
+    }
     $line = "  $($Exclusion.Skipped) mutant(s) skipped as uncovered"
     if ($Exclusion.FilesWithNoMutants.Count -gt 0) {
         # Named, not counted. "2 files contributed none" sends the reader looking; the names
         # are what turn it into an action.
         $line += " ($($Exclusion.FilesWithNoMutants.Count) file(s) contributed none: $($Exclusion.FilesWithNoMutants -join ', '))"
     }
+    if ($Exclusion.FilesWithNoCandidate.Count -gt 0) { $line += "`n" + (Get-PSMutationNoCandidateNote -Exclusion $Exclusion) }
     return $line
+}
+
+function Get-PSMutationNoCandidateNote {
+    <#
+    .SYNOPSIS
+        The caveat naming the mutate files no operator matched, which score a vacuous 100%.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Exclusion)
+    # Named, not counted, for the reason its sibling gives: a count sends the reader looking,
+    # the names are what turn it into an action.
+    return ("  {0} file(s) in mutate produced NO candidate, so each scores a vacuous 100%: {1}" -f `
+            $Exclusion.FilesWithNoCandidate.Count, ($Exclusion.FilesWithNoCandidate -join ', '))
+}
+
+function Get-PSMutationFileWithNoCandidate {
+    <#
+    .SYNOPSIS
+        The mutate files no operator matched at all, which score a vacuous 100%.
+    .DESCRIPTION
+        Deliberately NOT the same set as Get-PSMutationCoverageExclusion's FilesWithNoMutants,
+        which is `produced but none kept` -- coverage removed them, and the fix is a test. This
+        is `produced nothing`, and no test can change it: either the file holds nothing this
+        module knows how to mutate, or it is the wrong file in `mutate`.
+
+        Both look identical in a score -- the file is still listed, still hashed into the report,
+        and contributes 0 of 0 -- which is why they are named apart rather than counted together.
+    #>
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile)
+    return [string[]]@($PerFile | Where-Object { $_.Produced -eq 0 } | ForEach-Object { $_.File })
+}
+
+function Get-PSMutationFileEmptiedByCoverage {
+    <#
+    .SYNOPSIS
+        The mutate files that produced candidates and kept none, because coverage removed them.
+    .DESCRIPTION
+        The sibling of Get-PSMutationFileWithNoCandidate and the other half of the vacuous 100%.
+        Three callers -- the exclusion collector, the preview lines and the preview result -- and
+        one answer between them. It WAS spelled out three times: copies drift, and a copy nothing
+        asserts survives its own mutant.
+    #>
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile)
+    return [string[]]@($PerFile | Where-Object { $_.Produced -gt 0 -and $_.Kept -eq 0 } | ForEach-Object { $_.File })
+}
+
+function Get-PSMutationMutantListRow {
+    <#
+    .SYNOPSIS
+        One file's block in the preview: its own count, then a row per operator that matched it.
+    .PARAMETER ShowCovered
+        Whether to show the post-filter count. Decided ONCE by the caller: computed here it
+        would be the same two-term condition evaluated on every row of every file, and the two
+        terms mean different things -- "the config filters" and "we measured what it filters on".
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Row,
+        [Parameter(Mandatory)] [bool]$ShowCovered
+    )
+    $lines = [System.Collections.Generic.List[object]]::new()
+    # The count leads, because the file name is the long part of the line and a reader scanning
+    # for a zero should not have to read past it. A zero is a Warn so a renderer that has no
+    # prose to read can still find it.
+    $role = $Row.Kept -eq 0 ? 'Warn' : 'Detail'
+    $tail = $ShowCovered ? (" -> {0} covered" -f $Row.Kept) : ''
+    $lines.Add((New-PSMutationLine -Role $role -Text ("  {0,5} {1}{2}" -f $Row.Produced, $Row.File, $tail)))
+    foreach ($op in $Row.ByOperator.Keys) {
+        $opRow = $Row.ByOperator[$op]
+        $opTail = $ShowCovered ? (" -> {0}" -f $opRow.Kept) : ''
+        $lines.Add((New-PSMutationLine -Role 'Muted' -Text ("  {0,5}     {1}{2}" -f $opRow.Produced, $op, $opTail)))
+    }
+    return , $lines.ToArray()
+}
+
+function Get-PSMutationMutantListLine {
+    <#
+    .SYNOPSIS
+        The -ListOnly rendering: what this config would mutate, per file and per operator.
+    .DESCRIPTION
+        A projection of the selection, exactly as the summary is a projection of the results --
+        so a preview and a run cannot disagree about the set, because the set is the same object.
+
+    .PARAMETER PerFile
+        Select-PSMutationCandidate's per-file tally, with repo-relative paths: File, Produced,
+        Kept, ByOperator.
+
+    .PARAMETER CoveredLinesOnly
+        Whether the config filters candidates to covered lines.
+
+    .PARAMETER BaselineMeasured
+        Whether coverage was actually measured for this preview. False means Kept is the
+        unfiltered count and says so, rather than reading as a filtered one.
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile,
+        [Parameter(Mandatory)] [bool]$CoveredLinesOnly,
+        [Parameter(Mandatory)] [bool]$BaselineMeasured
+    )
+    $showCovered = $CoveredLinesOnly -and $BaselineMeasured
+    $lines = [System.Collections.Generic.List[object]]::new()
+    $lines.Add((New-PSMutationLine -Role 'Banner' -Text "`nPSMutant - mutant set preview. No mutant is evaluated and no score is produced.`n"))
+    foreach ($f in $PerFile) { $lines.AddRange((Get-PSMutationMutantListRow -Row $f -ShowCovered $showCovered)) }
+    $lines.Add((New-PSMutationLine -Role 'Rule' -Text ''))
+    $total = ($PerFile | Measure-Object -Property Kept -Sum).Sum
+    $lines.Add((New-PSMutationLine -Role 'Detail' -Text ("  {0} mutant(s) over {1} file(s) would be evaluated." -f [int]$total, @($PerFile).Count)))
+    # Said only when it is true, and it is the reason the number above may be the wrong one to
+    # act on: a preview that skipped coverage is an UPPER bound on what a run would evaluate.
+    if ($CoveredLinesOnly -and -not $BaselineMeasured) {
+        $lines.Add((New-PSMutationLine -Role 'Muted' -Text '  coveredLinesOnly is set but coverage was not measured, so these are pre-filter counts.'))
+    }
+    # The same two sets a full run now discloses, from the same two functions. A preview that
+    # computed them its own way would be a second answer to the question the mode exists for.
+    $barren = Get-PSMutationFileWithNoCandidate -PerFile $PerFile
+    if ($barren.Count -gt 0) {
+        $lines.Add((New-PSMutationLine -Role 'Warn' -Text ("  {0} file(s) produced NO candidate, so each scores a vacuous 100%: {1}" -f `
+                        $barren.Count, ($barren -join ', '))))
+    }
+    $emptied = Get-PSMutationFileEmptiedByCoverage -PerFile $PerFile
+    if ($emptied.Count -gt 0) {
+        $lines.Add((New-PSMutationLine -Role 'Warn' -Text ("  {0} file(s) had every candidate removed by the coverage filter, so the mapped suite reaches none of their lines: {1}" -f `
+                        $emptied.Count, ($emptied -join ', '))))
+    }
+    return , $lines.ToArray()
+}
+
+function ConvertTo-PSMutationListResult {
+    <#
+    .SYNOPSIS
+        The public shape of a -ListOnly preview: the same Mode/ExitCode/FailureReason as a run.
+    .DESCRIPTION
+        ExitCode is ALWAYS 0 and FailureReason always 'None'. A preview evaluates nothing, so it
+        has no verdict to give and must not manufacture one -- the same reason a recheck applies
+        no thresholds. What it reports instead is the two vacuous-100% sets, named, so a caller
+        scripting over this can fail its own build on them.
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile,
+        [Parameter(Mandatory)] [bool]$BaselineMeasured
+    )
+    return [pscustomobject]@{
+        Mode                   = 'List'
+        Files                  = @($PerFile).Count
+        Produced               = [int](($PerFile | Measure-Object -Property Produced -Sum).Sum)
+        Total                  = [int](($PerFile | Measure-Object -Property Kept -Sum).Sum)
+        # Always arrays, never $null, for the reason ConvertTo-PSMutationRunResult gives about
+        # StaleEquivalents: a caller iterating this must not have to tell "none" from "the
+        # module stopped reporting it".
+        FilesWithNoCandidate   = Get-PSMutationFileWithNoCandidate -PerFile $PerFile
+        FilesEmptiedByCoverage = Get-PSMutationFileEmptiedByCoverage -PerFile $PerFile
+        # Whether Total is a filtered count or an upper bound. Carried rather than inferred,
+        # because a caller cannot re-derive it from the numbers.
+        BaselineMeasured       = $BaselineMeasured
+        ExitCode               = 0
+        FailureReason          = 'None'
+    }
 }
 
 function Save-PSMutationReportDocument {
@@ -652,6 +834,7 @@ function Write-PSMutationReport {
         perFile = Get-PSMutationPerFileScore -Results $Results -Equivalents $Equivalents
         skippedAsUncovered = [int]$Exclusion.Skipped
         filesWithNoMutants = ConvertTo-PSMutationList -Value $Exclusion.FilesWithNoMutants
+        filesWithNoCandidate = ConvertTo-PSMutationList -Value $Exclusion.FilesWithNoCandidate
         # Recorded beside the other disclosures: a run that took twice as long for a reason
         # nobody chose should say so somewhere a CI job can read afterwards.
         filesWithoutTestMapping = ConvertTo-PSMutationList -Value $UnmappedFiles

@@ -1,136 +1,101 @@
-## [Unreleased]
+## [0.5.0] - 2026-08-30
 
 ### For consumers
 
-**`-Verbose` now tells you something, and progress goes to the stream built for it.** Everything the
-module said went to one of two places: the run result, or the host. There was no verbose stream at
-all -- so re-running with `-Verbose`, the usual first move when a minutes-long run behaves oddly,
-produced nothing.
-
-A run now traces its **resolutions** on the verbose stream: the sandbox it chose, the subtrees it
-copied, the files that actually resolved into the mutate set, the Pester it found, and which
-covering suite each mutate file mapped to. Narration while a run works, and the first four
-questions when it does not.
-
-**`-Verbose` and `-Quiet` are independent.** `-Quiet` silences the console log; it does not silence
-a stream the console was not showing. `-Quiet -Verbose` gives a run's trace with none of the
-per-mutant chatter, which is what a consumer collecting logs alongside its own output wants.
-
-Per-mutant progress is also reported through **`Write-Progress`**, beside the existing lines rather
-than instead of them. It cannot be captured, redirected or accidentally swallowed by a caller
-collecting output, and a non-interactive host renders none of it -- so it needs no `-Quiet` arm, and
-a local run keeps the signal that tells a hung run from a slow one even with the log off.
-
-The single-`Write-Host` design is unchanged: roles now name a **stream** as well as a colour, and
-the renderer routes on it. `Warn` deliberately stays on the host -- it is also the score band for a
-middling result, and routing it to `Write-Warning` would turn an ordinary score into a warning on
-every run that is not green.
-
-**`-MergeIntoBaseline` folds a recheck's verdicts back into the report it came from.** The loop was
-full run, write tests, recheck, write tests, recheck -- then a **full run again** purely to refresh
-a baseline the rechecks had already made stale.
+**Preview what a config would mutate, with `-ListOnly`.** There was no way to answer "what would
+this actually mutate?" short of a run that takes minutes -- which matters most when you are least
+sure: adding a file to `mutate`, changing `operators`, or wondering why a file scores 100%.
 
 ```powershell
-Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json -MergeIntoBaseline
+Invoke-PSMutation -ConfigFile ./c.json -ListOnly
 ```
 
-Each mutant the recheck re-evaluated takes its new verdict; everything else keeps the status it had.
-The report is **re-scored** from the merged rows, because new verdicts under the old number is a
-self-contradictory document and the number is what everything downstream reads.
+Per file, per operator, and how many candidates survive the `coveredLinesOnly` filter, then it
+stops. It exists for the **vacuous 100%**: a file that produces no candidates is still listed in
+`mutate`, still hashed into the report, contributes 0 of 0, and in a blended score is invisible.
+Two files in a real repository were in that state. It names them, and separately the files whose
+candidates coverage removed entirely: two faults with two different fixes, one a test to write, the
+other a file that does not belong in `mutate`. `FilesWithNoCandidate` and `FilesEmptiedByCoverage`
+travel on the result, so a repository that considers either a mistake can fail its own build on it.
+`ExitCode` is always 0 -- a preview evaluated nothing, so it has no verdict, the same reason a
+recheck applies no thresholds. It refuses `-RecheckFrom`, `-UpdateBaseline` and `-MergeIntoBaseline`.
 
-**It refuses rather than merging when the carried-over statuses may be stale.** A merge is only
-sound if the test changes were additive: adding a test cannot revive a mutant the baseline killed,
-but editing or deleting one can, and a recheck never looks at it. Reports now record each mapped
-test file's size, and the merge refuses when one **shrank**, disappeared, or when the baseline
-predates the field.
-
-Length rather than a hash, deliberately. Hash equality asks "unchanged", which would refuse the
-very loop this serves -- writing a test changes the file it lives in. Length is
-necessary-but-not-sufficient in the safe direction: a file that shrank lost something, while one
-that grew may still have had an assertion weakened in the same edit. So growth **permits** the merge
-rather than certifying it, and the merged report always records `mergedFrom` and
-`carriedOverUnverified` -- the caveat lives in the artifact, not only in the console.
-
-**A run that stops running now stops, instead of looking like a slow one.** Every mutant was
-bounded and the run was not. Observed: a run suspended overnight -- 875 minutes of wall clock
-against 333 seconds of CPU, a zero-byte report, and a sandbox its live pid kept the sweep from ever
-reclaiming. There is no output until a run completes, so a hang and a long run are the same
-observation and the honest response to both is to wait.
-
-Two bounds, checked **between** mutants so neither can interrupt one mid-flight and leave a spliced
-file behind:
-
-- **A stalled mutant.** The child is given a budget and its handle waited on for exactly that, so a
-  mutant whose wall clock is far past it did not run slowly -- the thing that should have stopped it
-  never fired, which is what a sleeping machine does to a wait handle. This fires within one mutant
-  and names that cause.
-- **A whole-run budget**, as the backstop. Defaults to the baseline plus twice one per-mutant budget
-  for every mutant, which no correct run can exceed. `runTimeoutSeconds` overrides it; **0 disables
-  it**, for a harness that already kills wedged jobs.
-
-Both stop by throwing, so the partial-report path writes what the run got through. A hang used to
-leave a zero-byte file; it now leaves evidence of how far it reached.
-
-The limits are deliberately loose -- four times a mutant's budget with a thirty-second floor, and
-twice the theoretical run time. A bound that fires on a slow-but-working run is one that gets
-switched off within a week.
-
-**A recheck now refuses a report that describes a different run.** The compatibility gate compared
-source hashes and the operator set, walking the files this run mutates -- so a file *added* to the
-mutate set was caught, and a file that *changed* was caught, but a file the **report** covers and
-this run does not was invisible. Measured: a config mutating `a.ps1` accepted a report over `a.ps1`
-and `b.ps1` with zero reasons.
-
-`-RecheckFrom` takes the report's whole survivor list, so that run would evaluate `b.ps1`'s
-survivors with no tests mapped for `b.ps1` and no `b.ps1` in the sandbox, then report "N of M
-previous survivors now killed" over a set it never had. A confident answer about the wrong thing is
-the failure this tool exists to prevent, so the gate now checks both directions and names every file
-that does not belong.
-
-It needs no concurrency to reach: a scoped local run and a full run sharing the default
-`reportPath` is enough. Two runs racing on that path remain last-writer-wins -- losing a report is
-visible, and the silent half was the recheck reading it.
-
-**A committed list of accepted survivors, so the gate is adoptable on code that is already red.**
-Point `survivorBaseline` at a path and its presence enables the gate; `-UpdateBaseline` writes it.
+**A committed list of accepted survivors, so the gate is adoptable on code already red.** Point
+`survivorBaseline` at a path; its presence enables the gate, and `-UpdateBaseline` writes it.
 
 ```json
 { "mutate": ["src/a.ps1"], "survivorBaseline": ".psmutant-survivors.json" }
 ```
 
 A survivor **not** in the list fails the run. So does a listed one that has been **fixed** (leave it
-and the mutant can start surviving again later with nothing failing), one whose **file has left
-`mutate`** (dropping a file hides its survivors rather than fixing them), and one that is **also**
-declared equivalent (the declaration already excuses it, so the entry permits nothing).
+and the mutant can start surviving again with nothing failing), one whose **file has left `mutate`**
+(dropping a file hides its survivors rather than fixing them), and one that is **also** declared
+equivalent (the declaration already excuses it).
 
-This is **debt, not equivalence**, and the two are deliberately separate. `equivalents` means *this
-mutant cannot be killed* and carries a written argument the gate checks; a baseline entry means
-*this mutant is not killed yet* and is generated. Without the second, the only way to record known
-debt was to overstate it as equivalence, which corrupts the one list whose entries are supposed to
-be claims somebody made.
+This is **debt, not equivalence**. `equivalents` means *this mutant cannot be killed* and carries a
+written argument the gate checks; a baseline entry means *this mutant is not killed yet* and is
+generated. Without the second, recording known debt meant overstating it as equivalence, which
+corrupts the one list whose entries are claims somebody made.
 
-`-UpdateBaseline` writes **even on a failing run**, which is what adoption needs: accepting today's
-mess on a red codebase is the whole point, and refusing would make the first run impossible. It
-cannot launder a regression, because the next run compares against what was recorded.
-
-**Why a set of mutants and not a per-file score.** A score is a ratio and its denominator moves with
-the source. Measured against a file baselined at 90%: adding ten well-tested lines reads as an
-improvement that must be re-recorded, deleting ten well-tested lines reads as a regression to 88.9%
-though nothing got worse, and only under-tested new code is a true finding -- three of four ordinary
-edits fail, one of them usefully. Baselining the surviving mutants behaves the way PHPStan's and
-Psalm's baselines do, for the same reason: they list specific findings rather than a percentage.
-
+A set of mutants rather than a per-file score, because a score is a ratio whose denominator moves
+with the source: measured against a file baselined at 90%, three of four ordinary edits fail the
+ratchet and only one usefully. PHPStan and Psalm baseline specific findings for the same reason.
 Entries are keyed by file, function and change -- not by line -- so one survives a line moving.
+`-UpdateBaseline` writes **even on a failing run**, which is what adoption needs; it cannot launder
+a regression, because the next run compares against what was recorded.
 
-A baseline that exists but cannot be parsed fails the run; a MISSING one is the ordinary first run
-and means every survivor is new.
+**`-MergeIntoBaseline` folds a recheck's verdicts back into the report it came from.** The loop was
+full run, write tests, recheck, recheck -- then a **full run again** purely to refresh a baseline
+the rechecks had already made stale.
+
+```powershell
+Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json -MergeIntoBaseline
+```
+
+Each re-evaluated mutant takes its new verdict; everything else keeps the status it had, and the
+report is **re-scored** from the merged rows -- new verdicts under the old number is a
+self-contradictory document.
+
+**It refuses rather than merging when the carried-over statuses may be stale.** A merge is sound
+only for additive test changes: adding a test cannot revive a mutant the baseline killed, editing or
+deleting one can, and a recheck never looks at it. Reports record each mapped test file's size, and
+the merge refuses when one **shrank**, disappeared, or when the baseline predates the field. Length
+rather than a hash, deliberately: hash equality asks "unchanged", which would refuse the very loop
+this serves. A file that grew may still have had an assertion weakened, so growth **permits** the
+merge rather than certifying it, and the merged report records `mergedFrom` and
+`carriedOverUnverified` -- the caveat lives in the artifact, not the console.
+
+**A recheck refuses a report that describes a different run.** The compatibility gate walked the
+files *this* run mutates, so a file the **report** covers and the run does not was invisible --
+measured, a config mutating `a.ps1` accepted a report over `a.ps1` and `b.ps1` with zero reasons.
+`-RecheckFrom` takes the report's whole survivor list, so that run would evaluate `b.ps1`'s
+survivors with nothing mapped and no `b.ps1` in the sandbox, then report "N of M previous survivors
+now killed" over a set it never had. A scoped run and a full run sharing the default `reportPath` is
+enough to reach it.
+
+**A run that stops running now stops, instead of looking like a slow one.** Every mutant was bounded
+and the run was not. Observed: a run suspended overnight -- 875 minutes of wall clock against 333
+seconds of CPU, a zero-byte report, and a sandbox its live pid kept the sweep from reclaiming.
+
+Two bounds, checked **between** mutants so neither interrupts one mid-flight:
+
+- **A stalled mutant.** The child gets a budget and its handle is waited on for exactly that, so a
+  mutant far past it did not run slowly -- what should have stopped it never fired, which is what a
+  sleeping machine does to a wait handle. Fires within one mutant and names that cause.
+- **A whole-run budget** as the backstop: the baseline plus twice one per-mutant budget for every
+  mutant, which no correct run can exceed. `runTimeoutSeconds` overrides it; **0 disables it**.
+
+Both stop by throwing, so the partial-report path writes what the run got through. The limits are
+loose on purpose: a bound that fires on a slow-but-working run gets switched off within a week.
+
+**An interrupted run writes a partial report instead of nothing.** Ctrl-C, a cancelled CI job or a
+killed agent used to discard everything. The document is marked `"mode": "Partial"` with `evaluated`
+and `planned`, and is **counts, never a score** -- the loop evaluates in candidate order, so an
+interrupted run has seen whichever files sort earliest, not a sample of anything.
 
 **The report and the console break the score down per file.** A blended score is an average, so a
 strong file carries a weak one and the gate passes on a number nobody would accept per file --
-observed on a real consumer at roughly 89% blended while individual files ranged from 39.6% to 100%.
-
-`perFile` in the report carries each file's score with the counts it was computed over, weakest
-first. The console prints only the files below the good band, coloured by their **own** score:
+observed on a real consumer at ~89% blended while files ranged from 39.6% to 100%.
 
 ```
   2 of 3 file(s) score below 85%:
@@ -138,34 +103,111 @@ first. The console prints only the files below the good band, coloured by their 
         78%  src/middling.ps1  (39 killed / 50)
 ```
 
-It says nothing when one file was mutated -- the blend is that file -- and nothing when every file
-is at or above the band, so a clean run reads exactly as it did before.
+`perFile` in the report carries each file's score with the counts it was computed over, weakest
+first. The console prints only files below the good band, and nothing at all when one file was
+mutated or every file is at or above it -- so a clean run reads exactly as before.
 
-This is grouping, not new arithmetic: `Get-PSMutationScore` was written as a fold over the rows it
-is handed, deliberately, so that asking a whole-run question inside it could not make the answer
-wrong for a subset. A declared equivalent still excuses only its own file's mutant.
+**The report says which tests killed each mutant.** Every row carries `KilledBy`. By default the
+lists are **truncated** -- a mutant's suite stops at the first failure, since once one test has
+noticed, every test after it is work that cannot change the verdict. Truncated is not "exactly one":
+over 118 killed mutants the default still reported several killers for 20 of them, so a row's length
+says nothing about how many tests really kill it. Read `killersComplete`.
 
-**The report says which tests killed each mutant.** Every row carries `KilledBy`, and the run says
-whether those lists are complete.
+Set **`recordAllKillers: true`** to record every killer. It costs the early stop -- 50s becomes 73s
+on those 118 mutants, about 46% more, for identical verdicts -- so it buys data, not accuracy, and
+is opt-in. With it on the report also names **`testsWithoutKills`**: mapped test files that killed
+nothing. That field is **absent** on a default run and the schema refuses it there, because under
+the early stop a test that would have killed but was skipped looks exactly like one that cannot.
 
-By default they are **truncated**, and that is not a compromise -- it is what the run already knows.
-A mutant's suite stops at the first failure, because once one test has noticed, every test after it
-is work whose outcome cannot change the verdict. Truncated is not the same as "exactly one":
-measured over 118 killed mutants, the default still reported several killers for 20 of them, so the
-length of a row's list says nothing about how many tests really kill it. Read `killersComplete`.
+**`-Verbose` now tells you something, and progress goes to the stream built for it.** Everything the
+module said went to the run result or the host, so re-running with `-Verbose` produced nothing. A
+run now traces its **resolutions**: the sandbox, the subtrees copied, the files that resolved into
+the mutate set, the Pester found, and which covering suite each file mapped to. `-Verbose` and
+`-Quiet` are **independent** -- `-Quiet` silences the console log, not a stream the console was not
+showing -- so `-Quiet -Verbose` gives the trace with none of the per-mutant chatter. Per-mutant
+progress also goes through `Write-Progress`, which no caller collecting output can swallow.
 
-Set **`recordAllKillers: true`** in the config to record every killer. It costs the early stop --
-measured on the same 118 mutants, 50s becomes 73s, about 46% more, for the same 118 verdicts. So it
-buys data, not accuracy, and it is opt-in because most runs are gates that never read the field.
+**`schemaVersion` is now 2, and the report discloses more of what its score does not cover.**
 
-With it on, the report also names **`testsWithoutKills`**: mapped test files that killed nothing.
-That field is **absent** on a default run, and the schema refuses it there. Under the early stop a
-test that would have killed but was skipped is indistinguishable from one that cannot kill at all,
-and what a reader does with such a list is delete things -- so the honest answer is not to publish
-one. A test may also be the only thing covering a file outside `mutate` entirely, which is why even
-the complete list is evidence of weakness rather than proof of uselessness.
+- `filesWithNoCandidate` -- files in `mutate` no operator matched, which score a vacuous 100%. It is
+  **required** on a scored report, which is what the version bump is for: a document that cannot say
+  whether a file contributed nothing is a score with a hole in it, and "the writer always sets it"
+  is the assurance every other disclosure here declined to rely on.
+- `filesWithNoMutants` -- files whose candidates the coverage filter removed entirely. Its schema
+  description claimed to cover both cases while the code reported only this one; both descriptions
+  are now true of what they hold.
+- `filesMutated` -- how many files the score was computed over, now **required** too. It was left
+  optional in v1 for one reason: requiring it would have failed every report 0.4.0 produced, and
+  the version could not move for a merely added field. That deferral is spent. It counts the list
+  your config names, never a directory listing.
+
+`schemas/v2/report.schema.json` ships beside the module, and `schemas/v1/` still ships: an archived
+report says `schemaVersion: 1` and that is the only schema that can validate it. The rule for the
+number is stated correctly now -- it moves when a field changes **meaning**, **disappears** or
+**becomes required**, and never when an optional one is added.
+
+**Per-file paths in the report are repo-relative again.** `filesWithNoMutants` and the uncovered
+caveat carried absolute paths under a temp sandbox -- a directory whose name changes every run,
+which no consumer can match against a checkout, and which is deleted before a reader sees it.
+
+**A schema failure on a scored report names the field that is actually missing.** The full/recheck
+split was keyed on the presence of `mode`, so a report missing one disclosure failed the `else` arm
+while the validator reported the `if` arm's requirement -- naming `mode`, the one field whose
+presence would turn the document into a different kind of report. The discriminator is keyed on
+`mutationScore` now.
 
 ### Internal
+
+**0.5.0 absorbed everything that had accumulated behind it.** The version was cut -- heading dated,
+manifest bumped -- but never tagged or published: the gallery's newest is 0.4.0, and fifteen commits
+of work landed under `## [Unreleased]` afterwards. Tagging `v0.5.0` would have published a build
+whose notes described roughly a sixth of it. The two sections are now one release describing what
+actually ships, which also forced the consumer block back under the gallery's 10600-character limit
+-- it had reached 16254 as a concatenation of per-PR summaries, which is not what a release note is.
+
+**The prelude every mode shares is one function, and the modes are what differ.** Everything a run
+needs was threaded through positional parameters -- `Invoke-PSMutationRecheckRun` took nine and
+`Invoke-PSMutationLoop` six of the same values again -- all of them produced by the same prelude
+that every mode needs in full before it can differ. Each new mode re-listed the parts it wanted, and
+each new value the prelude produced had to be added to every one of those lists.
+
+`Get-PSMutationRunContext` produces it once. `-ListOnly` is then "run the prelude, render, stop"
+rather than a fourth argument list, which is what made it cheap enough to be worth doing now.
+The callees' signatures are unchanged, so the explicit parameter lists a reader can grep are still
+there; what moved is where the values come from.
+
+It does **not** create the sandbox, and the omission is load-bearing: the caller creates it outside
+its own `try`/`finally` and the prelude runs inside, so a red baseline or a config path that never
+arrived removes the tree instead of leaking it. Both of those throw before the loop, which is
+exactly where an inverted arrangement would leak.
+
+**A scriptblock resolves an unbound variable in the scope that INVOKES it, not the one that created
+it.** The provenance closure reads the baseline duration and the timeout, and moving its definition
+into the context would have made both `$null` -- silently, with the report still written. Measured
+before designing around it: a scriptblock built inside a function and invoked after that function
+returns reads empty for every local it names. The early values are bound into a hashtable in the
+context; the scriptblock stays at the call site, where every callee that invokes it is called from
+its own frame. A test asserts the durations in the written report, so the trap fails loudly if
+anyone moves it.
+
+**The baseline a preview does not measure is a named function, not two lines in an `else`.** Its
+zeros reach the timeout through `Get-PSMutationTimeout`, where the floor swallows any small value
+-- so a mutant turning `0.0` into `1.0` produced the identical budget and survived every test that
+only looks at the run. `Get-PSMutationRunBaseline` returns it, a test states the contract directly,
+and the timeout is now derived on both paths from the one duration rather than hardcoded in the
+preview arm. It carries no `Passed` flag: a green verdict is the one thing a skipped baseline did
+not establish.
+
+**One predicate for "coverage emptied this file", not three.** It was spelled out separately in the
+exclusion collector, the preview lines and the preview result. Two of those were written in this
+change and would have been the copies that drifted; the third was already there.
+
+**`Get-PSMutationMutantListLine` renders the file blocks through a second function.** Written as one
+it reached cognitive 16 against this repo's own 15/15 gate -- caught by the gate, not by review.
+
+**A test fixture that omits `coveredLinesOnly` is testing the COVERED case.** The key defaults to
+true, so the first version of the cheap-preview test proved the no-baseline path against a config
+that does not take it, and failed. The fixture now writes the value in both directions.
 
 **The sandbox sweep suite is a covering suite at last.** `tests/SandboxSweep.Tests.ps1` was
 deliberately named nowhere in the mutation config, because listing it deleted the live run's own
@@ -247,57 +289,6 @@ The early-stop decision moved **inside** the block and became a parameter. It ha
 line the caller concatenated in or left out, which made the thing handed to the runspace assembled
 text again -- one conditional away from the problem this fixes. There is now exactly one script and
 it is always the same one.
-
-## [0.5.0] - 2026-08-29
-
-### For consumers
-
-**An interrupted run now writes a partial report instead of nothing.** Ctrl-C, a cancelled CI job
-or a killed agent used to discard the whole run: every row lived in a list inside the loop and the
-report was written only after the last mutant. On a large repo a run is long enough that losing one
-is an ordinary event, not an exceptional one.
-
-The document is marked `"mode": "Partial"` and carries `evaluated` and `planned`. It is **counts,
-never a score**, for the same reason a recheck report is: the loop evaluates in candidate order, so
-an interrupted run has seen whichever files sort earliest -- not a sample of anything. The schema
-forbids `mutationScore` on it rather than trusting a writer never to add one.
-
-**A schema failure on a full report now names the field that is actually missing.** The full/recheck
-split was keyed on the presence of `mode`, so a full report missing any one disclosure failed the
-`else` arm while the validator reported the `if` arm's requirement:
-
-```
-Required properties ["mode"] are not present at ''
-```
-
-`mode` is the marker whose *absence* identifies a full report, so the message named the one field
-whose presence would turn the document into a different kind of report -- following it made things
-worse. The discriminator is now keyed on `mutationScore`, and the same document reports:
-
-```
-Required properties ["skippedAsUncovered"] are not present at ''
-```
-
-Measured both ways against `Test-Json`. The same documents are accepted and refused either way; only
-the diagnosis changes.
-
-**The report says how many files the score was computed over.** `filesMutated` joins
-`skippedAsUncovered` and `declaredEquivalent` in the document and in the schema, for the reason
-those two already exist: 100% across eight files and 100% across nine are the same number, and only
-one of them covers the ninth. If your `mutate` list is narrower than your source tree -- and most
-are, deliberately -- nothing in the output said so until now.
-
-It is **optional** in the v1 schema, where the two fields beside it are required, and the difference
-is not an oversight. Those two were always written and merely undeclared, so requiring them
-invalidated no document that had ever existed. This field is genuinely new: requiring it would fail
-every report 0.4.0 produced, and `schemaVersion` moves only when a field changes meaning or
-disappears -- never when one is added. Branch on its presence.
-
-It counts the list your config names, never a directory listing. A run cannot know about a file the
-config never mentioned, so it reports what it was pointed at rather than guessing what it might have
-missed; the fraction is yours to compute against your own file count.
-
-### Internal
 
 **Every Describe and Context now has to pass on its own, and four did not.** #43 fixed two
 shared-state instances somebody happened to notice; nothing then checked whether there were more.

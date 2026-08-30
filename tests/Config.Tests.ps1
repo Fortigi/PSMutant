@@ -1035,3 +1035,64 @@ Describe 'Get-PSMutationRunDeadlineBudget' {
         $large | Should-BeGreaterThan $small
     }
 }
+
+Describe 'Test-PSMutationBaselineNeeded' {
+    It 'always measures for a real run' -ForEach @(
+        @{ Covered = $true }
+        @{ Covered = $false }
+    ) {
+        # A run needs a green suite to mutate against and a duration to size the timeout from,
+        # whatever the coverage filter is doing. Both rows, so this cannot pass by the function
+        # simply returning the coverage flag.
+        Test-PSMutationBaselineNeeded -ListOnly $false -CoveredLinesOnly $Covered | Should-BeTrue
+    }
+
+    It 'skips it for a preview with nothing to filter' {
+        # The only reason a preview would pay for a suite run is the coverage it produces. With
+        # no filter to satisfy, the preview is a parse.
+        Test-PSMutationBaselineNeeded -ListOnly $true -CoveredLinesOnly $false | Should-BeFalse
+    }
+
+    It 'measures for a preview that DOES filter on coverage' {
+        # The case that decides whether the preview is honest. coveredLinesOnly is part of what
+        # the config would actually mutate, so a preview that skipped it would answer a
+        # different question than the run does -- confidently, and low.
+        Test-PSMutationBaselineNeeded -ListOnly $true -CoveredLinesOnly $true | Should-BeTrue
+    }
+}
+
+Describe 'Get-PSMutationModeFault' {
+    It 'permits every combination when -ListOnly is absent' {
+        # The switches it refuses are legitimate together WITHOUT -ListOnly: a recheck folding
+        # its verdicts back into the baseline is the documented -MergeIntoBaseline flow.
+        Get-PSMutationModeFault -ListOnly $false -Recheck $true -UpdateBaseline $true `
+            -MergeIntoBaseline $true | Should-Be ''
+    }
+
+    It 'permits -ListOnly on its own' {
+        Get-PSMutationModeFault -ListOnly $true -Recheck $false -UpdateBaseline $false `
+            -MergeIntoBaseline $false | Should-Be ''
+    }
+
+    It 'refuses -ListOnly with a switch that acts on verdicts, naming it' -ForEach @(
+        @{ R = $true; U = $false; M = $false; Named = '-RecheckFrom' }
+        @{ R = $false; U = $true; M = $false; Named = '-UpdateBaseline' }
+        @{ R = $false; U = $false; M = $true; Named = '-MergeIntoBaseline' }
+    ) {
+        # NAMED, not merely refused. A caller who asked for a baseline update and got a preview
+        # would read exit code 0 as a run that updated nothing, which is the silence this
+        # module exists to remove -- and a message that does not say which pair is the problem
+        # sends them to read the parameter list.
+        $fault = Get-PSMutationModeFault -ListOnly $true -Recheck $R -UpdateBaseline $U -MergeIntoBaseline $M
+        $fault | Should-MatchString ([regex]::Escape($Named))
+        $fault | Should-MatchString '-ListOnly'
+    }
+
+    It 'names every offending switch when more than one is present' {
+        # One at a time would send the caller round the loop three times.
+        $fault = Get-PSMutationModeFault -ListOnly $true -Recheck $true -UpdateBaseline $true -MergeIntoBaseline $true
+        foreach ($n in '-RecheckFrom', '-UpdateBaseline', '-MergeIntoBaseline') {
+            $fault | Should-MatchString ([regex]::Escape($n))
+        }
+    }
+}

@@ -152,6 +152,99 @@ function Test-PSMutantCovered {
     return $CoveredLines.ContainsKey($f) -and $CoveredLines[$f].Contains([int]$Candidate.Line)
 }
 
+function Get-PSMutationRunBaseline {
+    <#
+    .SYNOPSIS
+        The baseline this run will size its budget from -- measured, or the stand-in a preview uses.
+    .DESCRIPTION
+        A run must measure: it needs a green suite to mutate against and a duration to derive the
+        per-mutant timeout from. A preview with no coverage filter to satisfy needs neither, and a
+        suite run would buy it nothing.
+
+        The stand-in is a FUNCTION rather than two lines inside an else, because its zeros are
+        otherwise unobservable: nothing in a preview reads a duration, so every mutant of them
+        survives a test that can only assert the preview did not throw. Returned from a named
+        function, the contract -- no time taken, no coverage measured -- is something a test can
+        state.
+
+        It carries no Passed flag. A green verdict is the one thing this did not establish, and
+        fabricating one here is exactly the "a number nobody measured, reported as one" failure
+        the module exists to catch.
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Plan,
+        [Parameter(Mandatory)] [string]$SandboxRoot,
+        [switch]$Measure,
+        [switch]$Quiet
+    )
+    if (-not $Measure) { return [pscustomobject]@{ DurationSeconds = 0.0; CoveredLines = @{} } }
+    Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Banner' `
+            -Text "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite...")
+    $baseline = Invoke-PSMutationBaseline -TestPath $Plan.AllTests -MutateFiles $Plan.Mutate -SandboxRoot $SandboxRoot
+    Assert-PSMutationBaselineGreen -Baseline $baseline
+    return $baseline
+}
+
+function ConvertTo-PSMutationDisplayPerFile {
+    <#
+    .SYNOPSIS
+        The per-file tally with its paths made repo-relative, for anything a human reads.
+    .DESCRIPTION
+        Select-PSMutationCandidate works in the SANDBOX, so every File it reports is an absolute
+        path under a temp directory whose name changes on every run. That is the right value to
+        mutate and the wrong one to print or to persist: it cannot be matched against a checkout,
+        it differs between two runs of the same commit, and it names a directory that is deleted
+        before the reader sees it. It reached the report's `filesWithNoMutants` and the summary's
+        uncovered caveat that way.
+
+        Converted ONCE, here, rather than at each of the places that display it -- the candidates
+        themselves keep their sandbox paths, because that is where the loop reads them from.
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    return , @($PerFile | ForEach-Object {
+            [pscustomobject]@{
+                File       = (ConvertFrom-PSMutationSandboxPath -Path $_.File -SandboxRoot $SandboxRoot)
+                Produced   = $_.Produced
+                Kept       = $_.Kept
+                ByOperator = $_.ByOperator
+            }
+        })
+}
+
+function Get-PSMutationCandidateByOperator {
+    # One file's candidate counts, split by the operator that produced them.
+    #
+    # BOTH numbers per operator, because they answer different questions and only the pair
+    # locates the fault. `Produced` says which operators matched the file at all -- zero across
+    # the board means the file has nothing this module knows how to mutate, and no amount of
+    # test-writing changes that. `Kept` says how many survived the coverage filter -- produced
+    # but not kept means the mapped suite does not reach those lines, which IS a test problem.
+    # Reported as one number, a file scoring a vacuous 100% looks the same either way.
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Produced,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Kept
+    )
+    $byOp = [ordered]@{}
+    foreach ($c in $Produced) {
+        if (-not $byOp.Contains($c.Operator)) { $byOp[$c.Operator] = @{ Produced = 0; Kept = 0 } }
+        $byOp[$c.Operator].Produced++
+    }
+    # No guard on the key: Kept is a subset of Produced by construction, so a missing key here
+    # would mean the caller passed two unrelated sets, which is a fault to surface rather than
+    # to absorb into a zero.
+    foreach ($c in $Kept) { $byOp[$c.Operator].Kept++ }
+    return $byOp
+}
+
 function Select-PSMutationCandidate {
     # Enumerate candidates across the mutate files, keeping only covered ones (opt), and
     # report what that removed.
@@ -176,7 +269,9 @@ function Select-PSMutationCandidate {
         $produced = @(Get-PSMutationCandidate -Path $file -Operators $Operators)
         $kept = @($produced | Where-Object { -not $CoveredLinesOnly -or (Test-PSMutantCovered -Candidate $_ -CoveredLines $CoveredLines) })
         foreach ($c in $kept) { $out.Add($c) }
-        $perFile.Add([pscustomobject]@{ File = $file; Produced = $produced.Count; Kept = $kept.Count })
+        $perFile.Add([pscustomobject]@{ File = $file; Produced = $produced.Count; Kept = $kept.Count
+                ByOperator = (Get-PSMutationCandidateByOperator -Produced $produced -Kept $kept)
+            })
     }
     return [pscustomobject]@{ Candidates = $out.ToArray(); PerFile = $perFile.ToArray() }
 }
