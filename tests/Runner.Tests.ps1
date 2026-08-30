@@ -238,11 +238,27 @@ Describe 'Invoke-PSMutationBaseline' {
             [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
         }
 
-        Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir | Out-Null
+        Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) `
+            -SandboxRoot $script:coverageDir -Coverage | Out-Null
 
         Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter {
             $Configuration.Run.PassThru.Value -eq $true -and $Configuration.CodeCoverage.Enabled.Value -eq $true
         }
+    }
+
+    It 'leaves the tracer OFF unless asked, and still returns a usable baseline' {
+        # The tracer is a +24% surcharge on this repo's own suite, and two run shapes never read
+        # a covered line -- a config with coveredLinesOnly off, and any recheck. Off by default
+        # so paying for it is a decision rather than the absence of one.
+        Mock Invoke-Pester { [pscustomobject]@{ Result = 'Passed'; CodeCoverage = $null } }
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
+        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter { $Configuration.CodeCoverage.Enabled.Value -eq $false }
+        # An EMPTY map, which is the true answer -- nothing was measured. Reaching this line at
+        # all is half the test: Pester reports no CommandsExecuted with the tracer off, and
+        # `$null | ForEach-Object` runs its body ONCE with $_ = $null, so the collector used to
+        # hand GetFullPath an empty string and the whole run died inside the baseline.
+        $r.CoveredLines.Count | Should-Be 0
+        $r.Passed | Should-BeTrue
     }
 
     It 'keys covered lines by FULL path, whatever Pester reported' {

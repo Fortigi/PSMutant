@@ -33,6 +33,9 @@ function Get-PSMutationRunContext {
         [Parameter(Mandatory)] [string]$SandboxRoot,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Subtrees,
         [switch]$ListOnly,
+        # This run rechecks a prior report. Decides only whether the baseline is instrumented --
+        # which mutants a recheck evaluates is Recheck.ps1's business, not this function's.
+        [switch]$Recheck,
         [switch]$Quiet
     )
     $t = Get-PSMutationSandboxPlan -Cfg $Cfg -SourceRoot $SourceRoot -SandboxRoot $SandboxRoot
@@ -64,7 +67,12 @@ function Get-PSMutationRunContext {
 
     $coveredOnly = Get-PSMutationCoveredLinesOnly -Cfg $Cfg
     $baselineNeeded = Test-PSMutationBaselineNeeded -ListOnly $ListOnly.IsPresent -CoveredLinesOnly $coveredOnly
-    $baseline = Get-PSMutationRunBaseline -Plan $t -SandboxRoot $SandboxRoot -Measure:$baselineNeeded -Quiet:$Quiet
+    # ONE answer, read twice: it enables the tracer below and applies the filter further down.
+    # Split into two decisions they could disagree, and one of the two disagreements evaluates
+    # nothing at all -- a filter with no coverage behind it keeps no candidate.
+    $coverageNeeded = Test-PSMutationCoverageNeeded -CoveredLinesOnly $coveredOnly -Recheck $Recheck.IsPresent
+    $baseline = Get-PSMutationRunBaseline -Plan $t -SandboxRoot $SandboxRoot -Measure:$baselineNeeded `
+        -Coverage:$coverageNeeded -Quiet:$Quiet
     # Derived on BOTH paths from the one duration, rather than a literal in the preview arm. A
     # timeout nothing in a preview reads is unobservable, and every mutant of a hardcoded one
     # survives a test that can only assert the preview did not throw.
@@ -76,7 +84,7 @@ function Get-PSMutationRunContext {
 
     $ops = Get-PSMutationOperatorList -Cfg $Cfg
     $selection = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops `
-        -CoveredLinesOnly $coveredOnly -CoveredLines $baseline.CoveredLines
+        -CoveredLinesOnly $coverageNeeded -CoveredLines $baseline.CoveredLines
     # Locals first, because two of these appear both as their own field and inside Doc. Spelled
     # twice they would be COMPUTED twice -- a second hash of every mutate file -- and the copies
     # could drift; there would then be two answers to "which report does this run write".
@@ -89,6 +97,9 @@ function Get-PSMutationRunContext {
         Plan             = $t
         Baseline         = $baseline
         BaselineMeasured = $baselineNeeded
+        # What the CONFIG asks for, which is what the preview must report against -- not
+        # $coverageNeeded, which a recheck turns off. A preview is never a recheck, so the two
+        # agree there; carrying the config's answer keeps that a fact rather than a coincidence.
         CoveredLinesOnly = $coveredOnly
         TimeoutSeconds   = $timeout
         Operators        = $ops
@@ -311,7 +322,7 @@ function Invoke-PSMutation {
     $sandbox = New-PSMutationSandbox -RepoRoot $root -Subtrees $subtrees
     try {
         $ctx = Get-PSMutationRunContext -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox `
-            -Subtrees $subtrees -ListOnly:$ListOnly -Quiet:$Quiet
+            -Subtrees $subtrees -ListOnly:$ListOnly -Recheck:([bool]$RecheckFrom) -Quiet:$Quiet
         if ($ListOnly) {
             Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationMutantListLine `
                     -PerFile $ctx.PerFile -CoveredLinesOnly $ctx.CoveredLinesOnly `

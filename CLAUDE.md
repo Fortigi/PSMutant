@@ -1539,6 +1539,23 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   The report's version and the survivor baseline's are independent constants. Bumping one must not
   re-version the other; a test pins the baseline at 1 while the report says 2.
 
+- **`$null | ForEach-Object` runs its body ONCE, and `@( )` does not save you.** Measured all
+  three forms: the pipeline iterates **1**, `@($null) | ForEach-Object` iterates **1** because
+  `@($null)` has one element and that element is `$null`, and `foreach ($x in $null)` iterates
+  **0**. The collector in `Invoke-PSMutationBaseline` was a pipeline, so the first run with the
+  tracer OFF handed `GetFullPath` an empty string and died inside the baseline.
+
+  It had been unreachable for as long as coverage was unconditional. That is the general shape:
+  making something optional executes a path that was previously impossible, and the bug it finds
+  is usually older than the change that found it.
+
+- **One decision, read twice, when two answers cannot be allowed to differ.**
+  `Test-PSMutationCoverageNeeded` drives both the baseline's tracer and the candidate filter. As
+  two decisions they could disagree, and one disagreement is silent and fatal: a filter with no
+  coverage behind it keeps NO candidate, so a recheck evaluates nothing and reports that none of
+  the previous survivors are still alive. The waste this closes -- coverage nothing reads -- is
+  the harmless disagreement; the other one is not.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
