@@ -8,6 +8,16 @@
 # for CI annotations or markdown maps the same roles to its own vocabulary, and gets the
 # structured Data a survivor line carries rather than having to parse the text back out.
 
+# Which STREAM each role goes to. Everything this module said used to go to the host, so
+# -Verbose produced no extra information at all on a run measured in minutes -- the usual first
+# move when something behaves oddly told you nothing.
+#
+# A role rather than a per-call decision, so the routing is one table a reader can check rather
+# than a judgement repeated at every emitter. `Warn` deliberately stays on the host: it is also the
+# score band for a middling result, and routing it to Write-Warning would turn an ordinary score
+# into a warning on every run that is not green.
+$script:PSMutationRoleStream = @{ Trace = 'Verbose' }
+
 $script:PSMutationRoleColour = [ordered]@{
     Banner = 'Cyan'
     Good   = 'Green'
@@ -19,6 +29,11 @@ $script:PSMutationRoleColour = [ordered]@{
     # renderer that is not a console -- an annotation stream, a markdown table -- drops it
     # while still wanting the caveats Muted carries.
     Rule   = 'DarkGray'
+    # Goes to the VERBOSE stream, not the host. What a consumer wants from -Verbose on a run this
+    # long is the resolutions: which sandbox, which files, which suite, which Pester -- facts that
+    # are narration when a run works and the first question when it does not. Colour is recorded
+    # for a renderer that chooses to show it anyway; the stream is what decides where it lands.
+    Trace  = 'DarkGray'
     # Deliberately empty, and the only role with no colour. A CI workflow command is parsed
     # from the START of a line, so an ANSI escape written ahead of the '::' stops it being a
     # command and turns it into a line of noise nobody sees -- the exact failure the whole
@@ -126,6 +141,52 @@ function Get-PSMutationAnnotationLine {
     }
 }
 
+function Get-PSMutationProgressPercent {
+    <#
+    .SYNOPSIS
+        The percentage to report for one step of a run, clamped to what Write-Progress accepts.
+    #>
+    [OutputType([int])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$Index, [Parameter(Mandatory)] [int]$Total)
+    # A pure function rather than an expression inside the reporter, because Write-Progress writes
+    # to a stream PowerShell cannot redirect -- so nothing could observe the arithmetic and every
+    # mutant of it survived a test that could only assert "did not throw".
+    #
+    # PercentComplete demands 0..100 and THROWS rather than clamping, so both ends matter: a total
+    # of zero is a legitimate run whose files contributed no candidates, and an index past the
+    # total is reachable because the counter and the candidate list are two different numbers.
+    if ($Total -le 0) { return 0 }
+    return [math]::Min(100, [int](100.0 * $Index / $Total))
+}
+
+function Write-PSMutationProgress {
+    <#
+    .SYNOPSIS
+        Report loop progress on the stream built for it.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [int]$Index,
+        [Parameter(Mandatory)] [int]$Total,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Activity
+    )
+    # BESIDE the per-mutant host lines, not instead of them: those lines are the record of what
+    # each mutant did and a caller may be capturing them. This is the other thing they were doing
+    # -- answering "is it still running" on a run measured in minutes -- and that belongs on the
+    # stream built for it.
+    #
+    # Write-Progress cannot be captured, redirected, or swallowed by a caller collecting output,
+    # and a non-interactive host renders nothing at all -- so it needs no -Quiet arm. That is most
+    # of what -Quiet exists to solve, and this is the half of it that does not have to be silenced.
+    #
+    # NO zero-total guard here: Get-PSMutationProgressPercent already answers 0 for one, so a
+    # guard would only suppress a harmless "0 of 0" -- a branch whose two arms differ by nothing
+    # anybody can observe, which self-mutation duly reported as five survivors on one line.
+    Write-Progress -Activity $Activity -Status "$Index of $Total" `
+        -PercentComplete (Get-PSMutationProgressPercent -Index $Index -Total $Total)
+}
+
 function Write-PSMutationOutput {
     <#
     .SYNOPSIS
@@ -151,7 +212,6 @@ function Write-PSMutationOutput {
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Lines,
         [switch]$Quiet
     )
-    if ($Quiet) { return }
     foreach ($line in $Lines) {
         # Splatted so there is still exactly ONE Write-Host in src/, which Layering.Tests.ps1
         # asserts by count: an if/else with a call in each arm reads fine and quietly makes it
@@ -160,6 +220,20 @@ function Write-PSMutationOutput {
         # A role with no colour is written plain, and -ForegroundColor '' is not the same
         # thing -- it throws -- so the empty case has to omit the parameter, not pass an empty
         # value through.
+        # Routed by role. The Write-Host call stays SINGULAR -- Layering.Tests.ps1 asserts the
+        # count -- because the verbose arm returns before reaching it rather than duplicating it.
+        if ($script:PSMutationRoleStream[$line.Role] -eq 'Verbose') {
+            # BEFORE the -Quiet guard, deliberately. The two switches answer different questions:
+            # -Quiet silences the console log, and -Verbose asks for detail on a stream the
+            # console is not showing anyway. A consumer collecting a run's trace while keeping CI
+            # output short wants exactly that combination, and the verbose stream is already
+            # gated by the caller's own -Verbose.
+            Write-Verbose $line.Text
+            continue
+        }
+        # Everything else is console narration, which -Quiet exists to silence. Checked HERE
+        # rather than at the top so it cannot silence a stream it was never about.
+        if ($Quiet) { continue }
         $colour = Get-PSMutationRoleColour -Role $line.Role
         $write = @{ Object = $line.Text }
         if ($colour) { $write.ForegroundColor = $colour }

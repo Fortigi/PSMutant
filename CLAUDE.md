@@ -1436,6 +1436,22 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   reason because `@(Get-Fault).Count -gt 0` was true for no faults. The rule is: callers ASSIGN,
   never wrap and never pipe.
 
+- **A value written to an unredirectable stream cannot be asserted, so compute it separately.**
+  `Write-Progress` goes where PowerShell cannot capture it, so the percentage inside the reporter
+  was unobservable and every mutant of the arithmetic survived a test that could only say "did not
+  throw" -- multiplication and division swapped included. Extracted to
+  `Get-PSMutationProgressPercent`, one `-ForEach` table asserts the whole range, and the 1-of-3 row
+  is what tells `*` from `/`.
+
+  Same shape as the run deadline compared against a live stopwatch. Whenever the observable effect
+  is out of reach, the DECISION has to come out of the effect.
+
+- **Roles name a stream, not only a colour.** `-Quiet` and `-Verbose` answer different questions, so
+  the quiet guard sits after the verbose arm rather than at the top of the renderer: silencing the
+  console log must not silence a stream the console was never showing. `Warn` stays on the host
+  because it is also the score band for a middling result -- routing a role wholesale is not the
+  same as routing the one call site that is genuinely a warning.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked

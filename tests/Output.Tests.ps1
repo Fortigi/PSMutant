@@ -76,7 +76,7 @@ Describe 'Get-PSMutationKnownRole' {
         # The literal list is the point. A role is a promise to every renderer, so growing the
         # vocabulary has to fail here first and be a decision -- this test caught Annotation
         # being added, which is the behaviour wanted rather than a nuisance.
-        ((Get-PSMutationKnownRole) -join ',') | Should-Be 'Annotation,Bad,Banner,Detail,Good,Muted,Rule,Warn'
+        ((Get-PSMutationKnownRole) -join ',') | Should-Be 'Annotation,Bad,Banner,Detail,Good,Muted,Rule,Trace,Warn'
     }
 }
 
@@ -237,5 +237,69 @@ Describe 'Write-PSMutationOutput' {
         # which PowerShell binds as a scalar rather than a collection.
         Write-PSMutationOutput -Lines (New-PSMutationLine -Role 'Good' -Text 'alone')
         ($script:said -join ',') | Should-Be 'alone'
+    }
+}
+
+Describe 'a line goes to the stream its role names' {
+    It 'writes a Trace line to VERBOSE, never to the host' {
+        # The module had no verbose stream at all, so -Verbose -- the usual first move when a
+        # minutes-long run behaves oddly -- produced nothing. Asserted on the stream rather than
+        # on the text, because the text would be identical whichever sink it reached.
+        $verbose = Write-PSMutationOutput -Lines (New-PSMutationLine -Role 'Trace' -Text 'resolved x') `
+            -Verbose 4>&1
+        ($verbose | Out-String) | Should-MatchString 'resolved x'
+    }
+
+    It 'is NOT silenced by -Quiet, which is about the console log' {
+        # The two switches answer different questions, and a consumer collecting a run's trace
+        # while keeping CI output short wants exactly this combination. Gating verbose on -Quiet
+        # would make that impossible and would silence a stream -Quiet was never about.
+        $verbose = Write-PSMutationOutput -Lines (New-PSMutationLine -Role 'Trace' -Text 'still traced') `
+            -Quiet -Verbose 4>&1
+        ($verbose | Out-String) | Should-MatchString 'still traced'
+    }
+
+    It 'still silences ordinary console lines under -Quiet' {
+        # The pairing: without it, a renderer that ignored -Quiet entirely would satisfy the two
+        # tests above.
+        $host6 = Write-PSMutationOutput -Lines (New-PSMutationLine -Role 'Detail' -Text 'console only') `
+            -Quiet 6>&1
+        ($host6 | Out-String) | Should-NotMatchString 'console only'
+    }
+
+    It 'still writes an ordinary line to the HOST when not quiet' {
+        $host6 = Write-PSMutationOutput -Lines (New-PSMutationLine -Role 'Detail' -Text 'on the host') 6>&1
+        ($host6 | Out-String) | Should-MatchString 'on the host'
+    }
+}
+
+Describe 'Write-PSMutationProgress' {
+    It 'computes the percentage, and clamps both ends' -ForEach @(
+        @{ Index = 5; Total = 10; Expect = 50; Why = 'the ordinary case' }
+        @{ Index = 0; Total = 0; Expect = 0; Why = 'a run with no candidates -- 100 * 0 / 0' }
+        @{ Index = 11; Total = 10; Expect = 100; Why = 'an index past the total' }
+        @{ Index = 1; Total = 1; Expect = 100; Why = 'the single-candidate run' }
+        @{ Index = 1; Total = 3; Expect = 33; Why = 'a value that rounds' }
+    ) {
+        # Asserted on the NUMBER, extracted from the reporter for exactly this reason:
+        # Write-Progress goes to a stream PowerShell cannot redirect, so inside the reporter the
+        # arithmetic was unobservable and every mutant of it survived a "did not throw" test.
+        # The 1-of-3 row is what tells multiplication from division apart.
+        Get-PSMutationProgressPercent -Index $Index -Total $Total |
+            Should-Be $Expect -Because "the percentage must be right for $Why"
+    }
+
+    It 'reports without throwing across the whole range of index and total' -ForEach @(
+        @{ Index = 5; Total = 10; Why = 'an ordinary mutant' }
+        @{ Index = 0; Total = 0; Why = 'a run whose files contributed no candidates -- 100 * 0 / 0' }
+        @{ Index = 11; Total = 10; Why = 'an index past the total, which PercentComplete refuses' }
+        @{ Index = 1; Total = 1; Why = 'the single-candidate run, exactly 100 percent' }
+    ) {
+        # PercentComplete demands 0..100 and THROWS rather than clamping, so each of these is a
+        # terminating error mid-run rather than a cosmetic slip. The zero row is the one that
+        # matters most: an empty run is a legitimate outcome, and it would divide by zero.
+        $threw = $false
+        try { Write-PSMutationProgress -Index $Index -Total $Total -Activity 'x' } catch { $threw = $true }
+        $threw | Should-BeFalse -Because "progress must survive $Why"
     }
 }

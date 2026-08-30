@@ -2,6 +2,30 @@
 
 ### For consumers
 
+**`-Verbose` now tells you something, and progress goes to the stream built for it.** Everything the
+module said went to one of two places: the run result, or the host. There was no verbose stream at
+all -- so re-running with `-Verbose`, the usual first move when a minutes-long run behaves oddly,
+produced nothing.
+
+A run now traces its **resolutions** on the verbose stream: the sandbox it chose, the subtrees it
+copied, the files that actually resolved into the mutate set, the Pester it found, and which
+covering suite each mutate file mapped to. Narration while a run works, and the first four
+questions when it does not.
+
+**`-Verbose` and `-Quiet` are independent.** `-Quiet` silences the console log; it does not silence
+a stream the console was not showing. `-Quiet -Verbose` gives a run's trace with none of the
+per-mutant chatter, which is what a consumer collecting logs alongside its own output wants.
+
+Per-mutant progress is also reported through **`Write-Progress`**, beside the existing lines rather
+than instead of them. It cannot be captured, redirected or accidentally swallowed by a caller
+collecting output, and a non-interactive host renders none of it -- so it needs no `-Quiet` arm, and
+a local run keeps the signal that tells a hung run from a slow one even with the log off.
+
+The single-`Write-Host` design is unchanged: roles now name a **stream** as well as a colour, and
+the renderer routes on it. `Warn` deliberately stays on the host -- it is also the score band for a
+middling result, and routing it to `Write-Warning` would turn an ordinary score into a warning on
+every run that is not green.
+
 **`-MergeIntoBaseline` folds a recheck's verdicts back into the report it came from.** The loop was
 full run, write tests, recheck, write tests, recheck -- then a **full run again** purely to refresh
 a baseline the rechecks had already made stale.
