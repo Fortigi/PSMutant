@@ -91,7 +91,11 @@ Describe 'Invoke-PSMutation' {
         Mock Select-PSMutationCandidate {
             [pscustomobject]@{
                 Candidates = @('cand-1', 'cand-2')
-                PerFile    = @([pscustomobject]@{ File = 'src/a.ps1'; Produced = 2; Kept = 2 })
+                # ByOperator too: the real function attaches it on every row, and a preview
+                # rendering a $null map would pass here and print nothing there.
+                PerFile    = @([pscustomobject]@{ File = 'src/a.ps1'; Produced = 2; Kept = 2
+                        ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 2; Kept = 2 } }
+                    })
             }
         }
         Mock Invoke-PSMutationLoop {
@@ -414,5 +418,220 @@ Describe 'Invoke-PSMutation' {
         Should-Invoke Select-PSMutationCandidate -Exactly 1 -ParameterFilter {
             @($Operators).Count -eq 1 -and $Operators -contains 'BinaryOperator'
         }
+    }
+}
+
+Describe 'Invoke-PSMutation -ListOnly' {
+    BeforeEach {
+        $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:root -Force | Out-Null
+        $script:configFile = Join-Path $script:root 'psmutant.json'
+
+        function script:WriteListConfig {
+            param([bool]$Covered)
+            $c = [ordered]@{
+                mutate     = @('src/a.ps1')
+                tests      = @{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
+                operators  = @('BinaryOperator')
+                thresholds = @{ high = 85; low = 70; break = $null }
+                reportPath = 'reports/run.json'
+            }
+            # Written EXPLICITLY in both directions. coveredLinesOnly defaults to TRUE, so
+            # omitting the key is the covered case, not the uncovered one -- a fixture that
+            # left it out would prove the cheap path against a config that does not take it.
+            $c['coveredLinesOnly'] = $Covered
+            $c | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        }
+        WriteListConfig -Covered $false
+
+        Mock Assert-PSMutationPester { }
+        Mock Clear-PSMutationStaleSandbox { }
+        Mock New-PSMutationSandbox {
+            $sb = Join-Path $script:root 'sandbox'
+            foreach ($rel in 'src/a.ps1', 'tests/a.Tests.ps1') {
+                $dest = Join-Path $sb $rel
+                New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+                Set-Content -LiteralPath $dest -Value '# copied by the sandbox'
+            }
+            $sb
+        }
+        Mock Remove-PSMutationSandbox { }
+        Mock Invoke-PSMutationBaseline { @{ Passed = $true; DurationSeconds = 2.0; CoveredLines = @{} } }
+        Mock Get-PSMutationSourceHashMap { @{ 'src/a.ps1' = 'hash' } }
+        Mock Select-PSMutationCandidate {
+            [pscustomobject]@{
+                Candidates = @('cand-1', 'cand-2')
+                PerFile    = @(
+                    [pscustomobject]@{ File = (Join-Path $script:root 'sandbox/src/a.ps1'); Produced = 2; Kept = 2
+                        ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 2; Kept = 2 } }
+                    }
+                    [pscustomobject]@{ File = (Join-Path $script:root 'sandbox/src/empty.ps1'); Produced = 0; Kept = 0
+                        ByOperator = [ordered]@{}
+                    }
+                )
+            }
+        }
+        Mock Invoke-PSMutationLoop { , @() }
+    }
+
+    It 'evaluates nothing and returns the list shape' {
+        # The whole promise of the mode. A preview that started the loop would be a slower run,
+        # not a preview.
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly -Quiet
+        $r.Mode | Should-Be 'List'
+        $r.ExitCode | Should-Be 0
+        Should-Invoke Invoke-PSMutationLoop -Exactly 0
+    }
+
+    It 'writes no report' {
+        # A preview measures nothing, so it must not overwrite the artifact a real run left --
+        # the convention -RecheckFrom already established.
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly -Quiet | Out-Null
+        Test-Path (Join-Path $script:root 'reports/run.json') | Should-BeFalse
+    }
+
+    It 'does not run the baseline suite when there is no coverage filter to satisfy' {
+        # The cost claim in the help. With coveredLinesOnly off nothing downstream reads a
+        # duration or a covered line, so a suite run would buy nothing.
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly -Quiet | Out-Null
+        Should-Invoke Invoke-PSMutationBaseline -Exactly 0
+    }
+
+    It 'DOES run it when the config filters on coverage' {
+        # The filter is part of what would actually be mutated. Skipping it would answer a
+        # different question than the run does -- confidently, and low.
+        WriteListConfig -Covered $true
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly -Quiet
+        Should-Invoke Invoke-PSMutationBaseline -Exactly 1
+        $r.BaselineMeasured | Should-BeTrue
+    }
+
+    It 'says so when the counts are an upper bound rather than a filtered set' {
+        WriteListConfig -Covered $true
+        (Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly -Quiet).BaselineMeasured | Should-BeTrue
+        WriteListConfig -Covered $false
+        (Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly -Quiet).BaselineMeasured | Should-BeFalse
+    }
+
+    It 'names the file that produced no candidate, with a repo-relative path' {
+        # Both halves. The set is the point of the mode; the path is what makes it usable --
+        # the rows come out of a temp sandbox whose name changes every run.
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly -Quiet
+        $r.FilesWithNoCandidate | Should-Be 'src/empty.ps1'
+    }
+
+    It 'removes the sandbox' {
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly -Quiet | Out-Null
+        Should-Invoke Remove-PSMutationSandbox -Exactly 1
+    }
+
+    It 'never claims a green baseline it did not measure' {
+        # The guard on the "Baseline green in 0.0s (per-mutant timeout 15s)" line. Forced true it
+        # prints for a preview that ran no suite -- a statement about a measurement nobody took,
+        # in the one mode that takes none, with a duration and a budget to make it convincing.
+        Mock Write-PSMutationOutput { }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly | Out-Null
+        Should-Invoke Write-PSMutationOutput -Exactly 0 -ParameterFilter { $Lines.Text -match 'Baseline green' }
+        # And the preview's own lines DID reach the renderer, so the assertion above is not
+        # passing because nothing was rendered at all.
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Lines.Text -match 'mutant set preview' }
+    }
+
+    It 'reports the green baseline on a run that DID measure' {
+        # The true arm, so the guard is pinned in both directions rather than only against a
+        # false claim -- a condition forced to $false would otherwise silence a real run.
+        Mock Write-PSMutationOutput { }
+        Mock Invoke-PSMutationLoop { , @() }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root | Out-Null
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Lines.Text -match 'Baseline green' }
+    }
+
+    It 'refuses a switch that acts on verdicts, before building anything' -ForEach @(
+        @{ Extra = @{ UpdateBaseline = $true }; Named = 'UpdateBaseline' }
+        @{ Extra = @{ MergeIntoBaseline = $true }; Named = 'MergeIntoBaseline' }
+        @{ Extra = @{ RecheckFrom = './prior.json' }; Named = 'RecheckFrom' }
+    ) {
+        # BEFORE the sandbox: the answer needs nothing a tree copy could tell us, and a
+        # refusal that first copies a repository is a slower way to say no.
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ListOnly -Quiet @Extra } |
+            Should-Throw -ExceptionMessage "*$Named*"
+        Should-Invoke New-PSMutationSandbox -Exactly 0
+    }
+}
+
+Describe 'Get-PSMutationRunContext' {
+    BeforeEach {
+        $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:root -Force | Out-Null
+        $script:configFile = Join-Path $script:root 'psmutant.json'
+        [ordered]@{
+            mutate     = @('src/a.ps1')
+            tests      = @{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
+            operators  = @('BinaryOperator')
+            thresholds = @{ high = 85; low = 70; break = $null }
+            reportPath = 'reports/run.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+
+        Mock Assert-PSMutationPester { }
+        Mock Clear-PSMutationStaleSandbox { }
+        Mock New-PSMutationSandbox {
+            $sb = Join-Path $script:root 'sandbox'
+            foreach ($rel in 'src/a.ps1', 'tests/a.Tests.ps1') {
+                $dest = Join-Path $sb $rel
+                New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+                Set-Content -LiteralPath $dest -Value '# copied by the sandbox'
+            }
+            $sb
+        }
+        Mock Remove-PSMutationSandbox { }
+        Mock Invoke-PSMutationBaseline { @{ Passed = $true; DurationSeconds = 2.0; CoveredLines = @{} } }
+        Mock Get-PSMutationSourceHashMap { @{ 'src/a.ps1' = 'hash' } }
+        Mock Select-PSMutationCandidate {
+            [pscustomobject]@{
+                Candidates = @('cand-1', 'cand-2')
+                PerFile    = @([pscustomobject]@{ File = (Join-Path $script:root 'sandbox/src/a.ps1'); Produced = 2; Kept = 2
+                        ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 2; Kept = 2 } }
+                    })
+            }
+        }
+        Mock Invoke-PSMutationLoop {
+            , @([pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 1; Operator = 'BinaryOperator'; Description = 'd'; Status = 'Killed' })
+        }
+    }
+
+    It 'removes the sandbox when the PRELUDE throws, not only when the loop does' {
+        # The prelude is created outside the try and runs inside it, which is the only reason a
+        # red baseline does not leak a full tree copy. Reversed -- sandbox inside the try -- the
+        # two failures that happen BEFORE the loop are exactly the ones that leak.
+        Mock Assert-PSMutationBaselineGreen { throw 'baseline red' }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should-Throw
+        Should-Invoke Remove-PSMutationSandbox -Exactly 1
+    }
+
+    It 'records the baseline duration in the report provenance' {
+        # The guard on a scoping trap that fails SILENTLY. A PowerShell scriptblock resolves an
+        # unbound variable in the scope that INVOKES it, walking the call stack -- not the scope
+        # that created it. Built inside the context and invoked after it returned, every value
+        # in here would be $null and the report would still be written.
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        $doc = Get-Content (Join-Path $script:root 'reports/run.json') -Raw | ConvertFrom-Json
+        $doc.durations.baselineSeconds | Should-Be 2.0
+        $doc.durations.perMutantTimeoutSeconds | Should-Be 15
+    }
+
+    It 'reports the run duration, which can only be read after the loop' {
+        # totalSeconds is the one value the context cannot bind: read early it records how long
+        # the run took to START. The clock object travels; the reading happens at the call site.
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        $doc = Get-Content (Join-Path $script:root 'reports/run.json') -Raw | ConvertFrom-Json
+        $doc.durations.totalSeconds | Should-BeGreaterThanOrEqual 0
+    }
+
+    It 'checks the config paths reached the sandbox before running anything' {
+        # Before the baseline, because after it the answer is a false statement about the tests
+        # rather than a true one about the config.
+        Mock New-PSMutationSandbox { Join-Path $script:root 'empty-sandbox' }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should-Throw
+        Should-Invoke Invoke-PSMutationBaseline -Exactly 0
     }
 }

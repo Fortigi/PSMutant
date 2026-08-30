@@ -147,7 +147,14 @@
       "items": {
         "type": "string"
       },
-      "description": "Full runs only. Files in 'mutate' that produced no candidate at all. Empty is the ordinary answer and is written as [], never as [null]."
+      "description": "Full runs only. Files in 'mutate' whose candidates the covered-lines filter removed entirely, so they contribute nothing to the score. Empty is the ordinary answer and is written as [], never as [null]."
+    },
+    "filesWithNoCandidate": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Full runs only. Files in 'mutate' that produced no candidate at all, so they score a vacuous 100%. Separate from filesWithNoMutants because no test can change this one. Empty is the ordinary answer and is written as [], never as [null]."
     },
     "filesWithoutTestMapping": {
       "type": "array",

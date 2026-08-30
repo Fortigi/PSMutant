@@ -1,4 +1,122 @@
-# Public entry point for PSMutant: wiring, and nothing else.
+# Public entry point for PSMutant: wiring, and nothing else -- the prelude every mode
+# shares, then the entry point that chooses between them.
+
+function Get-PSMutationRunContext {
+    <#
+    .SYNOPSIS
+        Everything a run resolves before the modes diverge, packaged once.
+
+    .DESCRIPTION
+        Every mode -- full, recheck, -ListOnly -- needs the same prelude in full before it can
+        differ: plan the sandbox paths, check the config's paths actually arrived, measure the
+        baseline, size the timeout, enumerate the candidates, hash the sources. Threaded out as
+        separate values, each new mode re-lists the parts it wants and every new value the
+        prelude produces has to be added to every one of those lists.
+
+        This does NOT create the sandbox, and the omission is the point: the caller creates it
+        outside its own try/finally so the tree is removed even when the prelude throws, which is
+        exactly what a red baseline or a missing config path does.
+
+        The two clusters -- Exec and Doc -- are what a run EXECUTES with and what a report
+        DOCUMENTS itself with, each shared by two callees. A value is spelled once here, so
+        adding one is an edit at its source rather than at every call site forwarding it.
+
+    .PARAMETER ListOnly
+        Preview the mutant set. Decides only whether the baseline is worth measuring; the
+        rendering and the early return belong to the caller.
+    #>
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Cfg,
+        [Parameter(Mandatory)] [string]$SourceRoot,
+        [Parameter(Mandatory)] [string]$SandboxRoot,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Subtrees,
+        [switch]$ListOnly,
+        [switch]$Quiet
+    )
+    $t = Get-PSMutationSandboxPlan -Cfg $Cfg -SourceRoot $SourceRoot -SandboxRoot $SandboxRoot
+
+    # THE RESOLUTIONS, on the verbose stream. These are narration while a run works and the
+    # first four questions when it does not: which sandbox, which files were actually
+    # resolved into the mutate set, which suite each one maps to, and which Pester answered.
+    # None of them was recoverable before -- the module had no verbose stream at all, so
+    # re-running with -Verbose, the usual first move, produced nothing.
+    Write-PSMutationOutput -Quiet:$Quiet -Lines @(
+        (New-PSMutationLine -Role 'Trace' -Text "sandbox: $SandboxRoot")
+        (New-PSMutationLine -Role 'Trace' -Text ("subtrees copied: {0}" -f ($Subtrees -join ', ')))
+        (New-PSMutationLine -Role 'Trace' -Text ("mutate set resolved to {0} file(s): {1}" -f `
+                    @($t.Mutate).Count, ((@($t.Mutate) | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')))
+        (New-PSMutationLine -Role 'Trace' -Text ("pester: {0}" -f (Get-PSMutationPesterPath)))
+    )
+    foreach ($f in @($t.Mutate)) {
+        $covering = Get-PSMutationCoveringSuite -File $f -TestsByFile $t.TestsByFile -AllTests $t.AllTests
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Trace' `
+                -Text ("  {0} -> {1}" -f (Split-Path $f -Leaf),
+                    ((@($covering) | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')))
+    }
+
+    # Before the baseline, because after it the answer is a false statement about the
+    # tests rather than a true one about the config. Checked on a preview too: a config
+    # naming a path the sandbox never received is wrong whether or not anything runs.
+    $missing = Get-PSMutationMissingSandboxPath -Paths (@($t.Mutate) + @($t.AllTests)) -Subtrees $Subtrees
+    if ($missing) { throw $missing }
+
+    $coveredOnly = Get-PSMutationCoveredLinesOnly -Cfg $Cfg
+    $baselineNeeded = Test-PSMutationBaselineNeeded -ListOnly $ListOnly.IsPresent -CoveredLinesOnly $coveredOnly
+    $baseline = Get-PSMutationRunBaseline -Plan $t -SandboxRoot $SandboxRoot -Measure:$baselineNeeded -Quiet:$Quiet
+    # Derived on BOTH paths from the one duration, rather than a literal in the preview arm. A
+    # timeout nothing in a preview reads is unobservable, and every mutant of a hardcoded one
+    # survives a test that can only assert the preview did not throw.
+    $timeout = Get-PSMutationTimeout -Cfg $Cfg -BaselineSeconds $baseline.DurationSeconds
+    if ($baselineNeeded) {
+        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Good' `
+                -Text ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout))
+    }
+
+    $ops = Get-PSMutationOperatorList -Cfg $Cfg
+    $selection = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops `
+        -CoveredLinesOnly $coveredOnly -CoveredLines $baseline.CoveredLines
+    # Locals first, because two of these appear both as their own field and inside Doc. Spelled
+    # twice they would be COMPUTED twice -- a second hash of every mutate file -- and the copies
+    # could drift; there would then be two answers to "which report does this run write".
+    # ASSIGNED, never wrapped: the projection returns `, @(...)` so an empty selection stays an
+    # empty array, and @( ) around that gives a one-element array holding the array.
+    $perFile = ConvertTo-PSMutationDisplayPerFile -PerFile $selection.PerFile -SandboxRoot $SandboxRoot
+    $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $SandboxRoot
+    $reportPath = Get-PSMutationReportPath -Cfg $Cfg -SourceRoot $SourceRoot
+    return @{
+        Plan             = $t
+        Baseline         = $baseline
+        BaselineMeasured = $baselineNeeded
+        CoveredLinesOnly = $coveredOnly
+        TimeoutSeconds   = $timeout
+        Operators        = $ops
+        Selection        = $selection
+        # The tally everything HUMAN-facing reads: same numbers, repo-relative paths.
+        PerFile          = $perFile
+        # Derived here in the wiring and carried, because the pre-filter counts exist only
+        # inside the selection; recomputing them later means parsing every file again.
+        Exclusion        = Get-PSMutationCoverageExclusion -PerFile $perFile
+        SourceHashes     = $hashes
+        ReportPath       = $reportPath
+        # NOT in Exec, which is splatted into the recheck run as well. A recheck evaluates its
+        # mutants through the same loop and still records a first killer per row; what it does
+        # not do is pay for the complete list, because its report carries no killersComplete
+        # disclosure to make one readable.
+        RecordAllKillers = Get-PSMutationRecordEveryKiller -Cfg $Cfg
+        # The provenance values that are known NOW. The scriptblock stays with the caller --
+        # see the comment at its call site -- because a scriptblock built here and invoked
+        # after this function returns would read $null for every one of these.
+        ProvenanceArgs   = @{
+            ModuleVersion           = (Get-Module PSMutant).Version
+            BaselineSeconds         = $baseline.DurationSeconds
+            PerMutantTimeoutSeconds = $timeout
+        }
+        Exec             = @{ Candidates = $selection.Candidates; TimeoutSeconds = $timeout; SandboxRoot = $SandboxRoot; Quiet = $Quiet }
+        Doc              = @{ SourceHashes = $hashes; Operators = $ops; Equivalents = $Cfg.equivalents; ReportPath = $reportPath }
+    }
+}
 
 function Invoke-PSMutation {
     <#
@@ -45,6 +163,24 @@ function Invoke-PSMutation {
         recheck never evaluates those -- so finish with a full run before trusting a
         number or moving a threshold.
 
+    .PARAMETER ListOnly
+        Print what this config WOULD mutate -- per file, per operator, and how many candidates
+        survive the coveredLinesOnly filter -- then stop. No mutant is evaluated, no report is
+        written and no score is produced.
+
+        It answers the question you have when you are least sure: adding a file to `mutate`,
+        changing operators, or wondering why a file scores 100%. A file that produces no
+        candidate at all scores a VACUOUS 100% and contributes nothing, and in a blended score
+        that is invisible -- two files in a real repository were in exactly that state. This
+        names them, in seconds, along with the files whose candidates the coverage filter
+        removed entirely. Different faults with different fixes, so they are listed apart.
+
+        Cost: the baseline suite runs ONCE, because `coveredLinesOnly` is part of what would
+        actually be mutated and a preview that skipped it would answer a different question than
+        the run does. That filter defaults to ON, so this is the ordinary case; set it to false
+        and the preview is a parse. Either way it never pays the mutants x suite a run pays --
+        which is minutes against seconds on any repository worth previewing.
+
     .PARAMETER Quiet
         Suppress the console output: the banner, the per-mutant progress lines and the
         closing summary. The JSON report is still written and the result object is still
@@ -63,11 +199,17 @@ function Invoke-PSMutation {
                         StaleEquivalents; DeclaredEquivalent }
             recheck  @{ Mode='Recheck'; PriorSurvivors; Rechecked; NowKilled; StillSurviving;
                         ExitCode; FailureReason }
+            list     @{ Mode='List'; Files; Produced; Total; FilesWithNoCandidate;
+                        FilesEmptiedByCoverage; BaselineMeasured; ExitCode; FailureReason }
 
         FailureReason is 'None', 'StaleEquivalents' or 'BelowThreshold'. It exists because
         ExitCode 1 means either of the last two, and the difference decides what to go and fix:
         a stale declaration is a false statement in the config inflating the score, not a
         shortfall to write tests against.
+
+        A -ListOnly ExitCode is always 0 for the same reason a recheck's is: it evaluates
+        nothing, so it has no verdict and must not manufacture one. What it hands back instead is
+        the two vacuous-100% sets by name, so a caller can fail its own build on them.
 
         A recheck ExitCode is always 0. It applies no thresholds by design -- it answers "is this
         one dead yet" over a set you chose, and a verdict over a chosen subset is the filtered
@@ -107,6 +249,21 @@ function Invoke-PSMutation {
         overwrites the same *.recheck.json; the full report is never touched.
 
     .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -ListOnly
+
+        What would this config mutate? Prints a per-file, per-operator breakdown and stops --
+        no mutant evaluated, no report written. The line to look for is a file with 0
+        candidates: it scores a vacuous 100% that a blended number cannot show you.
+
+    .EXAMPLE
+        $p = Invoke-PSMutation -ConfigFile ./c.json -ListOnly -Quiet
+        if ($p.FilesWithNoCandidate.Count -gt 0) { throw "no mutants: $($p.FilesWithNoCandidate -join ', ')" }
+
+        The same preview as a gate of your own. The module will not fail the run for you --
+        a file with nothing to mutate is not always a mistake -- but it names the files so
+        a repository that considers it one can say so.
+
+    .EXAMPLE
         Invoke-PSMutation -ConfigFile ./c.json -SourceRoot ../other-repo
 
         Mutate a different repository. Every path in the config is relative to
@@ -121,6 +278,9 @@ function Invoke-PSMutation {
         [Parameter(Mandatory)] [string]$ConfigFile,
         [string]$SourceRoot = (Get-Location).Path,
         [string]$RecheckFrom,
+        # Preview the mutant set and stop. Evaluates nothing, so it refuses to combine with
+        # any switch that acts on verdicts -- see Get-PSMutationModeFault.
+        [switch]$ListOnly,
         [switch]$Quiet,
         # Record this run's survivors as the accepted baseline. Writes even on a failing run --
         # see the call site.
@@ -136,77 +296,45 @@ function Invoke-PSMutation {
     $root = (Resolve-Path $SourceRoot).Path
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
     Assert-PSMutationConfig -Cfg $cfg
+    # Refused before anything is built. The answer needs nothing a sandbox or a Pester could
+    # tell us, and copying a tree first is a slower way to say no.
+    $modeFault = Get-PSMutationModeFault -ListOnly $ListOnly.IsPresent -Recheck ([bool]$RecheckFrom) `
+        -UpdateBaseline $UpdateBaseline.IsPresent -MergeIntoBaseline $MergeIntoBaseline.IsPresent
+    if ($modeFault) { throw $modeFault }
     Assert-PSMutationPester
     Clear-PSMutationStaleSandbox
 
     $subtrees = Get-PSMutationSubtree -Cfg $cfg -SourceRoot $root
+    # Created OUTSIDE the try that removes it, with the prelude INSIDE. The prelude throws on a
+    # red baseline and on a config path the sandbox never received; created inside, a full tree
+    # copy would be left behind on exactly those two failures.
     $sandbox = New-PSMutationSandbox -RepoRoot $root -Subtrees $subtrees
     try {
-        $t = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox
-
-        # THE RESOLUTIONS, on the verbose stream. These are narration while a run works and the
-        # first four questions when it does not: which sandbox, which files were actually
-        # resolved into the mutate set, which suite each one maps to, and which Pester answered.
-        # None of them was recoverable before -- the module had no verbose stream at all, so
-        # re-running with -Verbose, the usual first move, produced nothing.
-        Write-PSMutationOutput -Quiet:$Quiet -Lines @(
-            (New-PSMutationLine -Role 'Trace' -Text "sandbox: $sandbox")
-            (New-PSMutationLine -Role 'Trace' -Text ("subtrees copied: {0}" -f ($subtrees -join ', ')))
-            (New-PSMutationLine -Role 'Trace' -Text ("mutate set resolved to {0} file(s): {1}" -f `
-                        @($t.Mutate).Count, ((@($t.Mutate) | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')))
-            (New-PSMutationLine -Role 'Trace' -Text ("pester: {0}" -f (Get-PSMutationPesterPath)))
-        )
-        foreach ($f in @($t.Mutate)) {
-            $covering = Get-PSMutationCoveringSuite -File $f -TestsByFile $t.TestsByFile -AllTests $t.AllTests
-            Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Trace' `
-                    -Text ("  {0} -> {1}" -f (Split-Path $f -Leaf),
-                        ((@($covering) | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')))
+        $ctx = Get-PSMutationRunContext -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox `
+            -Subtrees $subtrees -ListOnly:$ListOnly -Quiet:$Quiet
+        if ($ListOnly) {
+            Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationMutantListLine `
+                    -PerFile $ctx.PerFile -CoveredLinesOnly $ctx.CoveredLinesOnly `
+                    -BaselineMeasured $ctx.BaselineMeasured)
+            return ConvertTo-PSMutationListResult -PerFile $ctx.PerFile -BaselineMeasured $ctx.BaselineMeasured
         }
 
-        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Banner' `
-                -Text "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite...")
-        # Before the baseline, because after it the answer is a false statement about the
-        # tests rather than a true one about the config.
-        $missing = Get-PSMutationMissingSandboxPath -Paths (@($t.Mutate) + @($t.AllTests)) -Subtrees $subtrees
-        if ($missing) { throw $missing }
-        $baseline = Invoke-PSMutationBaseline -TestPath $t.AllTests -MutateFiles $t.Mutate -SandboxRoot $sandbox
-        Assert-PSMutationBaselineGreen -Baseline $baseline
-        $timeout = Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds $baseline.DurationSeconds
-        Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Good' `
-                -Text ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout))
-
-        $ops = Get-PSMutationOperatorList -Cfg $cfg
-        $selection = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -CoveredLinesOnly (Get-PSMutationCoveredLinesOnly -Cfg $cfg) -CoveredLines $baseline.CoveredLines
-        $cands = $selection.Candidates
-        # Derived here in the wiring and carried, because the pre-filter counts exist only
-        # inside the selection; recomputing them later means parsing every file again.
-        $exclusion = Get-PSMutationCoverageExclusion -PerFile $selection.PerFile
-        $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $sandbox
-        $reportPath = Get-PSMutationReportPath -Cfg $cfg -SourceRoot $root
-
-        # Gathered here, in the wiring, because the two impure inputs -- the clock and the
-        # loaded module -- are what would make New-PSMutationProvenance untestable. It stays
-        # pure and is handed values.
-        $provenance = {
-            New-PSMutationProvenance -ModuleVersion (Get-Module PSMutant).Version `
-                -BaselineSeconds $baseline.DurationSeconds -PerMutantTimeoutSeconds $timeout `
-                -TotalSeconds $runClock.Elapsed.TotalSeconds
-        }
-
-        # Two clusters, each shared by two of the three callees below: what a run EXECUTES
-        # with, and what the report DOCUMENTS itself with. A value is spelled once here, so
-        # adding one is an edit at its source rather than at every call site forwarding it.
-        # Provenance stays explicit because the two callees want different things from it --
-        # the recheck takes the scriptblock and invokes it after its own loop, the report
-        # takes the already-invoked result.
-        $exec = @{ Candidates = $cands; TimeoutSeconds = $timeout; SandboxRoot = $sandbox; Quiet = $Quiet }
-        # NOT in $exec, which is splatted into the recheck run as well. A recheck evaluates its
-        # mutants through the same loop and still records a first killer per row; what it does
-        # not do is pay for the complete list, because its report carries no killersComplete
-        # disclosure to make one readable.
-        $allKillers = Get-PSMutationRecordEveryKiller -Cfg $cfg
-        $doc = @{ SourceHashes = $hashes; Operators = $ops; Equivalents = $cfg.equivalents; ReportPath = $reportPath }
-
+        $t = $ctx.Plan
+        $cands = $ctx.Selection.Candidates
+        $exec = $ctx.Exec
+        $doc = $ctx.Doc
+        # Built HERE, and that is a scoping fact rather than a preference. A PowerShell
+        # scriptblock resolves an unbound variable in the scope that INVOKES it, walking the
+        # call stack -- not the scope that created it. Measured: a scriptblock built inside a
+        # function and invoked after that function has returned reads $null for every local it
+        # names, with no error. Defined here it works for the same reason it always did, because
+        # every callee that invokes it is called from this frame.
+        #
+        # The early values are bound in the context, where they are known. The clock is read on
+        # invocation, which has to be AFTER the loop or totalSeconds records how long the run
+        # took to start rather than to finish.
+        $provArgs = $ctx.ProvenanceArgs
+        $provenance = { New-PSMutationProvenance @provArgs -TotalSeconds $runClock.Elapsed.TotalSeconds }
         if ($RecheckFrom) {
             return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance -MergeIntoBaseline:$MergeIntoBaseline
         }
@@ -236,13 +364,13 @@ function Invoke-PSMutation {
         $partial = [System.Collections.Generic.List[object]]::new()
         $done = $false
         try {
-            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial -RecordAllKillers:$allKillers -DeadlineSeconds (Get-PSMutationRunDeadlineBudget -Cfg $cfg -CandidateCount $cands.Count -TimeoutSeconds $timeout -BaselineSeconds $baseline.DurationSeconds)
+            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial -RecordAllKillers:$($ctx.RecordAllKillers) -DeadlineSeconds (Get-PSMutationRunDeadlineBudget -Cfg $cfg -CandidateCount $cands.Count -TimeoutSeconds $ctx.TimeoutSeconds -BaselineSeconds $ctx.Baseline.DurationSeconds)
             $done = $true
         }
         finally {
             if (-not $done) {
                 $written = Write-PSMutationPartialReport -Results @($partial) -Planned $cands.Count `
-                    -ReportPath $reportPath -Operators $ops -SourceHashes $hashes -Provenance (& $provenance)
+                    -ReportPath $ctx.ReportPath -Operators $ctx.Operators -SourceHashes $ctx.SourceHashes -Provenance (& $provenance)
                 # Printed rather than returned: the run is being torn down, so there is no caller
                 # left to hand a value to, and a file written where nobody was told about it is
                 # only marginally better than no file.
@@ -253,11 +381,11 @@ function Invoke-PSMutation {
         }
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
         # totalSeconds records how long the run took to start rather than to finish.
-        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $allKillers -MappedTests $t.AllTests `
+        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $ctx.Exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $ctx.RecordAllKillers -MappedTests $t.AllTests `
             -TestFileLength (Get-PSMutationTestFileLength -Path $t.AllTests -SandboxRoot $sandbox)
         $band = Get-PSMutationScoreBand -Cfg $cfg
         $summaryLines = Get-PSMutationSummaryLine -Summary $summary -Results $results `
-            -High $band.High -Low $band.Low -ReportPath $reportPath -Equivalents $cfg.equivalents -Exclusion $exclusion -PerFile (Get-PSMutationPerFileScore -Results $results -Equivalents $cfg.equivalents)
+            -High $band.High -Low $band.Low -ReportPath $ctx.ReportPath -Equivalents $cfg.equivalents -Exclusion $ctx.Exclusion -PerFile (Get-PSMutationPerFileScore -Results $results -Equivalents $cfg.equivalents)
         Write-PSMutationOutput -Quiet:$Quiet -Lines $summaryLines
         # Annotations are NOT passed -Quiet, and that is the point rather than an oversight.
         # -Quiet exists so a CI log is not filled with several hundred progress lines, and CI is

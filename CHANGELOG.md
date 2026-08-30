@@ -2,6 +2,52 @@
 
 ### For consumers
 
+**`-ListOnly` previews the mutant set without running a single test.** There was no way to answer
+"what would this config actually mutate?" short of starting a run that takes minutes -- which
+matters most exactly when you are least sure: adding a file to `mutate`, changing `operators`, or
+wondering why a file scores 100%.
+
+```powershell
+Invoke-PSMutation -ConfigFile ./c.json -ListOnly
+```
+
+Per file, per operator, and how many candidates survive the `coveredLinesOnly` filter, then it
+stops. Nothing is evaluated, no report is written, no score is produced.
+
+The reason it exists is the **vacuous 100%**. A file that produces no candidates is still listed in
+`mutate`, still hashed into the report, contributes 0 of 0, and in a blended score is invisible --
+two files in a real repository were in that state and it took a dedicated investigation to notice.
+`-ListOnly` names them in seconds, along with the files whose candidates the coverage filter removed
+entirely. Two faults with two different fixes, so they are listed apart: one is a test to write, the
+other is a file that does not belong in `mutate`.
+
+The result carries both sets by name -- `FilesWithNoCandidate` and `FilesEmptiedByCoverage` -- so a
+repository that considers either a mistake can fail its own build on it. The module does not:
+`ExitCode` is always 0, because a preview that evaluated nothing has no verdict to give. The same
+reason a recheck applies no thresholds.
+
+**A full report now discloses `filesWithNoCandidate` too**, and the summary names it. That was not
+preview-only news: the schema's description of the neighbouring `filesWithNoMutants` said "produced
+no candidate at all" while the code reported only the files coverage had emptied, so the one case no
+test can fix was described by a field that never contained it. Both descriptions are now true of
+what they hold.
+
+It is deliberately NOT in the schema's required-disclosure list, although it belongs there on merit.
+Adding it would make every report written before this release invalid against a v1 schema, and that
+is a `schemaVersion` decision rather than this change's to make. It is always written, and pinned in
+a test.
+
+**Per-file paths in the report are repo-relative again.** `filesWithNoMutants` and the uncovered
+caveat in the summary carried absolute paths under a temp sandbox -- a directory whose name changes
+on every run, which no consumer can match against a checkout, and which is deleted before a reader
+sees it. The candidates themselves keep sandbox paths, because that is where the loop reads them.
+
+**`-ListOnly` refuses `-RecheckFrom`, `-UpdateBaseline` and `-MergeIntoBaseline`, and says which.**
+It evaluates nothing, so a switch that acts on verdicts is a request it cannot honour -- and a
+caller who asked for a baseline update and got exit code 0 from a preview would read it as a run
+that updated nothing. Refused before the sandbox is built: the answer needs nothing a tree copy
+could tell us.
+
 **`-Verbose` now tells you something, and progress goes to the stream built for it.** Everything the
 module said went to one of two places: the run result, or the host. There was no verbose stream at
 all -- so re-running with `-Verbose`, the usual first move when a minutes-long run behaves oddly,
@@ -166,6 +212,50 @@ one. A test may also be the only thing covering a file outside `mutate` entirely
 the complete list is evidence of weakness rather than proof of uselessness.
 
 ### Internal
+
+**The prelude every mode shares is one function, and the modes are what differ.** Everything a run
+needs was threaded through positional parameters -- `Invoke-PSMutationRecheckRun` took nine and
+`Invoke-PSMutationLoop` six of the same values again -- all of them produced by the same prelude
+that every mode needs in full before it can differ. Each new mode re-listed the parts it wanted, and
+each new value the prelude produced had to be added to every one of those lists.
+
+`Get-PSMutationRunContext` produces it once. `-ListOnly` is then "run the prelude, render, stop"
+rather than a fourth argument list, which is what made it cheap enough to be worth doing now.
+The callees' signatures are unchanged, so the explicit parameter lists a reader can grep are still
+there; what moved is where the values come from.
+
+It does **not** create the sandbox, and the omission is load-bearing: the caller creates it outside
+its own `try`/`finally` and the prelude runs inside, so a red baseline or a config path that never
+arrived removes the tree instead of leaking it. Both of those throw before the loop, which is
+exactly where an inverted arrangement would leak.
+
+**A scriptblock resolves an unbound variable in the scope that INVOKES it, not the one that created
+it.** The provenance closure reads the baseline duration and the timeout, and moving its definition
+into the context would have made both `$null` -- silently, with the report still written. Measured
+before designing around it: a scriptblock built inside a function and invoked after that function
+returns reads empty for every local it names. The early values are bound into a hashtable in the
+context; the scriptblock stays at the call site, where every callee that invokes it is called from
+its own frame. A test asserts the durations in the written report, so the trap fails loudly if
+anyone moves it.
+
+**The baseline a preview does not measure is a named function, not two lines in an `else`.** Its
+zeros reach the timeout through `Get-PSMutationTimeout`, where the floor swallows any small value
+-- so a mutant turning `0.0` into `1.0` produced the identical budget and survived every test that
+only looks at the run. `Get-PSMutationRunBaseline` returns it, a test states the contract directly,
+and the timeout is now derived on both paths from the one duration rather than hardcoded in the
+preview arm. It carries no `Passed` flag: a green verdict is the one thing a skipped baseline did
+not establish.
+
+**One predicate for "coverage emptied this file", not three.** It was spelled out separately in the
+exclusion collector, the preview lines and the preview result. Two of those were written in this
+change and would have been the copies that drifted; the third was already there.
+
+**`Get-PSMutationMutantListLine` renders the file blocks through a second function.** Written as one
+it reached cognitive 16 against this repo's own 15/15 gate -- caught by the gate, not by review.
+
+**A test fixture that omits `coveredLinesOnly` is testing the COVERED case.** The key defaults to
+true, so the first version of the cheap-preview test proved the no-baseline path against a config
+that does not take it, and failed. The fixture now writes the value in both directions.
 
 **The sandbox sweep suite is a covering suite at last.** `tests/SandboxSweep.Tests.ps1` was
 deliberately named nowhere in the mutation config, because listing it deleted the live run's own

@@ -282,6 +282,61 @@ function Get-PSMutationCoveredLinesOnly {
     return [bool]$Cfg.coveredLinesOnly
 }
 
+function Test-PSMutationBaselineNeeded {
+    <#
+    .SYNOPSIS
+        Whether this run has to measure the baseline suite before it can answer.
+    .DESCRIPTION
+        An ordinary run always does: it needs a green suite to mutate against and a duration to
+        size the per-mutant timeout from.
+
+        -ListOnly evaluates nothing, so the only reason left to pay for a suite run is the
+        COVERAGE the `coveredLinesOnly` filter needs. With that filter off, the preview is a
+        parse and costs nothing. With it on, the filter is part of what the config would
+        actually mutate, and a preview that skipped it would answer a different question than
+        the run does -- confidently, and low.
+    #>
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [bool]$ListOnly,
+        [Parameter(Mandatory)] [bool]$CoveredLinesOnly
+    )
+    return (-not $ListOnly) -or $CoveredLinesOnly
+}
+
+function Get-PSMutationModeFault {
+    <#
+    .SYNOPSIS
+        The message refusing a combination of switches that name two different runs, or empty.
+    .DESCRIPTION
+        -ListOnly evaluates no mutants, so every switch that acts on verdicts is a request it
+        cannot honour. Refused rather than ignored: a caller that asked for a baseline update and
+        got a preview would read the exit code as a run that updated nothing, which is the
+        silence this module exists to remove.
+
+        Named separately rather than through parameter sets. A set would report "cannot be
+        resolved using the specified named parameters", which says nothing about which pair is
+        the problem or why the two do not go together.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [bool]$ListOnly,
+        [Parameter(Mandatory)] [bool]$Recheck,
+        [Parameter(Mandatory)] [bool]$UpdateBaseline,
+        [Parameter(Mandatory)] [bool]$MergeIntoBaseline
+    )
+    if (-not $ListOnly) { return '' }
+    $with = [System.Collections.Generic.List[string]]::new()
+    if ($Recheck) { $with.Add('-RecheckFrom') }
+    if ($UpdateBaseline) { $with.Add('-UpdateBaseline') }
+    if ($MergeIntoBaseline) { $with.Add('-MergeIntoBaseline') }
+    if ($with.Count -eq 0) { return '' }
+    return ("-ListOnly evaluates no mutants, so it cannot be combined with {0}. " -f ($with -join ' or ')) +
+        'Drop -ListOnly to run, or drop the other switch to preview the mutant set.'
+}
+
 function Get-PSMutationRecordEveryKiller {
     <#
     .SYNOPSIS

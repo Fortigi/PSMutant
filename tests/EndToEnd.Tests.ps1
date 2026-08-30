@@ -121,6 +121,82 @@ Describe 'Invoke-PSMutation end-to-end' {
     }
 }
 
+Describe 'Invoke-PSMutation -ListOnly end-to-end' {
+    BeforeAll {
+        # A real run of the real thing: real parse, real operators, real sandbox, real coverage.
+        # The Orchestrator suite mocks Select-PSMutationCandidate, so this is the only place the
+        # preview and the run are shown to agree about a set neither of them was handed.
+        $script:preview = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:proj -ListOnly -Quiet
+    }
+
+    It 'previews exactly the set the full run evaluated' {
+        # THE contract of the mode. A preview that could disagree with the run is worse than no
+        # preview: it would send someone to change a config against a number the run never uses.
+        $script:preview.Total | Should-Be $script:result.Total
+    }
+
+    It 'measured coverage, because this config filters on it' {
+        $script:preview.BaselineMeasured | Should-BeTrue
+        # EXACT, like the counts the full run is pinned on. Produced is the PRE-filter number
+        # and here it equals Total, because this fixture's tests execute every mutable line --
+        # measured, not assumed. Asserted as a figure rather than as `-ge Total`, which would
+        # hold for a Produced left at zero on a file nobody parsed.
+        $script:preview.Produced | Should-Be 3
+        # The distinction the two counts exist for is pinned where it is reachable: Runner's
+        # suite drives a selection whose coverage filter genuinely removes candidates.
+    }
+
+    It 'wrote no report' {
+        # Ran AFTER the full-run Describe, so the file exists and holds a real score. A preview
+        # that wrote here would replace a measurement with counts over a set nobody evaluated.
+        $doc = Get-Content (Join-Path $script:proj 'reports/e2e.json') -Raw | ConvertFrom-Json
+        $doc.mutationScore | Should-Be 33.3
+    }
+
+    It 'reports no vacuous file for a fixture that has none' {
+        # The negative, so the sets are known to be computed rather than merely present. Both,
+        # because either alone certifies whatever the other does.
+        $script:preview.FilesWithNoCandidate.Count | Should-Be 0
+        $script:preview.FilesEmptiedByCoverage.Count | Should-Be 0
+    }
+
+    It 'names a mutate file no operator matched' {
+        # The reason the mode exists. This file is real PowerShell, is listed in mutate, is
+        # hashed into the report and contributes 0 of 0 -- so it scores a vacuous 100% that a
+        # blended number cannot show. Two files in a real repository were in this state.
+        $proj2 = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-vac-$([System.Guid]::NewGuid().ToString('N'))"
+        try {
+            New-Item -ItemType Directory -Path (Join-Path $proj2 'src') -Force | Out-Null
+            New-Item -ItemType Directory -Path (Join-Path $proj2 'tests') -Force | Out-Null
+            Copy-Item $script:srcFile (Join-Path $proj2 'src/calc.ps1')
+            Copy-Item (Join-Path $script:proj 'tests/calc.Tests.ps1') (Join-Path $proj2 'tests/calc.Tests.ps1')
+            # No operator in the config's list has anything to match here.
+            'function Get-Greeting { return ''hello'' }' | Set-Content (Join-Path $proj2 'src/quiet.ps1') -Encoding utf8
+            $cfg2 = [ordered]@{
+                sandboxSubtrees  = @('src', 'tests')
+                mutate           = @('src/calc.ps1', 'src/quiet.ps1')
+                tests            = @{ 'src/calc.ps1' = @('tests/calc.Tests.ps1'); 'src/quiet.ps1' = @('tests/calc.Tests.ps1') }
+                coveredLinesOnly = $true
+                operators        = @('BinaryOperator', 'BooleanLiteral')
+                thresholds       = @{ high = 85; low = 70; break = $null }
+                reportPath       = 'reports/vac.json'
+            }
+            $cfgFile2 = Join-Path $proj2 'mutation.config.json'
+            $cfg2 | ConvertTo-Json -Depth 6 | Set-Content $cfgFile2 -Encoding utf8
+
+            $p = Invoke-PSMutation -ConfigFile $cfgFile2 -SourceRoot $proj2 -ListOnly -Quiet
+            # The repo-relative path the config names, not the temp sandbox path the rows carry.
+            $p.FilesWithNoCandidate | Should-Be 'src/quiet.ps1'
+            # And a full run discloses the same file, in the report, which is where a reader
+            # looks. The preview only made it visible sooner.
+            Invoke-PSMutation -ConfigFile $cfgFile2 -SourceRoot $proj2 -Quiet | Out-Null
+            $doc = Get-Content (Join-Path $proj2 'reports/vac.json') -Raw | ConvertFrom-Json
+            $doc.filesWithNoCandidate | Should-Be 'src/quiet.ps1'
+        }
+        finally { Remove-Item $proj2 -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
     BeforeAll {
         $script:fullReport = Join-Path $script:proj 'reports/e2e.json'

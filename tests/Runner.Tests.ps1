@@ -939,3 +939,125 @@ Describe 'Get-PSMutationCoveringSuite' {
             Should-BeCollection @('tests/all.Tests.ps1')
     }
 }
+
+Describe 'Get-PSMutationCandidateByOperator' {
+    BeforeAll {
+        $script:prod = @(
+            [pscustomobject]@{ Operator = 'BinaryOperator'; Line = 1 }
+            [pscustomobject]@{ Operator = 'BinaryOperator'; Line = 2 }
+            [pscustomobject]@{ Operator = 'BinaryOperator'; Line = 3 }
+            [pscustomobject]@{ Operator = 'BooleanLiteral'; Line = 4 }
+        )
+    }
+
+    It 'counts what each operator produced' {
+        $by = Get-PSMutationCandidateByOperator -Produced $script:prod -Kept $script:prod
+        $by['BinaryOperator'].Produced | Should-Be 3
+        $by['BooleanLiteral'].Produced | Should-Be 1
+    }
+
+    It 'counts produced and kept SEPARATELY' {
+        # The pair is the whole point. One number cannot tell "no operator matched this file" --
+        # which no test can fix -- from "the mapped suite reaches none of its lines", which is
+        # a test to write. Kept must not be read off Produced.
+        $by = Get-PSMutationCandidateByOperator -Produced $script:prod -Kept @($script:prod[0])
+        $by['BinaryOperator'].Produced | Should-Be 3
+        $by['BinaryOperator'].Kept | Should-Be 1
+        $by['BooleanLiteral'].Produced | Should-Be 1
+        $by['BooleanLiteral'].Kept | Should-Be 0
+    }
+
+    It 'lists only the operators that matched, in first-seen order' {
+        # Ordered, so the preview reads the same way twice for the same file. An operator that
+        # produced nothing is absent rather than a zero row: a page of zeros buries the counts
+        # that matter.
+        $by = Get-PSMutationCandidateByOperator -Produced $script:prod -Kept @()
+        @($by.Keys) | Should-BeCollection @('BinaryOperator', 'BooleanLiteral')
+    }
+
+    It 'returns an empty map for a file that produced nothing' {
+        (Get-PSMutationCandidateByOperator -Produced @() -Kept @()).Count | Should-Be 0
+    }
+}
+
+Describe 'Select-PSMutationCandidate per-operator tally' {
+    It 'carries the breakdown on every per-file row' {
+        # Through the real selection, not the helper alone: the tally is only useful if the
+        # thing that builds the rows actually attaches it.
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:fixture) -Operators @('BinaryOperator') `
+            -CoveredLinesOnly $false
+        $sel.PerFile[0].ByOperator['BinaryOperator'].Produced | Should-Be $sel.PerFile[0].Produced
+        $sel.PerFile[0].ByOperator['BinaryOperator'].Kept | Should-Be $sel.PerFile[0].Kept
+    }
+}
+
+Describe 'ConvertTo-PSMutationDisplayPerFile' {
+    It 'replaces the sandbox path with the repo-relative one' {
+        # The rows come out of the sandbox, so File is an absolute path under a temp directory
+        # whose name changes every run and which is deleted before a reader sees it. That value
+        # reached the report and the summary caveat.
+        $sb = Join-Path ([System.IO.Path]::GetTempPath()) 'psmut-display-fixture'
+        $rows = @([pscustomobject]@{ File = (Join-Path $sb 'src/a.ps1'); Produced = 4; Kept = 2; ByOperator = [ordered]@{} })
+        $out = ConvertTo-PSMutationDisplayPerFile -PerFile $rows -SandboxRoot $sb
+        # The exact string, not "does not contain the sandbox": a separator assertion is a
+        # platform assumption, and an absence certifies whatever the code happens to do.
+        $out[0].File | Should-Be 'src/a.ps1'
+    }
+
+    It 'carries the counts and the breakdown through unchanged' {
+        $sb = Join-Path ([System.IO.Path]::GetTempPath()) 'psmut-display-fixture'
+        $rows = @([pscustomobject]@{ File = (Join-Path $sb 'src/a.ps1'); Produced = 4; Kept = 2
+                ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 4; Kept = 2 } }
+            })
+        $out = ConvertTo-PSMutationDisplayPerFile -PerFile $rows -SandboxRoot $sb
+        $out[0].Produced | Should-Be 4
+        $out[0].Kept | Should-Be 2
+        $out[0].ByOperator['BinaryOperator'].Kept | Should-Be 2
+    }
+
+    It 'returns an empty ARRAY for an empty selection, not $null' {
+        # `, @()` and an assignment at the call site. Wrapped or piped, an empty result becomes
+        # $null and every count downstream reads 1 or throws.
+        $out = ConvertTo-PSMutationDisplayPerFile -PerFile @() -SandboxRoot '/tmp/whatever'
+        $out.Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationRunBaseline' {
+    BeforeAll {
+        $script:plan = @{ AllTests = @('t.Tests.ps1'); Mutate = @('a.ps1') }
+    }
+
+    It 'reports no time taken and no coverage when it did not measure' {
+        # Asserted DIRECTLY, which is the reason this is a function at all. The zeros reach the
+        # timeout through Get-PSMutationTimeout, where the floor swallows any small value -- so
+        # a mutant turning 0.0 into 1.0 produces the identical budget and would survive every
+        # test that only looks at the run.
+        $b = Get-PSMutationRunBaseline -Plan $script:plan -SandboxRoot $script:coverageDir
+        $b.DurationSeconds | Should-Be 0
+        $b.CoveredLines.Count | Should-Be 0
+    }
+
+    It 'carries no Passed flag when it did not measure' {
+        # The one thing a skipped baseline did not establish. Fabricating a green verdict here
+        # is the "a number nobody measured, reported as one" failure this module exists to catch.
+        $b = Get-PSMutationRunBaseline -Plan $script:plan -SandboxRoot $script:coverageDir
+        # The exact field list, not an absence: an absence certifies whatever the code happens
+        # to return, and would still pass if the function stopped returning anything at all.
+        @($b.PSObject.Properties.Name) | Should-BeCollection @('DurationSeconds', 'CoveredLines')
+    }
+
+    It 'measures, and refuses a red suite, when asked to' {
+        Mock Invoke-PSMutationBaseline { @{ Passed = $false; DurationSeconds = 3.0; CoveredLines = @{} } }
+        { Get-PSMutationRunBaseline -Plan $script:plan -SandboxRoot $script:coverageDir -Measure -Quiet } |
+            Should-Throw
+        Should-Invoke Invoke-PSMutationBaseline -Exactly 1
+    }
+
+    It 'returns the measured baseline when the suite is green' {
+        Mock Invoke-PSMutationBaseline { @{ Passed = $true; DurationSeconds = 7.5; CoveredLines = @{ 'a.ps1' = @(1) } } }
+        $b = Get-PSMutationRunBaseline -Plan $script:plan -SandboxRoot $script:coverageDir -Measure -Quiet
+        $b.DurationSeconds | Should-Be 7.5
+        $b.CoveredLines.Count | Should-Be 1
+    }
+}

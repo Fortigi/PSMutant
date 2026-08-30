@@ -61,6 +61,45 @@ exit $result.ExitCode        # 0 unless thresholds.break is unmet, or a declarat
 Survivors are printed with `file:line` and the exact source→mutant change — each is a
 missing assertion, an equivalent mutant (a change that can't alter behaviour), or dead code.
 
+### Seeing what a config would mutate, before it costs you minutes
+
+```powershell
+Invoke-PSMutation -ConfigFile ./psmutant.config.json -ListOnly
+```
+
+Prints the mutant set — per file, per operator, and how many candidates survive the
+`coveredLinesOnly` filter — and stops. Nothing is evaluated, no report is written, no score is
+produced. It is the answer to "what would this actually do?", which is the question you have
+exactly when you are least sure: adding a file to `mutate`, changing `operators`, or wondering
+why a file scores 100%.
+
+That last one is the reason it exists. **A file that produces no candidates scores a vacuous
+100%** — it is listed in `mutate`, hashed into the report, contributes 0 of 0, and in a blended
+score is invisible. Two files in a real repository were in that state and it took a dedicated
+investigation to notice. `-ListOnly` names them, along with the files whose candidates the
+coverage filter removed entirely. Different faults with different fixes, so they are listed
+apart: one is a test to write, the other is a file that does not belong in `mutate`.
+
+```
+     34 src/Transform.ps1 -> 31 covered
+     19     ConditionForcing -> 18
+     11     BinaryOperator -> 10
+      4     ReturnValue -> 3
+      0 src/Constants.ps1
+
+  31 mutant(s) over 2 file(s) would be evaluated.
+  1 file(s) produced NO candidate, so each scores a vacuous 100%: src/Constants.ps1
+```
+
+The result object carries both sets by name — `FilesWithNoCandidate` and
+`FilesEmptiedByCoverage` — so a repository that considers either one a mistake can fail its own
+build on it. The module does not: a file with nothing to mutate is not always an error, and a
+preview that evaluated nothing has no business issuing a verdict. `ExitCode` is always 0.
+
+Cost: one baseline suite run, because `coveredLinesOnly` is part of what would actually be
+mutated and a preview that skipped it would answer a different question than the run does. Never
+the mutants x suite that a run pays.
+
 ### Rechecking survivors while you write assertions
 
 Killing survivors is an edit-run-edit loop, and re-running the mutants you already killed
@@ -238,6 +277,12 @@ keys are present. It changes when a field changes meaning or disappears, not whe
 added. `durations` makes a run comparable with the next one — the timeout sits beside the
 baseline it was derived from, so a suite drifting toward its bound is visible before it
 crosses.
+
+A full report also discloses what its score does **not** answer for: `skippedAsUncovered`,
+`filesWithNoMutants` (files whose candidates the coverage filter removed entirely) and
+`filesWithNoCandidate` (files no operator matched at all). The last two are the two shapes of a
+vacuous 100%, kept apart because the fixes differ, and they are what `-ListOnly` shows you
+before a run rather than after one.
 
 Reports also record `operators` and a `sourceHashes` map (SHA256 per mutated file). Those
 exist so `-RecheckFrom` can prove the mutant ids in a report still refer to the same code.

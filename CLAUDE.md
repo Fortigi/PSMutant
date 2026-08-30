@@ -1443,14 +1443,73 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   `Get-PSMutationProgressPercent`, one `-ForEach` table asserts the whole range, and the 1-of-3 row
   is what tells `*` from `/`.
 
-  Same shape as the run deadline compared against a live stopwatch. Whenever the observable effect
-  is out of reach, the DECISION has to come out of the effect.
+  Same shape as the run deadline compared against a live stopwatch, and as the stand-in baseline a
+  `-ListOnly` preview uses: its zeros reach the timeout through `Get-PSMutationTimeout`, where the
+  floor swallows any small value, so `0.0 -> 1.0` produced the identical budget and survived. A
+  named function whose return value a test can state directly is what makes it observable --
+  `Get-PSMutationRunBaseline`, not two lines inside an `else`.
+
+  Whenever the observable effect is out of reach, the DECISION has to come out of the effect.
 
 - **Roles name a stream, not only a colour.** `-Quiet` and `-Verbose` answer different questions, so
   the quiet guard sits after the verbose arm rather than at the top of the renderer: silencing the
   console log must not silence a stream the console was never showing. `Warn` stays on the host
   because it is also the score band for a middling result -- routing a role wholesale is not the
   same as routing the one call site that is genuinely a warning.
+
+- **A scriptblock resolves an unbound variable in the scope that INVOKES it, walking the call
+  stack -- not the scope that created it.** Measured before relying on it: a scriptblock built
+  inside a function and invoked after that function returns reads `$null` for every local it
+  names, with no error; invoked from a frame *below* its definer it reads the DEFINER's value.
+  So `$provenance` works where it is, and would have silently recorded a null baseline duration
+  and a null timeout had its definition moved into `Get-PSMutationRunContext` with its
+  invocation left behind.
+
+  The rule that follows: a scriptblock may only be built where every frame that invokes it is a
+  descendant of the builder's. Anything else passes values as **data** -- a hashtable splatted at
+  the call site binds at build time and is immune. `.GetNewClosure()` is not the fix here: it is
+  the thing that breaks `$script:` lookups a few entries below.
+
+- **The prelude every mode shares is ONE function, and the modes are what differ** (#63). Nine
+  positional parameters into the recheck run and six of the same again into the loop, all
+  produced by a prelude every mode needs in full before it can differ -- so each new mode
+  re-listed the parts it wanted. `Get-PSMutationRunContext` produces it once; `-ListOnly` is
+  then "run the prelude, render, stop" rather than a fourth argument list.
+
+  The callees' signatures were deliberately left alone. The explicitness a reader greps for is
+  worth keeping; what moved is where the values come from, not how they arrive.
+
+  **It does not create the sandbox, and that omission is load-bearing.** The caller creates it
+  outside its own `try`/`finally` with the prelude INSIDE, so a red baseline or a config path
+  that never reached the sandbox removes the tree rather than leaking it. Both throw before the
+  loop, which is exactly the window an inverted arrangement leaks in. A test drives the red
+  baseline and asserts the removal, because the ordinary path cannot tell the two apart.
+
+- **A file that produces NO candidate scores a vacuous 100%, and it is not the same fault as one
+  coverage emptied.** Both contribute 0 of 0 and look identical in a score. One is a test to
+  write; the other is a file that does not belong in `mutate` or holds nothing this module can
+  mutate. `Get-PSMutationFileEmptiedByCoverage` and `Get-PSMutationFileWithNoCandidate` are named
+  apart for that reason, and both are reported.
+
+  The second went unreported for a long time while `filesWithNoMutants` in the SCHEMA was
+  described as "produced no candidate at all" -- so the field that named the case did not contain
+  it, and the case no test can fix was the one nothing said. Prose about a field is a claim to
+  check against what the field holds.
+
+- **Paths that leave the sandbox must be converted at ONE point, and the per-file tally is one of
+  them.** `Select-PSMutationCandidate` works in the sandbox, so every `File` it reports is an
+  absolute path under a temp directory whose name changes every run and which is deleted before a
+  reader sees it. That value reached the report's `filesWithNoMutants` and the summary's uncovered
+  caveat. `ConvertTo-PSMutationDisplayPerFile` converts once, in the wiring; the candidates keep
+  their sandbox paths, because that is where the loop reads them.
+
+- **A preview must not answer a different question than the run.** `-ListOnly` skips the baseline
+  only when `coveredLinesOnly` is off, because that filter is part of what a run would actually
+  mutate -- and it defaults to TRUE, so the ordinary preview does pay for one suite run. Two
+  consequences worth keeping: the result carries `BaselineMeasured` rather than letting a caller
+  infer it from the numbers, and a fixture that OMITS `coveredLinesOnly` is exercising the covered
+  case, not the cheap one. The first version of that test proved the no-baseline path against a
+  config that does not take it.
 
 ## Practices to adopt
 
