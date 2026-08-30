@@ -144,6 +144,25 @@ function Invoke-PSMutation {
     try {
         $t = Get-PSMutationSandboxPlan -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox
 
+        # THE RESOLUTIONS, on the verbose stream. These are narration while a run works and the
+        # first four questions when it does not: which sandbox, which files were actually
+        # resolved into the mutate set, which suite each one maps to, and which Pester answered.
+        # None of them was recoverable before -- the module had no verbose stream at all, so
+        # re-running with -Verbose, the usual first move, produced nothing.
+        Write-PSMutationOutput -Quiet:$Quiet -Lines @(
+            (New-PSMutationLine -Role 'Trace' -Text "sandbox: $sandbox")
+            (New-PSMutationLine -Role 'Trace' -Text ("subtrees copied: {0}" -f ($subtrees -join ', ')))
+            (New-PSMutationLine -Role 'Trace' -Text ("mutate set resolved to {0} file(s): {1}" -f `
+                        @($t.Mutate).Count, ((@($t.Mutate) | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')))
+            (New-PSMutationLine -Role 'Trace' -Text ("pester: {0}" -f (Get-PSMutationPesterPath)))
+        )
+        foreach ($f in @($t.Mutate)) {
+            $covering = Get-PSMutationCoveringSuite -File $f -TestsByFile $t.TestsByFile -AllTests $t.AllTests
+            Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Trace' `
+                    -Text ("  {0} -> {1}" -f (Split-Path $f -Leaf),
+                        ((@($covering) | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')))
+        }
+
         Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Banner' `
                 -Text "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite...")
         # Before the baseline, because after it the answer is a false statement about the

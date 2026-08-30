@@ -386,6 +386,24 @@ function Get-PSMutationOverBudgetFault {
         'runTimeoutSeconds, or set it to 0 if something else already kills wedged runs.')
 }
 
+function Get-PSMutationCoveringSuite {
+    <#
+    .SYNOPSIS
+        The test files that cover one mutate file: its own mapping, or the whole suite.
+    #>
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$File,
+        [Parameter(Mandatory)] [hashtable]$TestsByFile,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$AllTests
+    )
+    # ONE place, because the loop and the verbose trace both need the answer and a second copy of
+    # a fallback is a second thing to get wrong -- the trace's copy survived its own mutant, since
+    # nothing asserted what it printed.
+    return [string[]]@($TestsByFile.ContainsKey($File) ? $TestsByFile[$File] : $AllTests)
+}
+
 function Invoke-PSMutationLoop {
     # Evaluate every candidate; return the result rows.
     [OutputType([object[]])]
@@ -434,7 +452,7 @@ function Invoke-PSMutationLoop {
         if (-not $originals.ContainsKey($c.File)) { $originals[$c.File] = [System.IO.File]::ReadAllText($c.File) }
         $content = $originals[$c.File]
         $mutated = Set-PSMutationText -Content $content -Candidate $c
-        $covering = $TestsByFile.ContainsKey($c.File) ? $TestsByFile[$c.File] : $AllTests
+        $covering = Get-PSMutationCoveringSuite -File $c.File -TestsByFile $TestsByFile -AllTests $AllTests
         $mutantClock = [System.Diagnostics.Stopwatch]::StartNew()
         $verdict = Invoke-PSMutant -Candidate $c -MutatedContent $mutated -OriginalContent $content `
             -CoveringTests $covering -TimeoutSeconds $TimeoutSeconds -RecordAllKillers:$RecordAllKillers
@@ -464,6 +482,10 @@ function Invoke-PSMutationLoop {
         $results.Add($row)
         Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationProgressLine -Index $n `
                 -Total $Candidates.Count -Result $row -DisplayFile (Split-Path $display -Leaf))
+        # Not passed -Quiet: a non-interactive host renders no progress at all, so there is
+        # nothing for -Quiet to silence, and a local run keeps the one signal that tells a hung
+        # run from a slow one even when the log is off.
+        Write-PSMutationProgress -Index $n -Total $Candidates.Count -Activity 'Evaluating mutants'
 
         # Both checks sit BETWEEN mutants, after the row is in the sink. A run stopped here has
         # already recorded everything it finished, so the partial report written on the way out

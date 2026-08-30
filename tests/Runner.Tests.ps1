@@ -921,3 +921,21 @@ Describe 'the run bounds at their boundaries' {
         $f | Should-MatchString 'after 7 of 9'
     }
 }
+
+Describe 'Get-PSMutationCoveringSuite' {
+    It 'uses the file''s OWN mapping when it has one' {
+        # Getting this wrong runs every mutant against the whole suite -- correct, but it turns a
+        # minutes-long run into an hours-long one.
+        Get-PSMutationCoveringSuite -File 'src/a.ps1' `
+            -TestsByFile @{ 'src/a.ps1' = @('tests/a.Tests.ps1') } -AllTests @('tests/all.Tests.ps1') |
+            Should-BeCollection @('tests/a.Tests.ps1')
+    }
+
+    It 'falls back to the whole suite when it has none' {
+        # The other arm, and the safe direction: a file with no mapping must be covered by
+        # everything rather than by nothing, or its mutants die for want of a test that ran.
+        Get-PSMutationCoveringSuite -File 'src/b.ps1' `
+            -TestsByFile @{ 'src/a.ps1' = @('tests/a.Tests.ps1') } -AllTests @('tests/all.Tests.ps1') |
+            Should-BeCollection @('tests/all.Tests.ps1')
+    }
+}
