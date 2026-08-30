@@ -305,6 +305,37 @@ function Test-PSMutationBaselineNeeded {
     return (-not $ListOnly) -or $CoveredLinesOnly
 }
 
+function Test-PSMutationCoverageNeeded {
+    <#
+    .SYNOPSIS
+        Whether this run's baseline has to be instrumented for coverage.
+    .DESCRIPTION
+        Two runs do not need it, and both used to pay for it anyway.
+
+        A run with `coveredLinesOnly` off never reads a covered line, so the tracer is pure
+        surcharge -- measured here at +24% on the baseline suite.
+
+        A RECHECK does not need it either, and that is the less obvious half. It evaluates the
+        mutants a prior report listed as survivors, matched by (File, Id) -- and ids are assigned
+        over the UNFILTERED candidate set, before coverage removes anything (#59). So an
+        unfiltered selection is a superset of the filtered one and the intersection is identical.
+        The recheck exists to narrow the loop, so the fixed setup is exactly what dominates the
+        round where the developer is iterating fastest.
+
+        ONE answer drives both the tracer and the filter, deliberately. They must never disagree:
+        coverage without the filter is the waste this closes, and the filter without coverage
+        selects NOTHING -- measured, a recheck in that state evaluates zero mutants and reports
+        that none of the previous survivors are still alive.
+    #>
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [bool]$CoveredLinesOnly,
+        [Parameter(Mandatory)] [bool]$Recheck
+    )
+    return $CoveredLinesOnly -and -not $Recheck
+}
+
 function Get-PSMutationModeFault {
     <#
     .SYNOPSIS

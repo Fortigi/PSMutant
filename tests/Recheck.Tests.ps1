@@ -135,6 +135,34 @@ Describe 'Select-PSMutationRecheckCandidate' {
         )
     }
 
+    It 'gives the same answer from a filtered set and from the unfiltered SUPERSET' {
+        # THE invariant the recheck's dropped coverage rests on (#107, citing #59). Ids are
+        # assigned over the unfiltered candidate set, before the coverage filter removes
+        # anything, so an unfiltered selection is a superset whose extra members no report
+        # lists as survivors -- and the intersection is therefore identical.
+        #
+        # Asserted over both sets rather than trusting the argument: if numbering ever stops
+        # preceding filtering, a recheck would silently evaluate a different set of mutants
+        # and report "N of M previous survivors now killed" over it.
+        $rep = [pscustomobject]@{ survivors = @(
+                [pscustomobject]@{ File = 'src/a.ps1'; Id = 3 }
+                [pscustomobject]@{ File = 'src/b.ps1'; Id = 1 }
+            )
+        }
+        # What a coverage-filtered run would have produced: the same ids, minus whatever the
+        # filter removed. Id 2 is gone, and no id is renumbered.
+        $filtered = @($script:cands | Where-Object { -not ($_.File -eq $script:fileA -and $_.Id -eq 2) })
+        $fromSuperset = Select-PSMutationRecheckCandidate -Candidates $script:cands -Report $rep -SandboxRoot $script:sandbox
+        $fromFiltered = Select-PSMutationRecheckCandidate -Candidates $filtered -Report $rep -SandboxRoot $script:sandbox
+
+        # Both halves. The counts alone would agree for two entirely different pairs of mutants.
+        @($fromSuperset).Count | Should-Be @($fromFiltered).Count
+        @($fromSuperset | ForEach-Object { "$($_.File)|$($_.Id)" }) |
+            Should-BeCollection @($fromFiltered | ForEach-Object { "$($_.File)|$($_.Id)" })
+        # And it selected something, so the equality is not two empty sets agreeing.
+        @($fromSuperset).Count | Should-Be 2
+    }
+
     It 'keeps only the mutants the report recorded as survivors' {
         $rep = [pscustomobject]@{ survivors = @([pscustomobject]@{ File = 'src/a.ps1'; Id = 3 }) }
         $out = Select-PSMutationRecheckCandidate -Candidates $script:cands -Report $rep -SandboxRoot $script:sandbox

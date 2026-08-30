@@ -1096,3 +1096,21 @@ Describe 'Get-PSMutationModeFault' {
         }
     }
 }
+
+Describe 'Test-PSMutationCoverageNeeded' {
+    It 'instruments only a run that will actually read a covered line' -ForEach @(
+        # The full run the filter exists for.
+        @{ Covered = $true;  Recheck = $false; Needed = $true }
+        # coveredLinesOnly off: nothing downstream reads coverage, so the tracer is pure
+        # surcharge -- measured at +24% on this repo's own baseline suite.
+        @{ Covered = $false; Recheck = $false; Needed = $false }
+        # A recheck evaluates the mutants a prior report listed, matched on (File, Id), and ids
+        # are assigned before the filter removes anything -- so an unfiltered selection is a
+        # superset and the intersection is identical. The round where the loop has narrowed to
+        # two survivors is exactly where this fixed cost dominates.
+        @{ Covered = $true;  Recheck = $true;  Needed = $false }
+        @{ Covered = $false; Recheck = $true;  Needed = $false }
+    ) {
+        Test-PSMutationCoverageNeeded -CoveredLinesOnly $Covered -Recheck $Recheck | Should-Be $Needed
+    }
+}

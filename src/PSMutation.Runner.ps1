@@ -31,14 +31,19 @@ function Invoke-PSMutationBaseline {
         # Where Pester's coverage XML goes. Mandatory rather than defaulted to temp: the sandbox is
         # the one directory this run owns and disposes of, and a default would put the file back in
         # shared temp for any caller who forgot.
-        [Parameter(Mandatory)] [string]$SandboxRoot
+        [Parameter(Mandatory)] [string]$SandboxRoot,
+        # Instrument for coverage. OFF by default, because the green gate is what every run needs
+        # and the covered lines are what only some do -- see Test-PSMutationCoverageNeeded. A
+        # baseline without it returns an empty CoveredLines, which is the true answer: nothing was
+        # measured. It must not then be handed to a filter, and one decision drives both.
+        [switch]$Coverage
     )
 
     $cfg = New-PesterConfiguration
     $cfg.Run.Path = $TestPath
     $cfg.Run.PassThru = $true
     $cfg.Output.Verbosity = 'None'
-    $cfg.CodeCoverage.Enabled = $true
+    $cfg.CodeCoverage.Enabled = [bool]$Coverage
     $cfg.CodeCoverage.Path = $MutateFiles
     # Coverage is read from the RESULT OBJECT below; this file is never opened. The path exists
     # only because Pester writes one somewhere, and its default is a coverage.xml in the working
@@ -60,11 +65,20 @@ function Invoke-PSMutationBaseline {
     $result = Invoke-Pester -Configuration $cfg
     $sw.Stop()
 
+    # A foreach STATEMENT, not a pipeline, and that is the whole of a bug this uncovered. With the
+    # tracer off Pester reports no CommandsExecuted, and `$null | ForEach-Object` runs its body
+    # ONCE with $_ = $null -- so GetFullPath was handed an empty string and the run died inside
+    # the baseline. Wrapping in @( ) does not help: @($null) has one element, which is $null.
+    # `foreach ($x in $null)` iterates zero times, which is the answer this wants. Measured all
+    # three; the numbers are 1, 1 and 0.
+    #
+    # It was unreachable while coverage was unconditional, which is why it sat here until the
+    # tracer became optional.
     $covered = @{}
-    $result.CodeCoverage.CommandsExecuted | ForEach-Object {
-        $f = [System.IO.Path]::GetFullPath($_.File)
+    foreach ($cmd in $result.CodeCoverage.CommandsExecuted) {
+        $f = [System.IO.Path]::GetFullPath($cmd.File)
         if (-not $covered.ContainsKey($f)) { $covered[$f] = [System.Collections.Generic.HashSet[int]]::new() }
-        [void]$covered[$f].Add([int]$_.Line)
+        [void]$covered[$f].Add([int]$cmd.Line)
     }
 
     return @{
@@ -177,12 +191,14 @@ function Get-PSMutationRunBaseline {
         [Parameter(Mandatory)] $Plan,
         [Parameter(Mandatory)] [string]$SandboxRoot,
         [switch]$Measure,
+        [switch]$Coverage,
         [switch]$Quiet
     )
     if (-not $Measure) { return [pscustomobject]@{ DurationSeconds = 0.0; CoveredLines = @{} } }
     Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Banner' `
             -Text "`nPSMutant - PowerShell mutation testing (sandboxed)`n  Running baseline suite...")
-    $baseline = Invoke-PSMutationBaseline -TestPath $Plan.AllTests -MutateFiles $Plan.Mutate -SandboxRoot $SandboxRoot
+    $baseline = Invoke-PSMutationBaseline -TestPath $Plan.AllTests -MutateFiles $Plan.Mutate `
+        -SandboxRoot $SandboxRoot -Coverage:$Coverage
     Assert-PSMutationBaselineGreen -Baseline $baseline
     return $baseline
 }
