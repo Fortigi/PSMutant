@@ -239,6 +239,13 @@
         "$ref": "#/definitions/perFileScore"
       },
       "description": "Per-file scores, weakest first then by name. Beside the blended score rather than instead of it: the blend is what thresholds gate on, and this is what says whether the blend is hiding a weak file behind a strong one."
+    },
+    "testFiles": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "integer"
+      },
+      "description": "Each mapped test file's size in bytes when this report was written, keyed by the path the config names. Read by -MergeIntoBaseline to tell an added test from a deleted one: a merge carries over the status of every mutant the recheck did not evaluate, and a test that shrank may have revived one."
     }
   },
   "allOf": [

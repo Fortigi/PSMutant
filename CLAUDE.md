@@ -1423,6 +1423,19 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   questions have to be asked, and both need a test, because the direction that is missing looks
   exactly like the one that passes.
 
+- **A fixture that agrees with the code and not with the DATA proves nothing.** The merge gate read
+  `.length` off each recorded test-file size. PowerShell answers `.Length` of 1 for any scalar, so
+  the comparison became "is 150 less than 1" and never fired -- and the unit test agreed, because
+  its fixture nested the number in an object, a shape the report never writes. Only running it end
+  to end caught it. When a fixture stands in for something a real run produces, build it the way
+  that run does or assert against a real one.
+
+- **`@( )` around a `, $array` return is a foot-gun, and knowing about it is not enough.** It yields
+  a one-element array holding the array, so `.Count` is 1 for an empty result. This is now the third
+  place it has bitten -- the per-file scores, the console lines, and a merge refused with a blank
+  reason because `@(Get-Fault).Count -gt 0` was true for no faults. The rule is: callers ASSIGN,
+  never wrap and never pipe.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked

@@ -504,7 +504,7 @@ Describe 'the contract a consumer actually depends on' {
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
                     'mutationScore', 'total', 'killed', 'survived', 'timedOut',
-                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'perFile', 'skippedAsUncovered', 'filesWithNoMutants',
+                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'testFiles', 'perFile', 'skippedAsUncovered', 'filesWithNoMutants',
                     'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
