@@ -9,7 +9,7 @@
 # when one is added, which readers survive. It exists so a consumer can branch on a number
 # instead of sniffing for keys -- this module already ships two report shapes, and anything
 # reconciling them has otherwise to recognise each by which keys it happens to carry.
-$script:PSMutationSchemaVersion = 1
+$script:PSMutationSchemaVersion = 2
 
 function New-PSMutationProvenance {
     # How a report was produced: which schema, which build, when, and how long it took.

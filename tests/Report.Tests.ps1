@@ -965,7 +965,7 @@ Describe 'New-PSMutationProvenance' {
         # The point of the field: #20 had to reconcile two report shapes by hand, and #4
         # will have to tell a merged report from a plain one. Sniffing for keys is what a
         # version number exists to replace.
-        $script:prov.schemaVersion | Should-Be 1
+        $script:prov.schemaVersion | Should-Be 2
     }
 
     It 'attributes the report to a module build' {
@@ -1011,7 +1011,7 @@ Describe 'the provenance a report carries' {
             $prov = New-PSMutationProvenance -ModuleVersion '9.9.9' -BaselineSeconds 1 -TotalSeconds 2 -PerMutantTimeoutSeconds 15
             Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Provenance $prov | Out-Null
             $json = Get-Content $out -Raw | ConvertFrom-Json
-            $json.schemaVersion            | Should-Be 1
+            $json.schemaVersion            | Should-Be 2
             $json.producedBy.version       | Should-Be '9.9.9'
             $json.durations.totalSeconds   | Should-Be 2
             # Asserted against the FILE, not the parsed object: ConvertFrom-Json recognises
@@ -1164,7 +1164,7 @@ Describe 'Write-PSMutationPartialReport' {
         # somebody opens the file.
         $doc = script:WritePartial
         $doc.generatedFrom          | Should-Be 'PSMutant'
-        $doc.schemaVersion          | Should-Be 1
+        $doc.schemaVersion          | Should-Be 2
         $doc.producedBy.module      | Should-Be 'PSMutant'
         $doc.durations.totalSeconds | Should-Be 2
     }
@@ -1460,6 +1460,9 @@ Describe 'Get-PSMutationUpdatedSurvivorBaseline' {
             [pscustomobject]@{ File = 'src/a.ps1'; Function = 'A'; Description = 'd'; Status = 'Survived'; Line = 1 }
             [pscustomobject]@{ File = 'src/a.ps1'; Function = 'K'; Description = 'd'; Status = 'Killed'; Line = 2 }
         )
+        # ONE, while a report says two. The baseline is a different document with its own
+        # format, and it did not change here -- sharing the report's constant would have
+        # re-versioned a file nothing about which moved.
         $b.schemaVersion | Should-Be 1
         @($b.survivors.PSObject.Properties.Name) | Should-BeCollection @('src/a.ps1:A:d', 'src/z.ps1:Z:d')
     }

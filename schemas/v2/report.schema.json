@@ -22,8 +22,8 @@
     },
     "schemaVersion": {
       "type": "integer",
-      "minimum": 1,
-      "description": "The format version. Branch on this rather than sniffing for keys. It changes when a field changes MEANING, disappears, or becomes REQUIRED -- the three ways a document that was valid stops being valid. Adding an optional field does not change it. This file describes version 1; version 2 is in schemas/v2 and is what the module writes now."
+      "minimum": 2,
+      "description": "The format version. Branch on this rather than sniffing for keys. It changes when a field changes MEANING, disappears, or becomes REQUIRED -- the three ways a document that was valid stops being valid. Adding an optional field does not change it. Version 2 required filesWithNoCandidate and filesMutated among the full-run disclosures. The minimum is 2, not a const: a version 1 document then fails on the version rather than on a field it was never supposed to carry, while a later version still validates here as long as it keeps these fields."
     },
     "producedBy": {
       "type": "object",
@@ -149,6 +149,13 @@
       },
       "description": "Full runs only. Files in 'mutate' whose candidates the covered-lines filter removed entirely, so they contribute nothing to the score. Empty is the ordinary answer and is written as [], never as [null]."
     },
+    "filesWithNoCandidate": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Full runs only. Files in 'mutate' that produced no candidate at all, so they score a vacuous 100%. Separate from filesWithNoMutants because no test can change this one. Empty is the ordinary answer and is written as [], never as [null]."
+    },
     "filesWithoutTestMapping": {
       "type": "array",
       "items": {
@@ -266,7 +273,9 @@
           "staleEquivalents",
           "skippedAsUncovered",
           "filesWithNoMutants",
+          "filesWithNoCandidate",
           "filesWithoutTestMapping",
+          "filesMutated",
           "thresholds"
         ]
       },

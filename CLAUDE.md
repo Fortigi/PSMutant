@@ -526,7 +526,7 @@ Three things about the schemas worth knowing before editing either:
   "string", "null"]` with `items` says the same thing with one accurate error.
 
 Additional properties are permitted in the **report** schema on purpose: `schemaVersion`
-changes when a field changes meaning or disappears, never when one is added, so a consumer
+changes when a field changes meaning, disappears or becomes required, never when an optional one is added, so a consumer
 validating against it survives a release that records more. That is also why the exact field
 lists stay pinned in the tests -- the schema states the guaranteed **minimum** for
 consumers, and the literal lists keep *widening* a deliberate act on our side. The **config**
@@ -1510,6 +1510,34 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   infer it from the numbers, and a fixture that OMITS `coveredLinesOnly` is exercising the covered
   case, not the cheap one. The first version of that test proved the no-baseline path against a
   config that does not take it.
+
+- **A cut release that never ships keeps absorbing work, and nothing notices.** 0.5.0 had its
+  heading dated and the manifest bumped, then fifteen commits landed under `## [Unreleased]` while
+  it was never tagged -- so `v0.5.0` would have published a build whose notes described a sixth of
+  it. Every gate passed throughout: `Test-PSMutantRelease.ps1` compares the manifest against the
+  NEWEST NAMED section and is blind to an `Unreleased` above it, which is exactly the state to be
+  blind to. Before adding to `Unreleased`, check that the version below it is on the gallery.
+
+  **A release note is not a concatenation of PR summaries.** The block had reached 16254 characters
+  against a 10600 gallery limit, and the per-PR notes that make a good pull request read as
+  repetition end to end. The limit is the forcing function; `-Apply` regenerates the manifest field
+  from the changelog, so the changelog is the only place to edit.
+
+- **A new REQUIRED field is a schema version bump, not an addition.** The rule written in four
+  places here said `schemaVersion` moves when a field changes meaning or disappears, never when one
+  is added -- which is right for an optional field and wrong for a required one, because a document
+  that was valid stops being valid. `filesWithNoCandidate` is the case: it belongs in the full-run
+  disclosures on merit, so the version moved to 2 rather than the field being left optional to avoid
+  moving it.
+
+  `schemas/v1/report.schema.json` still ships beside v2 and `Test-PSMutantPackage.ps1` checks both,
+  because an archived report says `schemaVersion: 1` and the schema shipped beside the new module is
+  all a consumer who upgraded has. v2 sets `minimum: 2` rather than a const, so a v1 document fails
+  on the VERSION -- the true reason -- while a future v3 still validates as long as it keeps these
+  fields.
+
+  The report's version and the survivor baseline's are independent constants. Bumping one must not
+  re-version the other; a test pins the baseline at 1 while the report says 2.
 
 ## Practices to adopt
 

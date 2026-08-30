@@ -319,7 +319,7 @@ Describe 'Test-Flag (added mid-loop)' {
         # threaded through a different call path than the full report's and wiring it in one
         # place and not the other is invisible until someone reads the artifact.
         $first = Get-Content $script:chainPath -Raw | ConvertFrom-Json
-        $first.schemaVersion          | Should-Be 1
+        $first.schemaVersion          | Should-Be 2
         $first.producedBy.module      | Should-Be 'PSMutant'
         $first.producedBy.version     | Should-NotBeEmptyString
         $first.durations.totalSeconds | Should-BeGreaterThan 0
@@ -642,7 +642,7 @@ Describe 'the help a user actually gets' {
 
 
 Describe 'the published report schema' {
-    # schemas/v1/report.schema.json is shipped with the module so a consumer can validate a
+    # schemas/v2/report.schema.json is shipped with the module so a consumer can validate a
     # report without reading this repo's tests. That only means anything if the reports we
     # actually emit satisfy it, which is what this Describe is for -- a schema that has
     # drifted from the writer is worse than none, because it invites a consumer to code
@@ -652,7 +652,7 @@ Describe 'the published report schema' {
     # generatedAt and hands back a [datetime], so a round-tripped object no longer has the
     # string the schema describes. The file is the contract.
     BeforeAll {
-        $script:schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v1/report.schema.json') -Raw
+        $script:schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v2/report.schema.json') -Raw
         $script:fullText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.json'))
         $script:recheckText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.recheck.json'))
 
@@ -670,6 +670,54 @@ Describe 'the published report schema' {
         # Both shapes, because the recheck report travels a different call path -- wiring a
         # field into one writer and not the other is invisible until someone opens the file.
         Should-BeTrue -Actual (Test-AgainstSchema -Json $script:recheckText)
+    }
+
+    It 'refuses a scored report that omits filesWithNoCandidate' {
+        # The reason version 2 exists. A file no operator matched contributes 0 of 0 and is
+        # invisible in a blended score, so a document carrying mutationScore must say whether
+        # there were any -- and "the writer always sets it" is the assurance every other
+        # disclosure here declined to rely on.
+        #
+        # Built by REMOVING the field from a report that is otherwise valid, so the required
+        # rule is the only thing left that can refuse it.
+        $doc = $script:fullText | ConvertFrom-Json
+        $doc.PSObject.Properties.Remove('filesWithNoCandidate')
+        Should-BeFalse -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12)) `
+            -Because 'a score that cannot say whether a file contributed nothing is a score with a hole in it'
+    }
+
+    It 'refuses a scored report that omits filesMutated' {
+        # Left optional in v1 for one reason only -- requiring it would have failed every report
+        # 0.4.0 produced, and the version could not move for an added field. The version has
+        # moved, so the deferral is spent: 100% across eight files and 100% across nine are the
+        # same number, and only one of them covers the ninth.
+        $doc = $script:fullText | ConvertFrom-Json
+        $doc.PSObject.Properties.Remove('filesMutated')
+        Should-BeFalse -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12))
+    }
+
+    It 'refuses a version 1 document, naming the version rather than the field' {
+        # schemaVersion is minimum 2 here, not a const. A v1 report then fails on the version --
+        # the true reason -- instead of on a field it was never supposed to carry, while a later
+        # version still validates as long as it keeps these fields.
+        $doc = $script:fullText | ConvertFrom-Json
+        $doc.schemaVersion = 1
+        Should-BeFalse -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12))
+
+        $doc.schemaVersion = 3
+        Should-BeTrue -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12)) `
+            -Because 'a reader validating against v2 must keep working when a later version records more'
+    }
+
+    It 'still ships the v1 schema, which is the only thing that can validate an archived report' {
+        # Nothing writes v1 any more. An archived report still says schemaVersion 1, and a
+        # consumer who upgraded has only the schemas shipped beside the new module.
+        $v1 = Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v1/report.schema.json'
+        Test-Path $v1 | Should-BeTrue
+        # Parsed, and asserted to still describe version 1 -- present-and-unreadable is the
+        # failure a Test-Path alone cannot see, and a v1 file quietly edited to v2's floor
+        # would validate nothing it exists for.
+        (Get-Content $v1 -Raw | ConvertFrom-Json).properties.schemaVersion.minimum | Should-Be 1
     }
 
     It 'accepts a PARTIAL report and refuses one carrying a score' {
