@@ -179,6 +179,17 @@ threshold. Every one of those is an ordinary outcome dressed as an error.
 first. It would have skipped the green gate for a docs-only run -- a red suite passing because
 nothing was mutated.
 
+**A gate for the one bug class every other gate is blind to.** `tests/NullPipeline.Tests.ps1`
+requires a PROPERTY piped into `ForEach-Object` to be declared with the reason it cannot be `$null`,
+or written as a `foreach` statement. `$null | ForEach-Object` runs its body once with `$_ = $null`,
+and coverage, self-mutation and the unit tests were all at 100% while exactly that was live in the
+baseline collector -- coverage sees the line run, no mutation operator turns a pipeline into a
+`foreach`, and no test supplies the triggering value. Verified by planting the original bug: the
+gate names `PSMutation.Runner.ps1 -> $result.CodeCoverage.CommandsExecuted`.
+
+Scope is measured rather than intuited -- 5 property-sourced sites against 33 variable-sourced and
+28 `Where-Object` -- and both exclusions are asserted as counts so a collapse in either is visible.
+
 **One decision drives the tracer and the filter, because the two disagreeing is not survivable.**
 `Test-PSMutationCoverageNeeded` answers `coveredLinesOnly -and -not recheck`, and both the baseline's
 `CodeCoverage.Enabled` and `Select-PSMutationCandidate`'s filter read it. Split in two they could
