@@ -196,221 +196,50 @@ function Get-PSMutationRunContext {
     }
 }
 
-function Invoke-PSMutation {
-    <#
-    .SYNOPSIS
-        Run mutation testing over a set of PowerShell files and score how many
-        injected faults ("mutants") the Pester suite catches ("kills").
-
-    .DESCRIPTION
-        All work happens in a throwaway temp sandbox: the source subtrees are copied
-        out, mutants are spliced into the COPY, and the tests run from the copy - so
-        tracked source is never modified, even if the run is killed mid-way. Returns
-        a summary object; report-only unless the config sets thresholds.break.
-
-    .PARAMETER ConfigFile
-        Path to a JSON config: mutate, tests, operators, coveredLinesOnly, thresholds,
-        reportPath, sandboxSubtrees.
-
-        The format is DEFINED by schemas/v1/config.schema.json, which ships beside this module
-        and is what the module itself validates against -- so it cannot describe a config this
-        module would reject. Point a config's $schema at it for editor completion. The README
-        carries the same table with prose around it.
-
-    .PARAMETER SourceRoot
-        Root of the code under test; config paths are relative to it. Defaults to the
-        current directory.
-
-    .PARAMETER RecheckFrom
-        Path to a report from a previous run -- full or from an earlier recheck.
-        Evaluates ONLY the mutants that report recorded as survivors, minus any declared
-        equivalent, which is the fast inner loop while you are writing assertions.
-
-        Chaining is the point: recheck a recheck and each round evaluates only what the
-        previous one left alive, so the loop shortens as you close in rather than
-        restarting from the full set every time. Rounds overwrite one
-        <report>.recheck.json; the full report is never written by a recheck.
-
-        This is not a measurement and does not produce a score: the set is filtered,
-        so no percentage over it means anything, thresholds are not applied, and the
-        result is written to a separate <report>.recheck.json so the full baseline
-        cannot be overwritten by a partial run.
-
-        It is also only sound for test changes that purely ADD assertions. Editing or
-        deleting an existing test can revive a mutant that was killed before, and a
-        recheck never evaluates those -- so finish with a full run before trusting a
-        number or moving a threshold.
-
-    .PARAMETER ListOnly
-        Print what this config WOULD mutate -- per file, per operator, and how many candidates
-        survive the coveredLinesOnly filter -- then stop. No mutant is evaluated, no report is
-        written and no score is produced.
-
-        It answers the question you have when you are least sure: adding a file to `mutate`,
-        changing operators, or wondering why a file scores 100%. A file that produces no
-        candidate at all scores a VACUOUS 100% and contributes nothing, and in a blended score
-        that is invisible -- two files in a real repository were in exactly that state. This
-        names them, in seconds, along with the files whose candidates the coverage filter
-        removed entirely. Different faults with different fixes, so they are listed apart.
-
-        Cost: the baseline suite runs ONCE, because `coveredLinesOnly` is part of what would
-        actually be mutated and a preview that skipped it would answer a different question than
-        the run does. That filter defaults to ON, so this is the ordinary case; set it to false
-        and the preview is a parse. Either way it never pays the mutants x suite a run pays --
-        which is minutes against seconds on any repository worth previewing.
-
-    .PARAMETER Quiet
-        Suppress the console output: the banner, the per-mutant progress lines and the
-        closing summary. The JSON report is still written and the result object is still
-        returned, so nothing is lost -- only the narration.
-
-        Worth using in CI, where a build log gains nothing from a line per mutant. Worth
-        leaving OFF interactively, where those lines are the only sign of progress during
-        a run that can take minutes, and survivors appear in yellow as they are found
-        rather than all at the end.
-
-    .OUTPUTS
-        [pscustomobject]. Two shapes, sharing Mode, ExitCode and FailureReason so a caller that
-        did not choose the mode can still branch on the result:
-
-            full     @{ Mode='Full'; Score; Killed; Survived; Total; ExitCode; FailureReason;
-                        StaleEquivalents; DeclaredEquivalent }
-            recheck  @{ Mode='Recheck'; PriorSurvivors; Rechecked; NowKilled; StillSurviving;
-                        ExitCode; FailureReason }
-            list     @{ Mode='List'; Files; Produced; Total; FilesWithNoCandidate;
-                        FilesEmptiedByCoverage; BaselineMeasured; ExitCode; FailureReason }
-
-        A -ChangedFile run returns the FULL shape with Mode='Changed' and ChangedFiles naming the
-        scope. ChangedFiles is $null on an unscoped run -- absent and empty are different answers,
-        and only absent may be read as a measurement of everything in `mutate`.
-
-        FailureReason is 'None', 'StaleEquivalents' or 'BelowThreshold'. It exists because
-        ExitCode 1 means either of the last two, and the difference decides what to go and fix:
-        a stale declaration is a false statement in the config inflating the score, not a
-        shortfall to write tests against.
-
-        A -ListOnly ExitCode is always 0 for the same reason a recheck's is: it evaluates
-        nothing, so it has no verdict and must not manufacture one. What it hands back instead is
-        the two vacuous-100% sets by name, so a caller can fail its own build on them.
-
-        A recheck ExitCode is always 0. It applies no thresholds by design -- it answers "is this
-        one dead yet" over a set you chose, and a verdict over a chosen subset is the filtered
-        number this module exists to stop people quoting. Read StillSurviving.
-
-    .EXAMPLE
-        Invoke-PSMutation -ConfigFile ./psmutant.config.json
-
-        A full run. Prints a coloured score, lists the survivors to go and kill, and
-        writes the JSON report named by the config's reportPath.
-
-    .EXAMPLE
-        $r = Invoke-PSMutation -ConfigFile ./psmutant.config.json -Quiet
-        if ($r.ExitCode -ne 0) { throw "Mutation run failed: $($r.FailureReason)" }
-
-        A CI gate. -Quiet drops the per-mutant progress lines, which are worth watching
-        interactively and are noise in a build log.
-
-        Read FailureReason rather than assuming the score. ExitCode 1 also means a stale
-        equivalence declaration, which fires at any score and in report-only mode -- so a
-        message hardcoded to "below the threshold" is a false statement about that run, and on
-        a destroyed CI runner it is the only thing left.
-
-    .EXAMPLE
-        Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json
-
-        Re-run ONLY the mutants the previous report recorded as survivors -- the fast
-        inner loop while you are writing assertions to kill them. Declared equivalents
-        are skipped, since the config already argues no test can kill those.
-
-    .EXAMPLE
-        Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json
-        Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.recheck.json
-
-        A recheck report seeds the next recheck, so the loop NARROWS: five survivors,
-        kill two, and the second round evaluates three rather than five again. Each round
-        overwrites the same *.recheck.json; the full report is never touched.
-
-    .EXAMPLE
-        Invoke-PSMutation -ConfigFile ./c.json -ListOnly
-
-        What would this config mutate? Prints a per-file, per-operator breakdown and stops --
-        no mutant evaluated, no report written. The line to look for is a file with 0
-        candidates: it scores a vacuous 100% that a blended number cannot show you.
-
-    .EXAMPLE
-        $p = Invoke-PSMutation -ConfigFile ./c.json -ListOnly -Quiet
-        if ($p.FilesWithNoCandidate.Count -gt 0) { throw "no mutants: $($p.FilesWithNoCandidate -join ', ')" }
-
-        The same preview as a gate of your own. The module will not fail the run for you --
-        a file with nothing to mutate is not always a mistake -- but it names the files so
-        a repository that considers it one can say so.
-
-    .EXAMPLE
-        $changed = git diff --name-only origin/main...HEAD
-        $r = Invoke-PSMutation -ConfigFile ./c.json -ChangedFile $changed
-        exit $r.ExitCode
-
-        A per-PR gate. Only the changed files in `mutate` are evaluated, so the run costs a
-        fraction of a full one, and the score is about the code under review rather than the
-        repository. A pull request touching no mutable file passes and says so.
-
-    .EXAMPLE
-        Invoke-PSMutation -ConfigFile ./c.json -ChangedFile $changed -ListOnly
-
-        What would this pull request mutate? The one combination -ListOnly permits, and the
-        cheapest use either has.
-
-    .EXAMPLE
-        Invoke-PSMutation -ConfigFile ./c.json -SourceRoot ../other-repo
-
-        Mutate a different repository. Every path in the config is relative to
-        -SourceRoot, which defaults to the current directory.
-
-    .LINK
-        https://github.com/Fortigi/PSMutant
-    #>
+function Invoke-PSMutationRun {
+    # ONE run, from a set of already-bound arguments. Invoke-PSMutation is the public surface --
+    # binding, pipeline streaming, help -- and this is what a single config actually does.
+    #
+    # Extracted because the COMPLEXITY GATE said so, not for tidiness. Wrapping the body in a
+    # `process` block adds a nesting level to every branch inside it, and cognitive complexity
+    # charges for depth: the same code went from 15 to 16 against this repo's own ceiling of 15.
+    # A second parameter list is the cost, and it is the thing #63 argued against -- but that was
+    # about threading values THROUGH a chain, and this is one hop across a real boundary.
+    #
+    # -ChangedFileBound is passed rather than asked: $PSBoundParameters here would answer about
+    # THIS function, and an omitted -ChangedFile must stay distinguishable from an empty one.
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string]$ConfigFile,
-        [string]$SourceRoot = (Get-Location).Path,
+        [Parameter(Mandatory)] [string]$SourceRoot,
         [string]$RecheckFrom,
-        # Preview the mutant set and stop. Evaluates nothing, so it refuses to combine with
-        # any switch that acts on verdicts -- see Get-PSMutationModeFault.
-        [switch]$ListOnly,
-        # Scope the run to the files a pull request changed. The CALLER computes the diff -- see
-        # the .PARAMETER block for why there is no -ChangedSince. AllowEmptyString so a list of
-        # blanks reaches Get-PSMutationChangedFileFault, whose message names the likely cause.
         [AllowEmptyString()] [string[]]$ChangedFile,
+        [bool]$ChangedFileBound,
+        [switch]$ListOnly,
         [switch]$Quiet,
-        # Record this run's survivors as the accepted baseline. Writes even on a failing run --
-        # see the call site.
         [switch]$UpdateBaseline,
-        # With -RecheckFrom: fold this recheck's verdicts back into the report it was seeded
-        # from, instead of leaving the baseline stale until the next full run.
         [switch]$MergeIntoBaseline
     )
 
     # Started before anything else so `totalSeconds` covers what a user actually waits for,
     # sandbox setup and baseline included, rather than only the mutation loop.
     $runClock = [System.Diagnostics.Stopwatch]::StartNew()
+    # BEFORE Resolve-Path, which throws its own less useful error on a path that is not
+    # there, and succeeds on a file -- leaving the mistake to be reported several steps later
+    # by the sandbox check, in a message naming a temp directory the reader has never seen.
+    # EVERY argument refusal, in one ordered decision. Before anything is built: none of them
+    # needs a sandbox or a Pester, and copying a tree first is a slower way to say no. The order
+    # between them is a decision, and it lives with the decision rather than in whichever
+    # sequence the guards happened to be written -- see Get-PSMutationInputFault.
+    $inputFault = Get-PSMutationInputFault -SourceRoot $SourceRoot -ListOnly $ListOnly.IsPresent `
+        -Recheck ([bool]$RecheckFrom) -UpdateBaseline $UpdateBaseline.IsPresent `
+        -MergeIntoBaseline $MergeIntoBaseline.IsPresent -Changed $ChangedFileBound `
+        -ChangedFile $ChangedFile
+    if ($inputFault) { throw $inputFault }
     $root = (Resolve-Path $SourceRoot).Path
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
     Assert-PSMutationConfig -Cfg $cfg
-    # Refused before anything is built. The answer needs nothing a sandbox or a Pester could
-    # tell us, and copying a tree first is a slower way to say no.
-    $modeFault = Get-PSMutationModeFault -ListOnly $ListOnly.IsPresent -Recheck ([bool]$RecheckFrom) `
-        -UpdateBaseline $UpdateBaseline.IsPresent -MergeIntoBaseline $MergeIntoBaseline.IsPresent `
-        -Changed $PSBoundParameters.ContainsKey('ChangedFile')
-    if ($modeFault) { throw $modeFault }
-    # BOUND, not truthy. An omitted -ChangedFile is a whole-tree run; one passed as an empty list
-    # is a caller whose diff produced nothing, and those must not be the same answer. $null and
-    # @() are indistinguishable once bound to [string[]], so the question has to be asked of
-    # $PSBoundParameters rather than of the value.
-    if ($PSBoundParameters.ContainsKey('ChangedFile')) {
-        $changedFault = Get-PSMutationChangedFileFault -ChangedFile $ChangedFile
-        if ($changedFault) { throw $changedFault }
-    }
     Assert-PSMutationPester
     Clear-PSMutationStaleSandbox
 
@@ -559,5 +388,255 @@ function Invoke-PSMutation {
         # run, or a long-lived host keeps a Pester-loaded runspace per completed run.
         Close-PSMutationWarmRunspace
         Remove-PSMutationSandbox -SandboxRoot $sandbox
+    }
+}
+
+
+function Invoke-PSMutation {
+    <#
+    .SYNOPSIS
+        Run mutation testing over a set of PowerShell files and score how many
+        injected faults ("mutants") the Pester suite catches ("kills").
+
+    .DESCRIPTION
+        All work happens in a throwaway temp sandbox: the source subtrees are copied
+        out, mutants are spliced into the COPY, and the tests run from the copy - so
+        tracked source is never modified, even if the run is killed mid-way. Returns
+        a summary object; report-only unless the config sets thresholds.break.
+
+    .PARAMETER ConfigFile
+        Binds from the pipeline by value and by property name, so a list of configs can be piped
+        in and each is an independent run -- see the monorepo example.
+
+        Path to a JSON config: mutate, tests, operators, coveredLinesOnly, thresholds,
+        reportPath, sandboxSubtrees.
+
+        The format is DEFINED by schemas/v1/config.schema.json, which ships beside this module
+        and is what the module itself validates against -- so it cannot describe a config this
+        module would reject. Point a config's $schema at it for editor completion. The README
+        carries the same table with prose around it.
+
+    .PARAMETER SourceRoot
+        Root of the code under test; config paths are relative to it. Defaults to the
+        current directory. Must be a DIRECTORY -- a file is refused, because every path in the
+        config would then resolve against a file and nothing the config names would be found.
+
+        Binds from the pipeline by property name, with `FullName` aliased, so
+        `Get-ChildItem -Directory | Invoke-PSMutation -ConfigFile ./c.json` means "mutate each of
+        these". `PSPath` is deliberately NOT aliased: it is provider-qualified
+        (`Microsoft.PowerShell.Core\FileSystem::/x`), and every config path is resolved against
+        this one.
+
+        Piping FILES binds -ConfigFile by value AND -SourceRoot from the same object's FullName,
+        which points the root at the config file. That is refused by name rather than left to
+        surface later as a puzzling sandbox error.
+
+    .PARAMETER RecheckFrom
+        Path to a report from a previous run -- full or from an earlier recheck.
+        Evaluates ONLY the mutants that report recorded as survivors, minus any declared
+        equivalent, which is the fast inner loop while you are writing assertions.
+
+        Chaining is the point: recheck a recheck and each round evaluates only what the
+        previous one left alive, so the loop shortens as you close in rather than
+        restarting from the full set every time. Rounds overwrite one
+        <report>.recheck.json; the full report is never written by a recheck.
+
+        This is not a measurement and does not produce a score: the set is filtered,
+        so no percentage over it means anything, thresholds are not applied, and the
+        result is written to a separate <report>.recheck.json so the full baseline
+        cannot be overwritten by a partial run.
+
+        It is also only sound for test changes that purely ADD assertions. Editing or
+        deleting an existing test can revive a mutant that was killed before, and a
+        recheck never evaluates those -- so finish with a full run before trusting a
+        number or moving a threshold.
+
+    .PARAMETER ListOnly
+        Print what this config WOULD mutate -- per file, per operator, and how many candidates
+        survive the coveredLinesOnly filter -- then stop. No mutant is evaluated, no report is
+        written and no score is produced.
+
+        It answers the question you have when you are least sure: adding a file to `mutate`,
+        changing operators, or wondering why a file scores 100%. A file that produces no
+        candidate at all scores a VACUOUS 100% and contributes nothing, and in a blended score
+        that is invisible -- two files in a real repository were in exactly that state. This
+        names them, in seconds, along with the files whose candidates the coverage filter
+        removed entirely. Different faults with different fixes, so they are listed apart.
+
+        Cost: the baseline suite runs ONCE, because `coveredLinesOnly` is part of what would
+        actually be mutated and a preview that skipped it would answer a different question than
+        the run does. That filter defaults to ON, so this is the ordinary case; set it to false
+        and the preview is a parse. Either way it never pays the mutants x suite a run pays --
+        which is minutes against seconds on any repository worth previewing.
+
+    .PARAMETER Quiet
+        Suppress the console output: the banner, the per-mutant progress lines and the
+        closing summary. The JSON report is still written and the result object is still
+        returned, so nothing is lost -- only the narration.
+
+        Worth using in CI, where a build log gains nothing from a line per mutant. Worth
+        leaving OFF interactively, where those lines are the only sign of progress during
+        a run that can take minutes, and survivors appear in yellow as they are found
+        rather than all at the end.
+
+    .OUTPUTS
+        [pscustomobject]. Two shapes, sharing Mode, ExitCode and FailureReason so a caller that
+        did not choose the mode can still branch on the result:
+
+            full     @{ Mode='Full'; Score; Killed; Survived; Total; ExitCode; FailureReason;
+                        StaleEquivalents; DeclaredEquivalent }
+            recheck  @{ Mode='Recheck'; PriorSurvivors; Rechecked; NowKilled; StillSurviving;
+                        ExitCode; FailureReason }
+            list     @{ Mode='List'; Files; Produced; Total; FilesWithNoCandidate;
+                        FilesEmptiedByCoverage; BaselineMeasured; ExitCode; FailureReason }
+
+        ONE object per config. Configs piped in are processed as they arrive rather than
+        collected first, so a monorepo gating twenty packages sees the first verdict in the time
+        the first run takes -- and a caller wanting an overall verdict folds the results:
+
+            $worst = $configs | Invoke-PSMutation -Quiet | Sort-Object ExitCode -Descending |
+                Select-Object -First 1
+
+        A -ChangedFile run returns the FULL shape with Mode='Changed' and ChangedFiles naming the
+        scope. ChangedFiles is $null on an unscoped run -- absent and empty are different answers,
+        and only absent may be read as a measurement of everything in `mutate`.
+
+        FailureReason is 'None', 'StaleEquivalents' or 'BelowThreshold'. It exists because
+        ExitCode 1 means either of the last two, and the difference decides what to go and fix:
+        a stale declaration is a false statement in the config inflating the score, not a
+        shortfall to write tests against.
+
+        A -ListOnly ExitCode is always 0 for the same reason a recheck's is: it evaluates
+        nothing, so it has no verdict and must not manufacture one. What it hands back instead is
+        the two vacuous-100% sets by name, so a caller can fail its own build on them.
+
+        A recheck ExitCode is always 0. It applies no thresholds by design -- it answers "is this
+        one dead yet" over a set you chose, and a verdict over a chosen subset is the filtered
+        number this module exists to stop people quoting. Read StillSurviving.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./psmutant.config.json
+
+        A full run. Prints a coloured score, lists the survivors to go and kill, and
+        writes the JSON report named by the config's reportPath.
+
+    .EXAMPLE
+        $r = Invoke-PSMutation -ConfigFile ./psmutant.config.json -Quiet
+        if ($r.ExitCode -ne 0) { throw "Mutation run failed: $($r.FailureReason)" }
+
+        A CI gate. -Quiet drops the per-mutant progress lines, which are worth watching
+        interactively and are noise in a build log.
+
+        Read FailureReason rather than assuming the score. ExitCode 1 also means a stale
+        equivalence declaration, which fires at any score and in report-only mode -- so a
+        message hardcoded to "below the threshold" is a false statement about that run, and on
+        a destroyed CI runner it is the only thing left.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json
+
+        Re-run ONLY the mutants the previous report recorded as survivors -- the fast
+        inner loop while you are writing assertions to kill them. Declared equivalents
+        are skipped, since the config already argues no test can kill those.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.json
+        Invoke-PSMutation -ConfigFile ./c.json -RecheckFrom ./reports/ps-mutation.recheck.json
+
+        A recheck report seeds the next recheck, so the loop NARROWS: five survivors,
+        kill two, and the second round evaluates three rather than five again. Each round
+        overwrites the same *.recheck.json; the full report is never touched.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -ListOnly
+
+        What would this config mutate? Prints a per-file, per-operator breakdown and stops --
+        no mutant evaluated, no report written. The line to look for is a file with 0
+        candidates: it scores a vacuous 100% that a blended number cannot show you.
+
+    .EXAMPLE
+        $p = Invoke-PSMutation -ConfigFile ./c.json -ListOnly -Quiet
+        if ($p.FilesWithNoCandidate.Count -gt 0) { throw "no mutants: $($p.FilesWithNoCandidate -join ', ')" }
+
+        The same preview as a gate of your own. The module will not fail the run for you --
+        a file with nothing to mutate is not always a mistake -- but it names the files so
+        a repository that considers it one can say so.
+
+    .EXAMPLE
+        $changed = git diff --name-only origin/main...HEAD
+        $r = Invoke-PSMutation -ConfigFile ./c.json -ChangedFile $changed
+        exit $r.ExitCode
+
+        A per-PR gate. Only the changed files in `mutate` are evaluated, so the run costs a
+        fraction of a full one, and the score is about the code under review rather than the
+        repository. A pull request touching no mutable file passes and says so.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -ChangedFile $changed -ListOnly
+
+        What would this pull request mutate? The one combination -ListOnly permits, and the
+        cheapest use either has.
+
+    .EXAMPLE
+        Get-ChildItem ./packages -Directory |
+            Invoke-PSMutation -ConfigFile ./psmutant.config.json -Quiet |
+            Where-Object ExitCode -ne 0
+
+        A monorepo gating per package. One run per directory, each with its own sandbox, baseline
+        and report, and the failures filtered out of the result stream. Before this the spelling
+        was a foreach with the exit codes collected by hand.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -SourceRoot ../other-repo
+
+        Mutate a different repository. Every path in the config is relative to
+        -SourceRoot, which defaults to the current directory.
+
+    .LINK
+        https://github.com/Fortigi/PSMutant
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        # By VALUE and by PROPERTY NAME. By value is the monorepo case -- a list of config paths
+        # piped in, one independent run each. By property name is for an object a caller built,
+        # selected or filtered, which is the ordinary shape once anything upstream is doing work.
+        [Parameter(Mandatory, ValueFromPipeline, ValueFromPipelineByPropertyName)] [string]$ConfigFile,
+        # FullName aliased, so `Get-ChildItem -Directory | Invoke-PSMutation -ConfigFile x` means
+        # "mutate each of these". PSPath is deliberately NOT aliased: it is provider-qualified
+        # (Microsoft.PowerShell.Core\FileSystem::/x), and every path in the config is resolved
+        # against this one -- the sibling module refused the same alias for the same reason.
+        [Parameter(ValueFromPipelineByPropertyName)] [Alias('FullName')]
+        [string]$SourceRoot = (Get-Location).Path,
+        [string]$RecheckFrom,
+        # Preview the mutant set and stop. Evaluates nothing, so it refuses to combine with
+        # any switch that acts on verdicts -- see Get-PSMutationModeFault.
+        [switch]$ListOnly,
+        # Scope the run to the files a pull request changed. The CALLER computes the diff -- see
+        # the .PARAMETER block for why there is no -ChangedSince. AllowEmptyString so a list of
+        # blanks reaches Get-PSMutationChangedFileFault, whose message names the likely cause.
+        [AllowEmptyString()] [string[]]$ChangedFile,
+        [switch]$Quiet,
+        # Record this run's survivors as the accepted baseline. Writes even on a failing run --
+        # see the call site.
+        [switch]$UpdateBaseline,
+        # With -RecheckFrom: fold this recheck's verdicts back into the report it was seeded
+        # from, instead of leaving the baseline stale until the next full run.
+        [switch]$MergeIntoBaseline
+    )
+
+    # PROCESS, not end. Each config is an independent run with its own sandbox, baseline and
+    # report, so one starts as soon as its config arrives rather than after the last one -- and a
+    # monorepo gating twenty packages sees the first verdict in the time the first run takes.
+    # That differs from the sibling module's gate, where the verdict is about the whole selection
+    # and everything must be collected before any of it means anything.
+    #
+    # One result object per config. A caller wanting an overall verdict folds them, which the
+    # .OUTPUTS block says rather than leaving to be discovered.
+    process {
+        Invoke-PSMutationRun -ConfigFile $ConfigFile -SourceRoot $SourceRoot -RecheckFrom $RecheckFrom `
+            -ChangedFile $ChangedFile -ChangedFileBound $PSBoundParameters.ContainsKey('ChangedFile') `
+            -ListOnly:$ListOnly -Quiet:$Quiet -UpdateBaseline:$UpdateBaseline `
+            -MergeIntoBaseline:$MergeIntoBaseline
     }
 }

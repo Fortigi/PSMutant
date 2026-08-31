@@ -61,6 +61,32 @@ exit $result.ExitCode        # 0 unless thresholds.break is unmet, or a declarat
 Survivors are printed with `file:line` and the exact source→mutant change — each is a
 missing assertion, an equivalent mutant (a change that can't alter behaviour), or dead code.
 
+### Gating a monorepo, one package at a time
+
+```powershell
+Get-ChildItem ./packages -Directory |
+    Invoke-PSMutation -ConfigFile ./psmutant.config.json -Quiet |
+    Where-Object ExitCode -ne 0
+```
+
+`-ConfigFile` binds from the pipeline by value and by property name, and `-SourceRoot` by property
+name with `FullName` aliased — so a list of configs, or a list of directories, each becomes an
+independent run with its own sandbox, baseline and report. They are processed **as they arrive**
+rather than collected first, so twenty packages give the first verdict in the time the first run
+takes. One result object per config; fold them if you want a single answer:
+
+```powershell
+$worst = $configs | Invoke-PSMutation -Quiet | Sort-Object ExitCode -Descending | Select-Object -First 1
+```
+
+`PSPath` is deliberately **not** aliased. It is provider-qualified
+(`Microsoft.PowerShell.Core\FileSystem::/x`), and every path in the config resolves against
+`-SourceRoot`.
+
+**`-SourceRoot` must be a directory.** Piping *files* binds `-ConfigFile` by value **and**
+`-SourceRoot` from the same object's `FullName`, which would point the root at the config file —
+so that is refused by name rather than surfacing later as a puzzling sandbox error.
+
 ### Gating a pull request on what it changed
 
 ```powershell

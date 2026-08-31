@@ -345,6 +345,82 @@ function Test-PSMutationCoverageNeeded {
     return $CoveredLinesOnly -and -not $Recheck
 }
 
+function Get-PSMutationInputFault {
+    <#
+    .SYNOPSIS
+        The first reason this run's ARGUMENTS are refused, or empty when they are not.
+    .DESCRIPTION
+        Three refusals in one place, in a deliberate order, for the reason the sibling module
+        sequences its scan faults together: written as separate guards at the call site they can
+        only be read one at a time, and the order between them -- which is a decision -- is
+        wherever somebody happened to put them.
+
+        The order:
+
+        1. **-SourceRoot**, because every other answer is relative to it. A root that is a file
+           makes every config path resolve against a file, so reporting a mode conflict first
+           would send the reader to argue about switches while the root is the actual fault.
+        2. **Mode conflicts**, because they need nothing from the filesystem.
+        3. **An empty -ChangedFile**, last because it is the narrowest: it says the caller's diff
+           produced nothing, which is only worth saying once the run is otherwise coherent.
+
+        Asked of `-ChangedFileBound` rather than of the value: an omitted -ChangedFile is a
+        whole-tree run and an empty one is a broken pipeline, and `$null` and `@()` are
+        indistinguishable once bound to `[string[]]`.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$SourceRoot,
+        [Parameter(Mandatory)] [bool]$ListOnly,
+        [Parameter(Mandatory)] [bool]$Recheck,
+        [Parameter(Mandatory)] [bool]$UpdateBaseline,
+        [Parameter(Mandatory)] [bool]$MergeIntoBaseline,
+        [Parameter(Mandatory)] [bool]$Changed,
+        [AllowEmptyString()] [AllowEmptyCollection()] [string[]]$ChangedFile = @()
+    )
+    $fault = Get-PSMutationSourceRootFault -SourceRoot $SourceRoot
+    if ($fault) { return $fault }
+    $fault = Get-PSMutationModeFault -ListOnly $ListOnly -Recheck $Recheck `
+        -UpdateBaseline $UpdateBaseline -MergeIntoBaseline $MergeIntoBaseline -Changed $Changed
+    if ($fault) { return $fault }
+    return $Changed ? (Get-PSMutationChangedFileFault -ChangedFile $ChangedFile) : ''
+}
+
+function Get-PSMutationSourceRootFault {
+    <#
+    .SYNOPSIS
+        The message refusing a -SourceRoot that is not a directory, or empty.
+    .DESCRIPTION
+        Every path in a config is resolved against this, so a -SourceRoot pointing at a FILE
+        resolves each of them against a file and the run measures nothing it was asked about.
+
+        It was already refused, but by the sandbox check several steps later, whose message names
+        a temp directory the reader has never seen. That is the misdiagnosis this module exists to
+        end, one layer down: the fault is real, and the message sends you to look at the wrong
+        thing.
+
+        Pipeline binding is what turns it from a typo into a likely mistake. Piping FILES binds
+        -ConfigFile by value AND -SourceRoot from the same object's FullName, so
+        `Get-ChildItem *.json | Invoke-PSMutation` silently points the root at the config file.
+        Measured; the message below names that case because it is the one a caller will hit.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$SourceRoot)
+    if (-not (Test-Path -LiteralPath $SourceRoot)) {
+        return "-SourceRoot '$SourceRoot' does not exist. Every path in the config is resolved " +
+            'against it, so a root that is not there measures nothing.'
+    }
+    if (Test-Path -LiteralPath $SourceRoot -PathType Leaf) {
+        return "-SourceRoot '$SourceRoot' is a file, not a directory. Every path in the config is " +
+            'resolved against it, so nothing the config names would be found. If you piped files ' +
+            'in, note that a file object binds BOTH -ConfigFile and -SourceRoot -- pipe the ' +
+            'directory instead, or pass -SourceRoot explicitly.'
+    }
+    return ''
+}
+
 function Get-PSMutationModeFault {
     <#
     .SYNOPSIS

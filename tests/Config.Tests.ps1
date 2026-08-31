@@ -1266,3 +1266,77 @@ Describe 'Get-PSMutationSandboxPlan ConfigByPath' {
         $plan.ConfigByPath[$plan.Mutate[1]] | Should-Be 'src/b.ps1'
     }
 }
+
+Describe 'Get-PSMutationSourceRootFault' {
+    BeforeAll {
+        $script:srRoot = Join-Path $TestDrive 'sr'
+        New-Item -ItemType Directory -Path $script:srRoot -Force | Out-Null
+        $script:srFile = Join-Path $script:srRoot 'c.json'
+        '{}' | Set-Content $script:srFile
+    }
+
+    It 'accepts a directory, which is the ordinary case' {
+        Get-PSMutationSourceRootFault -SourceRoot $script:srRoot | Should-Be ''
+    }
+
+    It 'refuses a path that is not there, and says what the root is for' {
+        $f = Get-PSMutationSourceRootFault -SourceRoot (Join-Path $script:srRoot 'nope')
+        $f | Should-MatchString 'does not exist'
+        $f | Should-MatchString 'resolved against it'
+    }
+
+    It 'refuses a FILE, and names the pipeline case that produces one' {
+        # It was already refused, but by the sandbox check several steps later, whose message
+        # names a temp directory the reader has never seen. Pipeline binding turns this from a
+        # typo into a likely mistake: a file object binds -ConfigFile by value AND -SourceRoot
+        # from the same object's FullName.
+        $f = Get-PSMutationSourceRootFault -SourceRoot $script:srFile
+        $f | Should-MatchString 'is a file, not a directory'
+        $f | Should-MatchString 'binds BOTH'
+    }
+}
+
+Describe 'Get-PSMutationInputFault' {
+    BeforeAll {
+        $script:ifRoot = Join-Path $TestDrive 'if'
+        New-Item -ItemType Directory -Path $script:ifRoot -Force | Out-Null
+        $script:ifFile = Join-Path $script:ifRoot 'c.json'
+        '{}' | Set-Content $script:ifFile
+        function script:Fault {
+            param([string]$Root = $script:ifRoot, [bool]$ListOnly = $false, [bool]$Recheck = $false,
+                [bool]$Update = $false, [bool]$Merge = $false, [bool]$Changed = $false, [string[]]$Files = @())
+            Get-PSMutationInputFault -SourceRoot $Root -ListOnly $ListOnly -Recheck $Recheck `
+                -UpdateBaseline $Update -MergeIntoBaseline $Merge -Changed $Changed -ChangedFile $Files
+        }
+    }
+
+    It 'says nothing about arguments that are fine' {
+        Fault | Should-Be ''
+    }
+
+    It 'reports the SOURCE ROOT first, because everything else is relative to it' {
+        # Both faults are present. A mode conflict reported first would send the reader to argue
+        # about switches while the root -- which every config path resolves against -- is what
+        # is actually wrong.
+        $f = Fault -Root $script:ifFile -ListOnly $true -Recheck $true
+        $f | Should-MatchString 'is a file, not a directory'
+    }
+
+    It 'reports a mode conflict before an empty -ChangedFile' {
+        # Both present again. The empty list is the narrower statement -- it says the caller's
+        # diff produced nothing -- and is only worth making once the run is otherwise coherent.
+        $f = Fault -Recheck $true -Changed $true -Files @()
+        $f | Should-MatchString '-ChangedFile scopes the run'
+    }
+
+    It 'reports an empty -ChangedFile when nothing else is wrong' {
+        Fault -Changed $true -Files @() | Should-MatchString 'empty list'
+    }
+
+    It 'asks whether -ChangedFile was BOUND, not whether it holds anything' {
+        # An omitted -ChangedFile is a whole-tree run; an empty one is a broken pipeline. $null
+        # and @() are indistinguishable once bound to [string[]], so the caller passes the answer.
+        Fault -Changed $false -Files @() | Should-Be ''
+        Fault -Changed $true -Files @() | Should-MatchString 'empty list'
+    }
+}
