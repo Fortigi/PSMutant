@@ -493,7 +493,24 @@ Describe 'the contract a consumer actually depends on' {
         $s = [pscustomobject]@{ Score = 64.3; Killed = 164; Survived = 91; Total = 255 }
         (ConvertTo-PSMutationRunResult -Summary $s -ExitCode 1 -FailureReason 'BelowThreshold').PSObject.Properties.Name |
             Should-BeCollection @('Mode', 'Score', 'Killed', 'Survived', 'Total', 'ExitCode',
-                'FailureReason', 'StaleEquivalents', 'DeclaredEquivalent')
+                'FailureReason', 'StaleEquivalents', 'DeclaredEquivalent', 'ChangedFiles')
+    }
+
+    It 'says Full and carries a null scope when the run was not scoped' {
+        # The pair a caller branches on. $null rather than @(), because absent and empty are
+        # different answers and only absent may be read as "every file in mutate".
+        $s = [pscustomobject]@{ Score = 64.3; Killed = 164; Survived = 91; Total = 255 }
+        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 0 -FailureReason 'None'
+        $r.Mode | Should-Be 'Full'
+        $null -eq $r.ChangedFiles | Should-BeTrue
+    }
+
+    It 'says Changed and names the scope when the run was scoped' {
+        $s = [pscustomobject]@{ Score = 64.3; Killed = 164; Survived = 91; Total = 255 }
+        $r = ConvertTo-PSMutationRunResult -Summary $s -ExitCode 0 -FailureReason 'None' `
+            -ChangedFiles @('src/a.ps1')
+        $r.Mode | Should-Be 'Changed'
+        $r.ChangedFiles | Should-Be 'src/a.ps1'
     }
 
     It 'writes exactly the documented top-level report fields' {
@@ -1618,12 +1635,26 @@ Describe 'the two vacuous-100% sets' {
         $ex.FilesWithNoCandidate | Should-Be 'src/nothing.ps1'
     }
 
-    It 'returns empty arrays rather than $null when neither applies' {
+    It 'returns empty ARRAYS rather than $null when neither applies' {
         # A caller iterating these must not have to tell "none" from "the module stopped
         # reporting it".
+        #
+        # Asserted with -is [array], NOT with .Count. A function returning an empty array unrolls
+        # it to $null, and $null.Count is 0 -- so the obvious `.Count | Should-Be 0` passes for
+        # both answers and cannot fail. That assertion is exactly how this shipped broken.
         $ex = Get-PSMutationCoverageExclusion -PerFile @([pscustomobject]@{ File = 'a'; Produced = 3; Kept = 3 })
+        $ex.FilesWithNoMutants -is [array] | Should-BeTrue
+        $ex.FilesWithNoCandidate -is [array] | Should-BeTrue
         $ex.FilesWithNoMutants.Count | Should-Be 0
         $ex.FilesWithNoCandidate.Count | Should-Be 0
+    }
+
+    It 'hands back an ARRAY from each collector directly' {
+        # The two functions themselves, not only what the exclusion object does with them: the
+        # preview result publishes these, and a caller was promised something it can iterate.
+        $clean = @([pscustomobject]@{ File = 'a'; Produced = 3; Kept = 3 })
+        (Get-PSMutationFileWithNoCandidate -PerFile $clean) -is [array] | Should-BeTrue
+        (Get-PSMutationFileEmptiedByCoverage -PerFile $clean) -is [array] | Should-BeTrue
     }
 }
 
@@ -1769,7 +1800,9 @@ Describe 'ConvertTo-PSMutationListResult' {
         $r = ConvertTo-PSMutationListResult -PerFile @() -BaselineMeasured $true
         $r.Files | Should-Be 0
         $r.Total | Should-Be 0
-        $r.FilesWithNoCandidate.Count | Should-Be 0
+        # -is [array], not .Count: see the collector test above for why .Count cannot fail here.
+        $r.FilesWithNoCandidate -is [array] | Should-BeTrue
+        $r.FilesEmptiedByCoverage -is [array] | Should-BeTrue
     }
 }
 
@@ -1856,5 +1889,131 @@ Describe 'Get-PSMutationMutantListLine, the covered column' {
         $text = (Get-PSMutationMutantListLine -PerFile $script:one -CoveredLinesOnly $true -BaselineMeasured $true |
                 ForEach-Object { $_.Text }) -join "`n"
         $text | Should-NotMatchString 'removed by the coverage filter'
+    }
+}
+
+Describe 'Get-PSMutationFailureReason with an empty scope' {
+    BeforeAll {
+        # 0 of 0 under a break threshold: the shape a documentation-only pull request produces.
+        $script:emptySummary = [pscustomobject]@{ Score = 0; Total = 0; Killed = 0; StaleEquivalents = @() }
+        $script:break50 = [pscustomobject]@{ break = 50 }
+    }
+
+    It 'fails a zero score by default, because that is an ordinary shortfall' {
+        # The row that makes the next one mean something: without -EmptyScope this DOES fail.
+        Get-PSMutationFailureReason -Summary $script:emptySummary -Thresholds $script:break50 |
+            Should-Be 'BelowThreshold'
+    }
+
+    It 'passes when the scope matched no mutable file' {
+        # A pull request that touched only documentation changed nothing this module can measure.
+        # An empty run scores 0, so without this arm the gate fails it for having nothing to say.
+        Get-PSMutationFailureReason -Summary $script:emptySummary -Thresholds $script:break50 `
+            -EmptyScope $true | Should-Be 'None'
+    }
+
+    It 'gives exit code 0 for the same run, so the two cannot disagree' {
+        Get-PSMutationExitCode -Summary $script:emptySummary -Thresholds $script:break50 -EmptyScope $true |
+            Should-Be 0
+        Get-PSMutationExitCode -Summary $script:emptySummary -Thresholds $script:break50 |
+            Should-Be 1
+    }
+
+    It 'outranks even a stale declaration, because nothing was examined' {
+        # FIRST in the order deliberately: every rule below it is about a measurement, and a run
+        # that mutated nothing made none. A scoped run would otherwise report every declaration
+        # in the project as stale.
+        $s = [pscustomobject]@{ Score = 0; Total = 0; StaleEquivalents = @('src/x.ps1:F:d -- no such mutant') }
+        Get-PSMutationFailureReason -Summary $s -Thresholds $script:break50 | Should-Be 'StaleEquivalents'
+        Get-PSMutationFailureReason -Summary $s -Thresholds $script:break50 -EmptyScope $true | Should-Be 'None'
+    }
+}
+
+Describe 'Get-PSMutationDeclarationCoverageFault scoping' {
+    BeforeAll {
+        $script:decls = [pscustomobject]@{
+            'src/a.ps1:Get-A:x -> y' = 'declared'
+            'src/b.ps1:Get-B:p -> q' = 'declared'
+        }
+        # Only a.ps1's declaration matched a mutant; b.ps1's matched nothing because the run
+        # never looked at b.ps1.
+        $script:aOnly = @([pscustomobject]@{ File = 'src/a.ps1'; Function = 'Get-A'
+                Description = 'x -> y'; Line = 1; Status = 'Survived'
+            })
+    }
+
+    It 'calls an unmatched declaration stale on a whole-tree run' {
+        # The rule this function exists for, and the row that makes the next one mean something.
+        $f = Get-PSMutationDeclarationCoverageFault -Results $script:aOnly -Equivalents $script:decls
+        @($f).Count | Should-Be 1
+        @($f)[0] | Should-MatchString 'src/b\.ps1'
+    }
+
+    It 'does NOT call it stale when its file was out of scope' {
+        # THE hazard that would make -ChangedFile unusable: a declaration about a file the run
+        # never examined matches nothing, and reported as stale it fails the gate at any score.
+        $f = Get-PSMutationDeclarationCoverageFault -Results $script:aOnly -Equivalents $script:decls `
+            -InScopeFile @('src/a.ps1')
+        @($f).Count | Should-Be 0
+    }
+
+    It 'still judges a declaration whose file IS in scope' {
+        # The other half. Scoping must narrow which declarations are judged, never stop judging.
+        $f = Get-PSMutationDeclarationCoverageFault -Results @() -Equivalents $script:decls `
+            -InScopeFile @('src/a.ps1')
+        @($f).Count | Should-Be 1
+        @($f)[0] | Should-MatchString 'src/a\.ps1'
+    }
+}
+
+Describe 'Get-PSMutationDeclarationFile' {
+    It 'takes everything before the first colon' -ForEach @(
+        @{ Key = 'src/a.ps1:Get-A:x -> y'; File = 'src/a.ps1' }
+        @{ Key = 'src/a.ps1:55:6 -> 7'; File = 'src/a.ps1' }
+    ) {
+        Get-PSMutationDeclarationFile -Key $Key | Should-Be $File
+    }
+
+    It 'yields an empty file when the key STARTS with a colon' {
+        # The boundary the index test turns on. `-le 0` or `-lt 1` would return the whole key
+        # here, which then matches no scoped file -- a declaration silently excused rather than
+        # judged. Malformed, but it must fail the ordinary way.
+        Get-PSMutationDeclarationFile -Key ':Get-A:x -> y' | Should-Be ''
+    }
+
+    It 'yields the whole string when there is no colon' {
+        # An unparseable key then matches no scoped file and falls to the ordinary staleness
+        # check, rather than being silently excused by a parse failure.
+        Get-PSMutationDeclarationFile -Key 'nonsense' | Should-Be 'nonsense'
+    }
+}
+
+Describe 'Write-PSMutationReport and the scope it was measured over' {
+    BeforeAll {
+        $script:scopeDir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-scope-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:scopeDir -Force | Out-Null
+    }
+    AfterAll { Remove-Item $script:scopeDir -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'writes neither mode nor changedFiles on a whole-tree run' {
+        # ABSENT, not null. The schema's mode is an enum, so "mode": null on every full report
+        # would make each one invalid -- and absent is how a full run says it measured everything.
+        $out = Join-Path $script:scopeDir 'full.json'
+        Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+        $names = (Get-Content $out -Raw | ConvertFrom-Json).PSObject.Properties.Name
+        $names -contains 'mode' | Should-BeFalse
+        $names -contains 'changedFiles' | Should-BeFalse
+    }
+
+    It 'writes both, together, on a scoped run' {
+        # Together on purpose: the schema requires changedFiles whenever mode is Changed, because
+        # a percentage over part of a tree that does not say which part is the number this module
+        # exists to stop people quoting.
+        $out = Join-Path $script:scopeDir 'scoped.json'
+        Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null `
+            -ChangedFiles @('src/a.ps1') | Out-Null
+        $doc = Get-Content $out -Raw | ConvertFrom-Json
+        $doc.mode | Should-Be 'Changed'
+        $doc.changedFiles | Should-Be 'src/a.ps1'
     }
 }

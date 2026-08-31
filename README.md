@@ -61,6 +61,44 @@ exit $result.ExitCode        # 0 unless thresholds.break is unmet, or a declarat
 Survivors are printed with `file:line` and the exact source→mutant change — each is a
 missing assertion, an equivalent mutant (a change that can't alter behaviour), or dead code.
 
+### Gating a pull request on what it changed
+
+```powershell
+$changed = git diff --name-only origin/main...HEAD
+$result  = Invoke-PSMutation -ConfigFile ./psmutant.config.json -ChangedFile $changed
+exit $result.ExitCode
+```
+
+`mutate` is intersected with what changed, and everything follows: only those files are enumerated,
+hashed and answered for. It answers the question a reviewer actually has — **are the lines this PR
+introduced tested well enough?** A whole-repo score cannot answer that, and a whole-repo score is
+what makes people turn the gate off.
+
+**You compute the diff.** There is deliberately no `-ChangedSince <ref>`: a diff is not a fact this
+module can work out. It needs a base, and every way that goes wrong goes wrong in *your*
+environment — a shallow clone where the ref was never fetched, a detached HEAD, a merge base that
+is not the one the reviewer sees. Resolving it here would turn those into a mutation tool refusing
+to run, several layers from the shell where they can be fixed.
+
+**An empty list is refused**, because `git diff` against a ref that was never fetched prints
+nothing and exits 0 — and read as a pass, that is a green gate that measured no mutants at all. A
+list that *holds* files, none of which are in `mutate`, is a different situation: an ordinary
+documentation change, which passes and says so.
+
+The score is real — every mutant in those files was evaluated — but it is not the project's. So the
+report goes to `<report>.changed.json` and never the project's file, `mode` is `"Changed"`, and
+`changedFiles` sits beside the score in both the document and the result object. The schema
+*requires* it there: a percentage over part of a tree that does not say which part is the number
+this module exists to stop people quoting.
+
+It cannot be combined with `-RecheckFrom`, `-UpdateBaseline` or `-MergeIntoBaseline` — folding a
+scoped run's survivors into a whole-project baseline would record "no survivors" for every file the
+run never looked at. `-ListOnly` *is* allowed, and previewing what a PR would mutate is the cheapest
+use either has.
+
+Restricting mutants to changed **lines** is not implemented. It needs hunk offsets, which have the
+same problem `-ChangedSince` has and no agreed shape yet.
+
 ### Seeing what a config would mutate, before it costs you minutes
 
 ```powershell

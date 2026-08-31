@@ -433,9 +433,20 @@ function Get-PSMutationFailureReason {
     # config is what needs editing.
     [OutputType([string])]
     [CmdletBinding()]
-    param([Parameter(Mandatory)] $Summary, $Thresholds, [AllowEmptyCollection()] [string[]]$BaselineFault = @())
+    param([Parameter(Mandatory)] $Summary, $Thresholds, [AllowEmptyCollection()] [string[]]$BaselineFault = @(),
+        # True when a -ChangedFile run intersected `mutate` and found nothing in it.
+        [bool]$EmptyScope = $false)
     # Filter before counting: @($null).Count is 1, not 0, so a summary that carries
     # no stale list at all would otherwise fail every run.
+    # FIRST, because every rule below it is about a measurement, and this run made none. A pull
+    # request that touched only documentation or tests changed no file in `mutate`, and an empty
+    # run scores 0 -- so without this it fails a break threshold for having nothing to say.
+    #
+    # It is NOT the same as a run whose scoped files produced no mutants. There the files were in
+    # `mutate` and the run has a real finding: changed code with nothing behind it. Only the case
+    # where no changed file was mutable at all is a pass, and the empty -ChangedFile list that
+    # signals a broken diff is refused long before this.
+    if ($EmptyScope) { return 'None' }
     if (@($Summary.StaleEquivalents | Where-Object { $_ }).Count -gt 0) { return 'StaleEquivalents' }
     # BEFORE the threshold, deliberately. A baseline fault says this run disagrees with a list the
     # project committed to; a threshold says the blended number is under a configured one. Both can
@@ -456,8 +467,11 @@ function Get-PSMutationExitCode {
     # the other grew. The exit code is a projection of the reason, so it cannot disagree with it.
     [OutputType([int])]
     [CmdletBinding()]
-    param([Parameter(Mandatory)] $Summary, $Thresholds, [AllowEmptyCollection()] [string[]]$BaselineFault = @())
-    if ((Get-PSMutationFailureReason -Summary $Summary -Thresholds $Thresholds -BaselineFault $BaselineFault) -eq 'None') { return 0 }
+    param([Parameter(Mandatory)] $Summary, $Thresholds, [AllowEmptyCollection()] [string[]]$BaselineFault = @(),
+        # True when a -ChangedFile run intersected `mutate` and found nothing in it.
+        [bool]$EmptyScope = $false)
+    if ((Get-PSMutationFailureReason -Summary $Summary -Thresholds $Thresholds -BaselineFault $BaselineFault `
+                -EmptyScope $EmptyScope) -eq 'None') { return 0 }
     return 1
 }
 
@@ -549,10 +563,19 @@ function Get-PSMutationFileWithNoCandidate {
         Both look identical in a score -- the file is still listed, still hashed into the report,
         and contributes 0 of 0 -- which is why they are named apart rather than counted together.
     #>
-    [OutputType([string[]])]
+    # BOTH types, and the second is the price of the comma-wrap: `, $x` is statically an
+    # Object[] wrapper that PowerShell unrolls on return, so PSUseOutputTypeCorrectly
+    # contradicts a bare [string[]]. Declaring only [object[]] would satisfy the analyzer
+    # and stop documenting what a caller actually receives.
+    [OutputType([string[]], [object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile)
-    return [string[]]@($PerFile | Where-Object { $_.Produced -eq 0 } | ForEach-Object { $_.File })
+    # COMMA-WRAPPED. A function returning an empty array unrolls it to $null, and both callers
+    # publish this: the result object promises an array so a consumer can iterate it without
+    # first telling "none" from "the module stopped reporting it". `.Count -eq 0` cannot catch
+    # the difference -- $null.Count is 0 too -- which is why it shipped.
+    $files = [string[]]@($PerFile | Where-Object { $_.Produced -eq 0 } | ForEach-Object { $_.File })
+    return , $files
 }
 
 function Get-PSMutationFileEmptiedByCoverage {
@@ -565,10 +588,19 @@ function Get-PSMutationFileEmptiedByCoverage {
         one answer between them. It WAS spelled out three times: copies drift, and a copy nothing
         asserts survives its own mutant.
     #>
-    [OutputType([string[]])]
+    # BOTH types, and the second is the price of the comma-wrap: `, $x` is statically an
+    # Object[] wrapper that PowerShell unrolls on return, so PSUseOutputTypeCorrectly
+    # contradicts a bare [string[]]. Declaring only [object[]] would satisfy the analyzer
+    # and stop documenting what a caller actually receives.
+    [OutputType([string[]], [object[]])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile)
-    return [string[]]@($PerFile | Where-Object { $_.Produced -gt 0 -and $_.Kept -eq 0 } | ForEach-Object { $_.File })
+    # COMMA-WRAPPED. A function returning an empty array unrolls it to $null, and both callers
+    # publish this: the result object promises an array so a consumer can iterate it without
+    # first telling "none" from "the module stopped reporting it". `.Count -eq 0` cannot catch
+    # the difference -- $null.Count is 0 too -- which is why it shipped.
+    $files = [string[]]@($PerFile | Where-Object { $_.Produced -gt 0 -and $_.Kept -eq 0 } | ForEach-Object { $_.File })
+    return , $files
 }
 
 function Get-PSMutationMutantListRow {
@@ -786,7 +818,15 @@ function Write-PSMutationReport {
         # What each mapped test file looked like when this report was written, so a later merge
         # can tell an added test from a deleted one. Length rather than a hash: see
         # Get-PSMutationMergeFault for why "unchanged" is the wrong question.
-        [hashtable]$TestFileLength = @{}
+        [hashtable]$TestFileLength = @{},
+        # The files a -ChangedFile run was scoped to, or $null for a whole-tree run. NULL rather
+        # than an empty array, and the schema keeps the union: absent and empty are different
+        # answers, and only null may be read as a measurement of everything in `mutate`. The
+        # sibling module's report carries the same distinction in the same shape.
+        [string[]]$ChangedFiles = $null,
+        # The subset of `mutate` this run covered, as the config spells them; $null on a
+        # whole-tree run. Read only to scope equivalence declarations.
+        [string[]]$InScopeFile = $null
     )
     # The only place holding EVERY row, so the only place that can ask whether a
     # declaration matched nothing. The per-set fold no longer answers it.
@@ -794,7 +834,8 @@ function Write-PSMutationReport {
     # Concatenated unconditionally: guarding on a non-empty $coverage adds a branch whose
     # false arm is indistinguishable from its true arm, since appending nothing changes
     # nothing. Both of that guard's mutants survived.
-    $coverage = Get-PSMutationDeclarationCoverageFault -Results $Results -Equivalents $Equivalents
+    $coverage = Get-PSMutationDeclarationCoverageFault -Results $Results -Equivalents $Equivalents `
+        -InScopeFile $InScopeFile
     $summary.StaleEquivalents = [string[]]@(@($summary.StaleEquivalents) + @($coverage) | Where-Object { $_ })
     $document = [pscustomobject]@{
         generatedFrom = 'PSMutant'
@@ -863,6 +904,18 @@ function Write-PSMutationReport {
         $document | Add-Member -NotePropertyName testsWithoutKills -NotePropertyValue (
             ConvertTo-PSMutationList -Value @($MappedTests | Where-Object { -not $killers.Contains($_) }))
     }
+    # ADDED ONLY ON A SCOPED RUN, the same way. Written unconditionally they would put
+    # "mode": null on every full report, which the schema's enum refuses -- absent is how a full
+    # run says it measured everything, and null is not a third answer.
+    #
+    # The two go on TOGETHER: the schema requires changedFiles whenever mode is Changed, because
+    # a percentage over part of a tree that does not say which part is exactly the number this
+    # module exists to stop people quoting.
+    if ($ChangedFiles) {
+        $document | Add-Member -NotePropertyName mode -NotePropertyValue 'Changed'
+        $document | Add-Member -NotePropertyName changedFiles -NotePropertyValue (
+            ConvertTo-PSMutationList -Value $ChangedFiles)
+    }
     Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath
     return $summary
 }
@@ -920,6 +973,22 @@ function Write-PSMutationPartialReport {
     return $ReportPath
 }
 
+function Get-PSMutationDeclarationFile {
+    # The file an equivalence declaration is about, from its key. Pure.
+    #
+    # Keys are `file:function:description` or `file:line:description`, written in the config in
+    # the same spelling as `mutate`, so the file is everything before the first colon.
+    #
+    # Only used to decide whether a declaration is IN SCOPE for a run, which is why a key it
+    # cannot parse yields the whole string: that then matches no scoped file and is left to the
+    # ordinary staleness check, rather than being silently excused by a parse failure.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Key)
+    $i = $Key.IndexOf(':')
+    return $i -lt 0 ? $Key : $Key.Substring(0, $i)
+}
+
 function Get-PSMutationDeclarationCoverageFault {
     # WHOLE RUN: every declaration that matched no mutant, or matched more than one.
     #
@@ -934,7 +1003,10 @@ function Get-PSMutationDeclarationCoverageFault {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results,
-        $Equivalents
+        $Equivalents,
+        # The files this run actually mutated, as the config spells them, or $null for a run over
+        # everything in `mutate`.
+        [string[]]$InScopeFile = $null
     )
     $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
     # A count, not a set: "matched something" and "matched exactly one" are different
@@ -948,7 +1020,19 @@ function Get-PSMutationDeclarationCoverageFault {
     # Filtered once at the end rather than guarded per key. `if ($fault)` looks like it
     # earns its place and does not: the caller drops falsy entries anyway, so adding a $null
     # here is unobservable and the guard's mutant survives. One filter, no branch.
+    # THE SAME HAZARD THE COMMENT ABOVE DESCRIBES, one level up. A -ChangedFile run narrowed to
+    # two files would report every declaration about the other seven as "no such mutant exists"
+    # and fail the gate, for declarations that are correct and were simply never examined. That
+    # is the false stale-equivalence accusation this function exists to avoid, and it would make
+    # a per-PR gate unusable by any repository that declares an equivalent.
+    #
+    # $null, not an empty list: a whole-tree run judges every declaration, and an empty scope is
+    # refused before a run starts. The two are different answers.
+    $scope = $null -eq $InScopeFile ? $null :
+        [System.Collections.Generic.HashSet[string]]::new([string[]]@($InScopeFile),
+            [System.StringComparer]::OrdinalIgnoreCase)
     $faults = foreach ($k in $declared.Keys) {
+        if ($scope -and -not $scope.Contains((Get-PSMutationDeclarationFile -Key $k))) { continue }
         Get-PSMutationDeclarationFault -Key $k -Hits ([int]$matched[$k])
     }
     # No comma-wrap: the caller concatenates this with another array.
@@ -1115,10 +1199,14 @@ function ConvertTo-PSMutationRunResult {
     param(
         [Parameter(Mandatory)] $Summary,
         [Parameter(Mandatory)] [int]$ExitCode,
-        [Parameter(Mandatory)] [string]$FailureReason
+        [Parameter(Mandatory)] [string]$FailureReason,
+        [string[]]$ChangedFiles = $null
     )
     return [pscustomobject]@{
-        Mode               = 'Full'
+        # 'Changed' when the run was scoped, so a caller that did not choose the mode can still
+        # tell a project number from one over part of the tree. The report says the same thing in
+        # its own `mode`, and the two are derived from the one value.
+        Mode               = $ChangedFiles ? 'Changed' : 'Full'
         Score              = $Summary.Score
         Killed             = $Summary.Killed
         Survived           = $Summary.Survived
@@ -1129,5 +1217,8 @@ function ConvertTo-PSMutationRunResult {
         # "nothing was stale" from "this build of the module stopped reporting it".
         StaleEquivalents   = [string[]]@($Summary.StaleEquivalents | Where-Object { $_ })
         DeclaredEquivalent = [int]$Summary.DeclaredEquivalent
+        # $null on a whole-tree run, never @(). Absent and empty are different answers, and only
+        # absent may be read as a measurement of everything in `mutate`.
+        ChangedFiles       = $ChangedFiles
     }
 }
