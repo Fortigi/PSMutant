@@ -1595,6 +1595,32 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   Such a run scores 0 over 0, so `Get-PSMutationFailureReason` needs an explicit empty-scope arm
   before the threshold check, or a break threshold fails a pull request for having nothing to say.
 
+- **`tests/NullPipeline.Tests.ps1` is the gate for a class no other gate can see** (#211). A
+  PROPERTY piped into `ForEach-Object` must be declared, with the reason that property cannot be
+  `$null`, or written as a `foreach` statement. `$null | ForEach-Object` runs its body once with
+  `$_ = $null`, which is how the baseline came to hand `GetFullPath` an empty string the first
+  time the coverage tracer was switched off.
+
+  Coverage watches the line execute, self-mutation finds no survivor because no operator turns a
+  pipeline into a `foreach`, and the tests never supply the one value that triggers it. Both were
+  at 100% while it was live.
+
+  **The scope is measured, not intuited.** Property-sourced `ForEach-Object` is 5 sites; variable-
+  sourced is 33 and Where-Object is 28. A variable is almost always a local assigned from `@( )` a
+  line above, so an allowlist over those would be a rubber stamp -- and a rubber stamp is how a
+  list stops being read. A property is null when its OWNER chose not to populate it, which is
+  exactly what Pester does with `.CodeCoverage`. `Where-Object { $_ }` is excluded because it IS
+  the null guard; the dangerous shape there is a DEREFERENCING predicate, which is a narrower rule
+  and its own decision. Both exclusions are asserted as counts, so if either collapses the
+  exclusion is worth revisiting.
+
+  Like the layering gate it fails in **both** directions, and it carries a third test asserting it
+  finds sites at all -- two empty lists agree, so a walker broken by a renamed Ast type would
+  satisfy both halves while checking nothing.
+
+  Writing it hit the sibling trap immediately: `Get-PropertyPipeline` comma-wraps its result, and
+  PIPING that wrapper hands the whole array through as one element. The caller assigns.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
