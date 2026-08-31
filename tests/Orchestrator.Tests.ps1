@@ -559,6 +559,88 @@ Describe 'Invoke-PSMutation -ListOnly' {
     }
 }
 
+Describe 'Invoke-PSMutation pipeline binding' {
+    BeforeEach {
+        $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:root -Force | Out-Null
+        foreach ($n in 'one', 'two') {
+            $cfg = Join-Path $script:root "$n.json"
+            [ordered]@{
+                mutate     = @('src/a.ps1')
+                tests      = @{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
+                operators  = @('BinaryOperator')
+                thresholds = @{ high = 85; low = 70; break = $null }
+                reportPath = "reports/$n.json"
+            } | ConvertTo-Json -Depth 6 | Set-Content $cfg -Encoding utf8
+        }
+
+        Mock Assert-PSMutationPester { }
+        Mock Clear-PSMutationStaleSandbox { }
+        Mock New-PSMutationSandbox {
+            $sb = Join-Path $script:root 'sandbox'
+            foreach ($rel in 'src/a.ps1', 'tests/a.Tests.ps1') {
+                $dest = Join-Path $sb $rel
+                New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+                Set-Content -LiteralPath $dest -Value '# copied by the sandbox'
+            }
+            $sb
+        }
+        Mock Remove-PSMutationSandbox { }
+        Mock Invoke-PSMutationBaseline { @{ Passed = $true; DurationSeconds = 2.0; CoveredLines = @{} } }
+        Mock Get-PSMutationSourceHashMap { @{ 'src/a.ps1' = 'hash' } }
+        Mock Select-PSMutationCandidate {
+            [pscustomobject]@{
+                Candidates = @('cand-1')
+                PerFile    = @([pscustomobject]@{ File = 'src/a.ps1'; Produced = 1; Kept = 1
+                        ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 1; Kept = 1 } }
+                    })
+            }
+        }
+        Mock Invoke-PSMutationLoop {
+            , @([pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 1; Operator = 'BinaryOperator'
+                    Description = 'd'; Status = 'Killed'
+                })
+        }
+    }
+
+    It 'runs once per config piped by VALUE, and returns one result each' {
+        # The monorepo case the issue names. Two objects out, not one -- a `process` block that
+        # was written as `end` would run only the last config and return a single result.
+        $r = @((Join-Path $script:root 'one.json'), (Join-Path $script:root 'two.json')) |
+            Invoke-PSMutation -SourceRoot $script:root -Quiet
+        @($r).Count | Should-Be 2
+        # And each wrote its OWN report, which is what makes them independent runs rather than
+        # one run reported twice.
+        Test-Path (Join-Path $script:root 'reports/one.json') | Should-BeTrue
+        Test-Path (Join-Path $script:root 'reports/two.json') | Should-BeTrue
+    }
+
+    It 'binds ConfigFile and SourceRoot from an object by PROPERTY NAME' {
+        # The ordinary shape once anything upstream is building or filtering objects. Binding by
+        # coercion would reach ConfigFile through ToString() and leave SourceRoot defaulted.
+        $r = [pscustomobject]@{ ConfigFile = (Join-Path $script:root 'one.json'); SourceRoot = $script:root } |
+            Invoke-PSMutation -Quiet
+        @($r).Count | Should-Be 1
+        $r.Total | Should-Be 1
+    }
+
+    It 'binds SourceRoot from FullName, so a directory object means "mutate this"' {
+        $r = Get-Item $script:root | Invoke-PSMutation -ConfigFile (Join-Path $script:root 'one.json') -Quiet
+        @($r).Count | Should-Be 1
+    }
+
+    It 'refuses a FILE as SourceRoot before building anything' {
+        # Piping files binds -ConfigFile by value AND -SourceRoot from the same object's
+        # FullName, so this is the shape a caller reaches by accident. Refused at the source
+        # rather than several steps later by the sandbox check, whose message names a temp
+        # directory the reader has never seen.
+        { Invoke-PSMutation -ConfigFile (Join-Path $script:root 'one.json') `
+                -SourceRoot (Join-Path $script:root 'one.json') -Quiet } |
+            Should-Throw -ExceptionMessage '*is a file, not a directory*'
+        Should-Invoke New-PSMutationSandbox -Exactly 0
+    }
+}
+
 Describe 'Invoke-PSMutation -ChangedFile' {
     BeforeEach {
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))

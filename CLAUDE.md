@@ -1621,6 +1621,34 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   Writing it hit the sibling trap immediately: `Get-PropertyPipeline` comma-wraps its result, and
   PIPING that wrapper hands the whole array through as one element. The caller assigns.
 
+- **A `process` block costs a nesting level, and cognitive complexity charges for depth.** Wrapping
+  `Invoke-PSMutation`'s body to add pipeline binding took the identical code from 15 to 16 against
+  this repo's own 15/15 ceiling. The body moved to `Invoke-PSMutationRun`; the public command is
+  binding and streaming only, at 1/0. That also keeps the diff readable -- a `process` wrap
+  re-indents every line it encloses, and `git diff -w` becomes the only way to review it.
+
+  **`$PSBoundParameters` must be passed, not asked, across that boundary.** Inside the extracted
+  function it answers about THAT function, which would silently lose the distinction between an
+  omitted `-ChangedFile` and an empty one -- the distinction the whole refusal rests on.
+
+- **Argument refusals are ONE ordered decision, not a run of guards** (`Get-PSMutationInputFault`).
+  Three separate `if`s put the body over the complexity ceiling, and worse, left the order between
+  them wherever somebody happened to write them. `-SourceRoot` is judged first because every other
+  answer is relative to it: reporting a mode conflict first sends the reader to argue about
+  switches while the root is the actual fault. Same shape as the sibling's `Get-PSCxScanFault`.
+
+- **Probe a proposed parameter shape before adopting it.** The issue's suggested binding looked
+  right and has a trap: piping FILES binds `-ConfigFile` by value AND `-SourceRoot` from the same
+  object's `FullName`, so `Get-ChildItem *.json | Invoke-PSMutation` points the root at the config
+  file. Ten lines in a throwaway function found it; reading the parameter attributes did not.
+
+  A file as `-SourceRoot` was already refused -- by the sandbox check several steps later, naming
+  a temp directory the reader has never seen. `Get-PSMutationSourceRootFault` names it at the
+  source, which is the same misdiagnosis this module exists to end.
+
+  `PSPath` is not aliased, for the reason the sibling records: it is provider-qualified, and every
+  config path resolves against `-SourceRoot`.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
