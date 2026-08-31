@@ -149,6 +149,13 @@
       },
       "description": "Full runs only. Files in 'mutate' whose candidates the covered-lines filter removed entirely, so they contribute nothing to the score. Empty is the ordinary answer and is written as [], never as [null]."
     },
+    "changedFiles": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "The files a -ChangedFile run was scoped to. Required when mode is 'Changed' and ABSENT otherwise -- absent is how a full run says it measured everything in 'mutate', and an empty array would be a scoped run that measured nothing, which is refused before it starts."
+    },
     "filesWithNoCandidate": {
       "type": "array",
       "items": {
@@ -194,9 +201,10 @@
     "mode": {
       "enum": [
         "Recheck",
-        "Partial"
+        "Partial",
+        "Changed"
       ],
-      "description": "The kind of run this document reports. Absent on a full run. 'Recheck' re-ran a previous report's survivors; 'Partial' is a full run interrupted before it finished. Neither carries mutationScore."
+      "description": "The kind of run this document reports. Absent on a full run over everything in 'mutate'. 'Recheck' re-ran a previous report's survivors and 'Partial' is a full run interrupted before it finished -- neither carries mutationScore. 'Changed' was scoped to a set of changed files and DOES carry one, because a percentage over every mutant in those files is a real measurement of them; it must name the scope beside it, which is why changedFiles is required with it."
     },
     "note": {
       "type": "string",
@@ -257,7 +265,7 @@
   },
   "allOf": [
     {
-      "description": "A document carrying mutationScore is a full report and must carry the full-run disclosures beside it; one without a score must say which other kind of run it was.",
+      "description": "A document carrying mutationScore measured every mutant it selected, and must carry the disclosures beside it; one without a score must say which other kind of run it was. A scoped run carries a score too -- what it selected was a set of changed files -- so the disclosures are required of it in the same way, and the rule below makes it name that scope.",
       "if": {
         "required": [
           "mutationScore"
@@ -282,6 +290,25 @@
       "else": {
         "required": [
           "mode"
+        ]
+      }
+    },
+    {
+      "description": "A scoped run carries a score AND the scope it was measured over. The score is real -- every mutant in those files was evaluated -- but it is not the project's, so a reader must be unable to see the number without seeing what it covered.",
+      "if": {
+        "required": [
+          "mode"
+        ],
+        "properties": {
+          "mode": {
+            "const": "Changed"
+          }
+        }
+      },
+      "then": {
+        "required": [
+          "mutationScore",
+          "changedFiles"
         ]
       }
     },

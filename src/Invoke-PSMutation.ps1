@@ -21,6 +21,39 @@ function Get-PSMutationRunContext {
         DOCUMENTS itself with, each shared by two callees. A value is spelled once here, so
         adding one is an edit at its source rather than at every call site forwarding it.
 
+    .PARAMETER ChangedFile
+        Scope the run to these files: `mutate` intersected with what a pull request changed.
+        Everything else follows -- only those files are enumerated, hashed, and answered for.
+
+        It answers the question a reviewer actually has: are the lines this PR introduced tested
+        well enough? A whole-repo score cannot answer that, and a whole-repo score is what makes
+        people turn the gate off.
+
+        THE CALLER COMPUTES THE DIFF, and there is deliberately no -ChangedSince <ref>. A diff is
+        not a fact this module can work out: it needs a base, and every way that goes wrong goes
+        wrong in the CALLER's environment -- a shallow clone where the ref was never fetched, a
+        detached HEAD, a merge base that is not the one the reviewer sees. Resolving it here would
+        turn those into a mutation tool refusing to run, several layers from the shell where they
+        can be fixed. The sibling module refused the same parameter for the same reason.
+
+            $changed = git diff --name-only origin/main...HEAD
+            Invoke-PSMutation -ConfigFile ./c.json -ChangedFile $changed
+
+        AN EMPTY LIST IS REFUSED. `git diff` against a ref that was never fetched prints nothing
+        and exits 0, and taken at face value that is a confident pass over zero mutants. A list
+        that holds files, none of which are in `mutate`, is a different situation entirely -- an
+        ordinary documentation change -- and passes, saying so.
+
+        The score is real but it is not the project's: it covers the files named and nothing else.
+        So the report goes to <report>.changed.json, never the project's file, `mode` is 'Changed',
+        and `changedFiles` sits beside the score in both the document and the result. It cannot be
+        combined with -RecheckFrom, -UpdateBaseline or -MergeIntoBaseline; folding a scoped run's
+        survivors into a whole-project baseline would record "no survivors" for every file the run
+        never looked at.
+
+        Restricting mutants to changed LINES is not implemented. It needs hunk offsets, which have
+        the same problem -ChangedSince has and no agreed shape yet.
+
     .PARAMETER ListOnly
         Preview the mutant set. Decides only whether the baseline is worth measuring; the
         rendering and the early return belong to the caller.
@@ -36,9 +69,35 @@ function Get-PSMutationRunContext {
         # This run rechecks a prior report. Decides only whether the baseline is instrumented --
         # which mutants a recheck evaluates is Recheck.ps1's business, not this function's.
         [switch]$Recheck,
+        # Scope the run to these files. $null is a whole-tree run; an EMPTY list never reaches
+        # here -- the caller refuses it, because a diff that produced nothing is more often a
+        # broken pipeline than a pull request that changed nothing.
+        [string[]]$ChangedFile,
         [switch]$Quiet
     )
     $t = Get-PSMutationSandboxPlan -Cfg $Cfg -SourceRoot $SourceRoot -SandboxRoot $SandboxRoot
+
+    # The plan's Mutate is NARROWED, and everything downstream follows from it: what the baseline
+    # instruments, what is enumerated, what is hashed, what the report answers for. One definition
+    # of "what this run mutates" rather than a scope flag each of them has to remember separately.
+    #
+    # AllTests is deliberately left whole. The green gate covers the entire mapped suite even when
+    # two files are being mutated: a baseline that ran only the changed files' tests would be a
+    # weaker gate bought for speed, and speed is already what this mode is.
+    $inScope = $null
+    if ($null -ne $ChangedFile) {
+        $t.Mutate = Select-PSMutationScopedMutateFile -Mutate $t.Mutate -ChangedFile $ChangedFile `
+            -SourceRoot $SourceRoot -SandboxRoot $SandboxRoot
+        # Named the way the CONFIG names them, because that is how equivalence declarations are
+        # keyed. Stays $null on a whole-tree run: absent and empty are different answers, and
+        # only absent means "every declaration was judged".
+        # A foreach STATEMENT, not a pipeline: over an empty scope a pipeline iterates once with
+        # $_ = $null and indexes the map with it. The same shape as the coverage collector in
+        # Invoke-PSMutationBaseline, and reached the same way -- by a case that produces nothing.
+        $inScope = [System.Collections.Generic.List[string]]::new()
+        foreach ($m in $t.Mutate) { $inScope.Add($t.ConfigByPath[$m]) }
+        $inScope = [string[]]@($inScope)
+    }
 
     # THE RESOLUTIONS, on the verbose stream. These are narration while a run works and the
     # first four questions when it does not: which sandbox, which files were actually
@@ -70,7 +129,8 @@ function Get-PSMutationRunContext {
     # ONE answer, read twice: it enables the tracer below and applies the filter further down.
     # Split into two decisions they could disagree, and one of the two disagreements evaluates
     # nothing at all -- a filter with no coverage behind it keeps no candidate.
-    $coverageNeeded = Test-PSMutationCoverageNeeded -CoveredLinesOnly $coveredOnly -Recheck $Recheck.IsPresent
+    $coverageNeeded = Test-PSMutationCoverageNeeded -CoveredLinesOnly $coveredOnly `
+        -Recheck $Recheck.IsPresent -HasMutateFile (@($t.Mutate).Count -gt 0)
     $baseline = Get-PSMutationRunBaseline -Plan $t -SandboxRoot $SandboxRoot -Measure:$baselineNeeded `
         -Coverage:$coverageNeeded -Quiet:$Quiet
     # Derived on BOTH paths from the one duration, rather than a literal in the preview arm. A
@@ -93,6 +153,9 @@ function Get-PSMutationRunContext {
     $perFile = ConvertTo-PSMutationDisplayPerFile -PerFile $selection.PerFile -SandboxRoot $SandboxRoot
     $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $SandboxRoot
     $reportPath = Get-PSMutationReportPath -Cfg $Cfg -SourceRoot $SourceRoot
+    # Never the project's file. This run measured part of the tree, and the convention
+    # -RecheckFrom established is that a partial answer gets a path of its own.
+    if ($null -ne $ChangedFile) { $reportPath = Get-PSMutationScopedReportPath -ReportPath $reportPath }
     return @{
         Plan             = $t
         Baseline         = $baseline
@@ -111,6 +174,10 @@ function Get-PSMutationRunContext {
         Exclusion        = Get-PSMutationCoverageExclusion -PerFile $perFile
         SourceHashes     = $hashes
         ReportPath       = $reportPath
+        # $null on a whole-tree run, which is what the report writer keys its `mode` marker off
+        # and what tells a reader the score covered everything in `mutate`.
+        ChangedFiles     = $ChangedFile
+        InScopeFile      = $inScope
         # NOT in Exec, which is splatted into the recheck run as well. A recheck evaluates its
         # mutants through the same loop and still records a first killer per row; what it does
         # not do is pay for the complete list, because its report carries no killersComplete
@@ -213,6 +280,10 @@ function Invoke-PSMutation {
             list     @{ Mode='List'; Files; Produced; Total; FilesWithNoCandidate;
                         FilesEmptiedByCoverage; BaselineMeasured; ExitCode; FailureReason }
 
+        A -ChangedFile run returns the FULL shape with Mode='Changed' and ChangedFiles naming the
+        scope. ChangedFiles is $null on an unscoped run -- absent and empty are different answers,
+        and only absent may be read as a measurement of everything in `mutate`.
+
         FailureReason is 'None', 'StaleEquivalents' or 'BelowThreshold'. It exists because
         ExitCode 1 means either of the last two, and the difference decides what to go and fix:
         a stale declaration is a false statement in the config inflating the score, not a
@@ -275,6 +346,21 @@ function Invoke-PSMutation {
         a repository that considers it one can say so.
 
     .EXAMPLE
+        $changed = git diff --name-only origin/main...HEAD
+        $r = Invoke-PSMutation -ConfigFile ./c.json -ChangedFile $changed
+        exit $r.ExitCode
+
+        A per-PR gate. Only the changed files in `mutate` are evaluated, so the run costs a
+        fraction of a full one, and the score is about the code under review rather than the
+        repository. A pull request touching no mutable file passes and says so.
+
+    .EXAMPLE
+        Invoke-PSMutation -ConfigFile ./c.json -ChangedFile $changed -ListOnly
+
+        What would this pull request mutate? The one combination -ListOnly permits, and the
+        cheapest use either has.
+
+    .EXAMPLE
         Invoke-PSMutation -ConfigFile ./c.json -SourceRoot ../other-repo
 
         Mutate a different repository. Every path in the config is relative to
@@ -292,6 +378,10 @@ function Invoke-PSMutation {
         # Preview the mutant set and stop. Evaluates nothing, so it refuses to combine with
         # any switch that acts on verdicts -- see Get-PSMutationModeFault.
         [switch]$ListOnly,
+        # Scope the run to the files a pull request changed. The CALLER computes the diff -- see
+        # the .PARAMETER block for why there is no -ChangedSince. AllowEmptyString so a list of
+        # blanks reaches Get-PSMutationChangedFileFault, whose message names the likely cause.
+        [AllowEmptyString()] [string[]]$ChangedFile,
         [switch]$Quiet,
         # Record this run's survivors as the accepted baseline. Writes even on a failing run --
         # see the call site.
@@ -310,8 +400,17 @@ function Invoke-PSMutation {
     # Refused before anything is built. The answer needs nothing a sandbox or a Pester could
     # tell us, and copying a tree first is a slower way to say no.
     $modeFault = Get-PSMutationModeFault -ListOnly $ListOnly.IsPresent -Recheck ([bool]$RecheckFrom) `
-        -UpdateBaseline $UpdateBaseline.IsPresent -MergeIntoBaseline $MergeIntoBaseline.IsPresent
+        -UpdateBaseline $UpdateBaseline.IsPresent -MergeIntoBaseline $MergeIntoBaseline.IsPresent `
+        -Changed $PSBoundParameters.ContainsKey('ChangedFile')
     if ($modeFault) { throw $modeFault }
+    # BOUND, not truthy. An omitted -ChangedFile is a whole-tree run; one passed as an empty list
+    # is a caller whose diff produced nothing, and those must not be the same answer. $null and
+    # @() are indistinguishable once bound to [string[]], so the question has to be asked of
+    # $PSBoundParameters rather than of the value.
+    if ($PSBoundParameters.ContainsKey('ChangedFile')) {
+        $changedFault = Get-PSMutationChangedFileFault -ChangedFile $ChangedFile
+        if ($changedFault) { throw $changedFault }
+    }
     Assert-PSMutationPester
     Clear-PSMutationStaleSandbox
 
@@ -322,7 +421,8 @@ function Invoke-PSMutation {
     $sandbox = New-PSMutationSandbox -RepoRoot $root -Subtrees $subtrees
     try {
         $ctx = Get-PSMutationRunContext -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox `
-            -Subtrees $subtrees -ListOnly:$ListOnly -Recheck:([bool]$RecheckFrom) -Quiet:$Quiet
+            -Subtrees $subtrees -ListOnly:$ListOnly -Recheck:([bool]$RecheckFrom) `
+            -ChangedFile $ChangedFile -Quiet:$Quiet
         if ($ListOnly) {
             Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationMutantListLine `
                     -PerFile $ctx.PerFile -CoveredLinesOnly $ctx.CoveredLinesOnly `
@@ -361,6 +461,14 @@ function Invoke-PSMutation {
                     -Text ("  {0} mutate file(s) have no tests entry, so every one of their mutants runs the WHOLE suite: {1}" -f `
                             $unmapped.Count, (($unmapped | ForEach-Object { Split-Path $_ -Leaf }) -join ', ')))
         }
+        # Said before the loop, on every scoped run, because a passing gate is otherwise silent
+        # about the fact that it measured part of the tree -- and a number over part of a tree
+        # that nobody knows is partial is the one this module exists to stop being quoted.
+        if ($null -ne $ctx.ChangedFiles) {
+            Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Muted' `
+                    -Text ("  SCOPED run: {0} changed file(s) given, {1} of them in mutate. The score covers those only, and the report goes to {2}." -f `
+                            @($ctx.ChangedFiles).Count, @($t.Mutate).Count, (Split-Path $ctx.ReportPath -Leaf)))
+        }
         Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Detail' `
                 -Text "  Mutants to evaluate: $($cands.Count)`n")
 
@@ -393,7 +501,8 @@ function Invoke-PSMutation {
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
         # totalSeconds records how long the run took to start rather than to finish.
         $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $ctx.Exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $ctx.RecordAllKillers -MappedTests $t.AllTests `
-            -TestFileLength (Get-PSMutationTestFileLength -Path $t.AllTests -SandboxRoot $sandbox)
+            -TestFileLength (Get-PSMutationTestFileLength -Path $t.AllTests -SandboxRoot $sandbox) `
+            -ChangedFiles $ctx.ChangedFiles -InScopeFile $ctx.InScopeFile
         $band = Get-PSMutationScoreBand -Cfg $cfg
         $summaryLines = Get-PSMutationSummaryLine -Summary $summary -Results $results `
             -High $band.High -Low $band.Low -ReportPath $ctx.ReportPath -Equivalents $cfg.equivalents -Exclusion $ctx.Exclusion -PerFile (Get-PSMutationPerFileScore -Results $results -Equivalents $cfg.equivalents)
@@ -432,9 +541,18 @@ function Invoke-PSMutation {
 
         # The reason first, and the exit code derived from it, so the two cannot disagree about
         # the same run.
-        $reason = Get-PSMutationFailureReason -Summary $summary -Thresholds $cfg.thresholds -BaselineFault $baselineFault
-        $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds -BaselineFault $baselineFault
-        return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit -FailureReason $reason
+        # A scoped run that matched no mutable file. Computed once and read by both, so the
+        # reason and the code cannot disagree about the same run.
+        $emptyScope = ($null -ne $ctx.ChangedFiles) -and (@($t.Mutate).Count -eq 0)
+        if ($emptyScope) {
+            Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Muted' `
+                    -Text ("  None of the {0} changed file(s) is in mutate, so there was nothing to mutate. Passing." -f `
+                            @($ctx.ChangedFiles).Count))
+        }
+        $reason = Get-PSMutationFailureReason -Summary $summary -Thresholds $cfg.thresholds -BaselineFault $baselineFault -EmptyScope $emptyScope
+        $exit = Get-PSMutationExitCode -Summary $summary -Thresholds $cfg.thresholds -BaselineFault $baselineFault -EmptyScope $emptyScope
+        return ConvertTo-PSMutationRunResult -Summary $summary -ExitCode $exit -FailureReason $reason `
+            -ChangedFiles $ctx.ChangedFiles
     }
     finally {
         # The warm mutant runspace outlives individual mutants by design; it must not outlive the

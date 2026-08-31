@@ -27,7 +27,10 @@ function Invoke-PSMutationBaseline {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string[]]$TestPath,
-        [Parameter(Mandatory)] [string[]]$MutateFiles,
+        # AllowEmptyCollection: a -ChangedFile run over a docs-only pull request has nothing to
+        # mutate and still needs its green gate. A mandatory [string[]] refuses an empty array
+        # outright, which turned that ordinary case into a binding failure.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$MutateFiles,
         # Where Pester's coverage XML goes. Mandatory rather than defaulted to temp: the sandbox is
         # the one directory this run owns and disposes of, and a default would put the file back in
         # shared temp for any caller who forgot.
@@ -274,7 +277,10 @@ function Select-PSMutationCandidate {
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [string[]]$MutateFiles,
+        # AllowEmptyCollection, like the baseline's: a -ChangedFile run over a docs-only pull
+        # request has no file to enumerate, and that is an ordinary outcome rather than a
+        # binding failure. It yields no candidates, which is the true answer.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$MutateFiles,
         [Parameter(Mandatory)] [string[]]$Operators,
         [bool]$CoveredLinesOnly,
         $CoveredLines
@@ -502,7 +508,11 @@ function Get-PSMutationCoveringSuite {
     .SYNOPSIS
         The test files that cover one mutate file: its own mapping, or the whole suite.
     #>
-    [OutputType([string[]])]
+    # BOTH types, and the second is the price of the comma-wrap: `, $x` is statically an
+    # Object[] wrapper that PowerShell unrolls on return, so PSUseOutputTypeCorrectly
+    # contradicts a bare [string[]]. Declaring only [object[]] would satisfy the analyzer
+    # and stop documenting what a caller actually receives.
+    [OutputType([string[]], [object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [string]$File,
@@ -512,7 +522,10 @@ function Get-PSMutationCoveringSuite {
     # ONE place, because the loop and the verbose trace both need the answer and a second copy of
     # a fallback is a second thing to get wrong -- the trace's copy survived its own mutant, since
     # nothing asserted what it printed.
-    return [string[]]@($TestsByFile.ContainsKey($File) ? $TestsByFile[$File] : $AllTests)
+    # Comma-wrapped for the reason the report's two sibling collectors are: an empty result
+    # would unroll to $null, and this feeds a -TestPath that would then bind nothing.
+    $suite = [string[]]@($TestsByFile.ContainsKey($File) ? $TestsByFile[$File] : $AllTests)
+    return , $suite
 }
 
 function Invoke-PSMutationLoop {

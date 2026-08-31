@@ -331,8 +331,17 @@ function Test-PSMutationCoverageNeeded {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [bool]$CoveredLinesOnly,
-        [Parameter(Mandatory)] [bool]$Recheck
+        [Parameter(Mandatory)] [bool]$Recheck,
+        # Whether this run has any file to mutate at all. A -ChangedFile run over a pull request
+        # that touched only documentation has none, and there is nothing for the tracer to
+        # instrument -- Pester would be handed an empty coverage target.
+        #
+        # Deliberately NOT on Test-PSMutationBaselineNeeded, where it was written first by
+        # mistake: the green gate still matters for such a run. A red suite must fail a
+        # docs-only pull request exactly as it fails any other.
+        [bool]$HasMutateFile = $true
     )
+    if (-not $HasMutateFile) { return $false }
     return $CoveredLinesOnly -and -not $Recheck
 }
 
@@ -356,8 +365,23 @@ function Get-PSMutationModeFault {
         [Parameter(Mandatory)] [bool]$ListOnly,
         [Parameter(Mandatory)] [bool]$Recheck,
         [Parameter(Mandatory)] [bool]$UpdateBaseline,
-        [Parameter(Mandatory)] [bool]$MergeIntoBaseline
+        [Parameter(Mandatory)] [bool]$MergeIntoBaseline,
+        [bool]$Changed
     )
+    # -ChangedFile first, because its conflicts hold whether or not -ListOnly is present, and
+    # -ListOnly WITH -ChangedFile is the one combination here that is not a conflict at all:
+    # previewing what a pull request would mutate is the cheapest use either has.
+    $scoped = [System.Collections.Generic.List[string]]::new()
+    if ($Changed -and $Recheck) { $scoped.Add('-RecheckFrom') }
+    # A scoped run measures part of the tree. Folding its survivors into a whole-project
+    # baseline would record "no survivors" for every file the run never looked at, which is
+    # the baseline quietly forgetting debt rather than the run finding none.
+    if ($Changed -and $UpdateBaseline) { $scoped.Add('-UpdateBaseline') }
+    if ($Changed -and $MergeIntoBaseline) { $scoped.Add('-MergeIntoBaseline') }
+    if ($scoped.Count -gt 0) {
+        return ("-ChangedFile scopes the run to part of the tree, so it cannot be combined with {0}. " -f ($scoped -join ' or ')) +
+            'Run the whole tree for a project-wide answer, or drop -ChangedFile.'
+    }
     if (-not $ListOnly) { return '' }
     $with = [System.Collections.Generic.List[string]]::new()
     if ($Recheck) { $with.Add('-RecheckFrom') }
@@ -366,6 +390,103 @@ function Get-PSMutationModeFault {
     if ($with.Count -eq 0) { return '' }
     return ("-ListOnly evaluates no mutants, so it cannot be combined with {0}. " -f ($with -join ' or ')) +
         'Drop -ListOnly to run, or drop the other switch to preview the mutant set.'
+}
+
+function Get-PSMutationChangedFileFault {
+    <#
+    .SYNOPSIS
+        The message refusing an EMPTY -ChangedFile list, or empty when there is nothing to refuse.
+    .DESCRIPTION
+        The one guard that earns its place, and it is about the caller's pipeline rather than
+        their code. `git diff --name-only` against a ref that was never fetched prints nothing
+        and exits 0. Taken at face value that is a confident pass over zero mutants -- a green
+        per-PR gate that measured nothing, which is precisely the failure this module exists to
+        make impossible.
+
+        It is deliberately NOT the same situation as a list that holds files, none of which are
+        in `mutate`. That is an ordinary pull request touching documentation or tests, and it
+        passes and says so. Only one of the two indicates a broken pipeline, and a gate that
+        conflated them would either fail every docs-only change or pass every broken one.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    # AllowEmptyString as well as AllowEmptyCollection: a shell that emitted blank lines binds
+    # @('', '') here, and PowerShell's own refusal -- "Cannot bind argument because it is an
+    # empty string" -- says nothing about diffs or pipelines. Binding it lets the message below
+    # do the explaining, which is the whole point of this function.
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$ChangedFile)
+    if (@($ChangedFile | Where-Object { $_ }).Count -gt 0) { return '' }
+    return ('-ChangedFile was given an empty list. A diff that produced no files is more often a ' +
+        'broken pipeline than a pull request that changed nothing -- `git diff --name-only` against ' +
+        'a ref that was never fetched prints nothing and exits 0 -- so this is refused rather than ' +
+        'read as a pass over zero mutants. Omit -ChangedFile to mutate everything in `mutate`.')
+}
+
+function Select-PSMutationScopedMutateFile {
+    <#
+    .SYNOPSIS
+        The mutate files a scoped run should actually mutate: the intersection with what changed.
+    .DESCRIPTION
+        Pure, and matched on the SANDBOX path both sides resolve to, so a caller may name a file
+        however they like -- repo-relative, absolute, or with the other platform's separators --
+        and still hit the same entry the config named.
+
+        A changed file that is not in `mutate` is dropped without comment. That is the ordinary
+        case: a pull request touches tests, documentation and source together, and only the last
+        is this module's business.
+    #>
+    # BOTH types, and the second is the price of the comma-wrap: `, $x` is statically an
+    # Object[] wrapper that PowerShell unrolls on return, so PSUseOutputTypeCorrectly
+    # contradicts a bare [string[]]. Declaring only [object[]] would satisfy the analyzer
+    # and stop documenting what a caller actually receives.
+    [OutputType([string[]], [object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Mutate,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$ChangedFile,
+        [Parameter(Mandatory)] [string]$SourceRoot,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    $wanted = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    # NO blank guard. `Join-Path $SourceRoot ''` and `... $null` both yield the source root, whose
+    # sandbox path is the sandbox root -- and no mutate file is ever the sandbox root, so a blank
+    # entry adds a key that matches nothing. Measured. A guard here would be a branch whose two
+    # arms produce identical output, which is the shape this repo deletes rather than tests: its
+    # mutants survive because nothing can tell it from its own absence.
+    foreach ($f in $ChangedFile) {
+        [void]$wanted.Add((ConvertTo-PSMutationSandboxPath -Path (Join-Path $SourceRoot $f) `
+                    -RepoRoot $SourceRoot -SandboxRoot $SandboxRoot))
+    }
+    # ORDER FROM $Mutate, not from $ChangedFile. The config's order is what every other run
+    # reports in, and a scoped report that listed files in diff order would sort differently
+    # from a full one over the same repository.
+    # COMMA-WRAPPED. A function returning an empty collection unrolls it to NOTHING, so a scope
+    # that matched no mutate file would hand the caller $null rather than an empty array -- and
+    # `$null | ForEach-Object` runs its body once with $_ = $null. That is the docs-only pull
+    # request, which is the case this whole mode has to get right. The caller ASSIGNS this; it
+    # must never wrap it in @( ) again.
+    $scoped = [string[]]@($Mutate | Where-Object { $wanted.Contains($_) })
+    return , $scoped
+}
+
+function Get-PSMutationScopedReportPath {
+    <#
+    .SYNOPSIS
+        Where a -ChangedFile run writes, which is never the project report.
+    .DESCRIPTION
+        The convention -RecheckFrom established, for the same reason: this run measured part of
+        the tree, and a number over part of it must not land in the file a dashboard reads as
+        the project's. Idempotent, so a scoped run seeded from a scoped path does not grow a
+        second suffix.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$ReportPath)
+    $dir = Split-Path $ReportPath -Parent
+    $name = [System.IO.Path]::GetFileNameWithoutExtension($ReportPath)
+    $ext = [System.IO.Path]::GetExtension($ReportPath)
+    if ($name.EndsWith('.changed')) { return (Join-Path $dir "$name$ext") }
+    return (Join-Path $dir "$name.changed$ext")
 }
 
 function Get-PSMutationRecordEveryKiller {
@@ -703,6 +824,13 @@ function Get-PSMutationSandboxPlan {
     # happen before the tests map is walked.
     $dupe = Get-PSMutationDuplicateMutateFault -Resolved $mutate
     if ($dupe) { throw $dupe }
+    # The inverse of the mapping just done, built HERE because this is the only place holding both
+    # spellings at once. A scoped run needs its files named the way the CONFIG names them --
+    # equivalence declarations are keyed that way, and a sandbox path matches none of them.
+    # Rebuilding it later would be a second implementation of $toSb, and the duplicate check above
+    # is what guarantees the keys are unique.
+    $byPath = @{}
+    for ($i = 0; $i -lt $mutate.Count; $i++) { $byPath[$mutate[$i]] = @($Cfg.mutate)[$i] }
 
     $byFile = @{}
     $all = [System.Collections.Generic.List[string]]::new()
@@ -720,9 +848,10 @@ function Get-PSMutationSandboxPlan {
         -Resolved $mappedKeys.ToArray() -Mutate $mutate
     if ($orphan) { throw $orphan }
     return @{
-        Mutate      = $mutate
-        TestsByFile = $byFile
-        AllTests    = $all.ToArray()
+        Mutate       = $mutate
+        TestsByFile  = $byFile
+        AllTests     = $all.ToArray()
+        ConfigByPath = $byPath
     }
 }
 

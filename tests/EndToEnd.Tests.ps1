@@ -197,6 +197,128 @@ Describe 'Invoke-PSMutation -ListOnly end-to-end' {
     }
 }
 
+Describe 'Invoke-PSMutation -ChangedFile end-to-end' {
+    BeforeAll {
+        # Its own two-file project, because the scope has to be a real subset of something.
+        $script:cf = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-cf-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:cf 'src') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:cf 'tests') -Force | Out-Null
+        "function Get-Sign { param(`$n) if (`$n -gt 0) { return 'pos' } else { return 'neg' } }" |
+            Set-Content (Join-Path $script:cf 'src/a.ps1') -Encoding utf8
+        "function Get-Flag { param(`$n) if (`$n -gt 1) { return `$true } else { return `$false } }" |
+            Set-Content (Join-Path $script:cf 'src/b.ps1') -Encoding utf8
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'a.ps1') }
+Describe 'a' { It 'pos' { Get-Sign 5 | Should -Be 'pos' }; It 'neg' { Get-Sign -5 | Should -Be 'neg' } }
+'@ | Set-Content (Join-Path $script:cf 'tests/a.Tests.ps1') -Encoding utf8
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'b.ps1') }
+Describe 'b' { It 'runs' { { Get-Flag 2 } | Should -Not -Throw } }
+'@ | Set-Content (Join-Path $script:cf 'tests/b.Tests.ps1') -Encoding utf8
+        $script:cfConfig = Join-Path $script:cf 'c.json'
+        [ordered]@{
+            sandboxSubtrees  = @('src', 'tests')
+            mutate           = @('src/a.ps1', 'src/b.ps1')
+            tests            = @{ 'src/a.ps1' = @('tests/a.Tests.ps1'); 'src/b.ps1' = @('tests/b.Tests.ps1') }
+            coveredLinesOnly = $true
+            operators        = @('BinaryOperator')
+            thresholds       = @{ high = 85; low = 70; break = 50 }
+            reportPath       = 'reports/r.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $script:cfConfig -Encoding utf8
+
+        $script:cfFull = Invoke-PSMutation -ConfigFile $script:cfConfig -SourceRoot $script:cf -Quiet
+        $script:cfScoped = Invoke-PSMutation -ConfigFile $script:cfConfig -SourceRoot $script:cf `
+            -ChangedFile @('src/a.ps1', 'tests/a.Tests.ps1', 'README.md') -Quiet
+    }
+
+    AfterAll { Remove-Item $script:cf -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'evaluates a strict subset of what the full run did' {
+        # Both numbers. "Fewer" alone would hold for a scoped run that mutated nothing, which is
+        # a different outcome with a different meaning.
+        $script:cfFull.Total | Should-Be 2
+        $script:cfScoped.Total | Should-Be 1
+    }
+
+    It 'says it was scoped, and names the scope' {
+        $script:cfScoped.Mode | Should-Be 'Changed'
+        # The files as GIVEN, including the ones that are not in mutate: this is what the caller
+        # asked about, and it is what makes the score readable.
+        $script:cfScoped.ChangedFiles | Should-BeCollection @('src/a.ps1', 'tests/a.Tests.ps1', 'README.md')
+    }
+
+    It 'leaves ChangedFiles null on a whole-tree run' {
+        # $null, not @(). Only absent may be read as a measurement of everything in mutate.
+        $script:cfFull.Mode | Should-Be 'Full'
+        $null -eq $script:cfFull.ChangedFiles | Should-BeTrue
+    }
+
+    It 'writes its own report and leaves the project one untouched' {
+        $scoped = Get-Content (Join-Path $script:cf 'reports/r.changed.json') -Raw | ConvertFrom-Json
+        $scoped.mode | Should-Be 'Changed'
+        $scoped.changedFiles | Should-BeCollection @('src/a.ps1', 'tests/a.Tests.ps1', 'README.md')
+        $scoped.total | Should-Be 1
+        # The full report still reports the full run. A scoped number landing here is the thing
+        # this convention exists to prevent.
+        (Get-Content (Join-Path $script:cf 'reports/r.json') -Raw | ConvertFrom-Json).total | Should-Be 2
+    }
+
+    It 'writes a scoped report the published schema accepts' {
+        # And the schema requires changedFiles beside the score, so a reader cannot see the
+        # number without seeing what it covered.
+        $schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v2/report.schema.json') -Raw
+        $text = [System.IO.File]::ReadAllText((Join-Path $script:cf 'reports/r.changed.json'))
+        function Test-ScopedSchema { param([string]$Json)
+            try { Test-Json -Json $Json -Schema $schema -ErrorAction Stop | Out-Null; return $true }
+            catch { return $false }
+        }
+        Should-BeTrue -Actual (Test-ScopedSchema -Json $text)
+
+        $doc = $text | ConvertFrom-Json
+        $doc.PSObject.Properties.Remove('changedFiles')
+        Should-BeFalse -Actual (Test-ScopedSchema -Json ($doc | ConvertTo-Json -Depth 12)) `
+            -Because 'a score over part of a tree that does not say which part is the number this module exists to stop people quoting'
+    }
+
+    It 'PASSES a pull request that touched no mutable file, despite a break threshold' {
+        # An empty run scores 0, and this config breaks below 50. Without an explicit arm, a
+        # documentation-only change fails the build for having nothing to say.
+        $docs = Invoke-PSMutation -ConfigFile $script:cfConfig -SourceRoot $script:cf `
+            -ChangedFile @('README.md') -Quiet
+        $docs.ExitCode | Should-Be 0
+        $docs.FailureReason | Should-Be 'None'
+        $docs.Total | Should-Be 0
+    }
+
+    It 'REFUSES an empty list, which is a broken diff rather than an empty pull request' {
+        { Invoke-PSMutation -ConfigFile $script:cfConfig -SourceRoot $script:cf -ChangedFile @() -Quiet } |
+            Should-Throw -ExceptionMessage '*empty list*'
+    }
+
+    It 'does not call an out-of-scope declaration stale' {
+        # THE hazard that would make this mode unusable. A declaration is stale when it matches no
+        # mutant -- and every declaration about a file outside the scope matches none, because the
+        # run never looked at that file. Reported as stale it fails the gate at any score, for
+        # declarations that are perfectly correct.
+        $cfg = Get-Content $script:cfConfig -Raw | ConvertFrom-Json
+        $full = Get-Content (Join-Path $script:cf 'reports/r.json') -Raw | ConvertFrom-Json
+        # A REAL declaration, taken from a mutant the full run actually produced in b.ps1, so the
+        # claim is true and the only question is whether the scoped run judges it.
+        $bMutant = @($full.mutants | Where-Object { $_.File -like '*b.ps1' })[0]
+        # The fixture must produce a mutant in b.ps1, or the declaration below is about nothing
+        # and the assertion proves nothing.
+        Should-NotBeNull -Actual $bMutant
+        $key = "src/b.ps1:$($bMutant.Function):$($bMutant.Description)"
+        $cfg | Add-Member -NotePropertyName equivalents -NotePropertyValue ([pscustomobject]@{ $key = 'declared for this test' })
+        $withDecl = Join-Path $script:cf 'c2.json'
+        $cfg | ConvertTo-Json -Depth 8 | Set-Content $withDecl -Encoding utf8
+
+        $r = Invoke-PSMutation -ConfigFile $withDecl -SourceRoot $script:cf -ChangedFile @('src/a.ps1') -Quiet
+        $r.StaleEquivalents | Should-BeCollection @()
+        $r.FailureReason | Should-Be 'None'
+    }
+}
+
 Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
     BeforeAll {
         $script:fullReport = Join-Path $script:proj 'reports/e2e.json'

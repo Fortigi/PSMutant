@@ -1114,3 +1114,155 @@ Describe 'Test-PSMutationCoverageNeeded' {
         Test-PSMutationCoverageNeeded -CoveredLinesOnly $Covered -Recheck $Recheck | Should-Be $Needed
     }
 }
+
+Describe 'Get-PSMutationChangedFileFault' {
+    It 'refuses an empty list, and says why a diff producing nothing is suspect' {
+        # `git diff --name-only` against a ref that was never fetched prints nothing and exits 0.
+        # Read as a pass, that is a green per-PR gate that measured no mutants at all.
+        $f = Get-PSMutationChangedFileFault -ChangedFile @()
+        $f | Should-MatchString 'empty list'
+    }
+
+    It 'refuses a list of nothing but blanks' {
+        # The same broken pipeline arriving through a shell that emitted empty lines.
+        Get-PSMutationChangedFileFault -ChangedFile @('', $null) | Should-MatchString 'empty list'
+    }
+
+    It 'accepts a list that holds a file, whether or not it is in mutate' {
+        # A pull request touching only documentation is an ordinary event and must pass. Only the
+        # EMPTY list indicates a broken pipeline, and conflating the two would either fail every
+        # docs-only change or pass every broken diff.
+        Get-PSMutationChangedFileFault -ChangedFile @('README.md') | Should-Be ''
+    }
+}
+
+Describe 'Select-PSMutationScopedMutateFile' {
+    BeforeAll {
+        $script:sbRootScope = Join-Path $TestDrive 'sb'
+        $script:srcRootScope = Join-Path $TestDrive 'repo'
+        $script:mutateScope = @(
+            (Join-Path $script:sbRootScope 'src/a.ps1')
+            (Join-Path $script:sbRootScope 'src/b.ps1')
+            (Join-Path $script:sbRootScope 'src/c.ps1')
+        )
+    }
+
+    It 'keeps only the mutate files the diff touched' {
+        $out = Select-PSMutationScopedMutateFile -Mutate $script:mutateScope `
+            -ChangedFile @('src/b.ps1') -SourceRoot $script:srcRootScope -SandboxRoot $script:sbRootScope
+        @($out).Count | Should-Be 1
+        $out[0] | Should-Be (Join-Path $script:sbRootScope 'src/b.ps1')
+    }
+
+    It 'drops a changed file that is not in mutate, without comment' {
+        # The ordinary shape of a pull request: source, tests and documentation together, and
+        # only the first is this module's business.
+        $out = Select-PSMutationScopedMutateFile -Mutate $script:mutateScope `
+            -ChangedFile @('src/a.ps1', 'tests/a.Tests.ps1', 'README.md') `
+            -SourceRoot $script:srcRootScope -SandboxRoot $script:sbRootScope
+        @($out).Count | Should-Be 1
+    }
+
+    It 'keeps the ORDER of mutate, not of the diff' {
+        # A scoped report that listed files in diff order would sort differently from a full one
+        # over the same repository.
+        $out = Select-PSMutationScopedMutateFile -Mutate $script:mutateScope `
+            -ChangedFile @('src/c.ps1', 'src/a.ps1') -SourceRoot $script:srcRootScope -SandboxRoot $script:sbRootScope
+        @($out) | Should-BeCollection @(
+            (Join-Path $script:sbRootScope 'src/a.ps1'), (Join-Path $script:sbRootScope 'src/c.ps1'))
+    }
+
+    It 'ignores a blank entry sitting beside a real one' {
+        # `git diff --name-only` piped through a shell readily yields a trailing empty line, and
+        # the whole list must not be refused for it -- that refusal is reserved for a list with
+        # nothing in it at all. The real file beside the blank is what makes this a skip rather
+        # than the empty-list case.
+        $out = Select-PSMutationScopedMutateFile -Mutate $script:mutateScope `
+            -ChangedFile @('', 'src/a.ps1', $null) -SourceRoot $script:srcRootScope -SandboxRoot $script:sbRootScope
+        @($out).Count | Should-Be 1
+        $out[0] | Should-Be (Join-Path $script:sbRootScope 'src/a.ps1')
+    }
+
+    It 'returns an ARRAY when nothing matched, never $null' {
+        # -is [array], not .Count. A function returning an empty array unrolls it to $null, and
+        # the caller then pipes it -- where $null runs the body once with $_ = $null. That pair
+        # is exactly how the docs-only pull request first crashed.
+        $out = Select-PSMutationScopedMutateFile -Mutate $script:mutateScope `
+            -ChangedFile @('README.md') -SourceRoot $script:srcRootScope -SandboxRoot $script:sbRootScope
+        $out -is [array] | Should-BeTrue
+        @($out).Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationScopedReportPath' {
+    It 'writes beside the project report, never over it' {
+        Get-PSMutationScopedReportPath -ReportPath (Join-Path 'reports' 'r.json') |
+            Should-Be (Join-Path 'reports' 'r.changed.json')
+    }
+
+    It 'does not grow a second suffix' {
+        # A scoped run seeded from a scoped path would otherwise reach r.changed.changed.json.
+        Get-PSMutationScopedReportPath -ReportPath (Join-Path 'reports' 'r.changed.json') |
+            Should-Be (Join-Path 'reports' 'r.changed.json')
+    }
+}
+
+Describe 'Get-PSMutationModeFault with -ChangedFile' {
+    It 'refuses a scoped run combined with a switch that acts on the whole project' -ForEach @(
+        @{ R = $true; U = $false; M = $false; Named = '-RecheckFrom' }
+        @{ R = $false; U = $true; M = $false; Named = '-UpdateBaseline' }
+        @{ R = $false; U = $false; M = $true; Named = '-MergeIntoBaseline' }
+    ) {
+        $fault = Get-PSMutationModeFault -ListOnly $false -Recheck $R -UpdateBaseline $U `
+            -MergeIntoBaseline $M -Changed $true
+        $fault | Should-MatchString ([regex]::Escape($Named))
+        $fault | Should-MatchString '-ChangedFile'
+    }
+
+    It 'PERMITS -ChangedFile with -ListOnly' {
+        # The one combination here that is not a conflict: previewing what a pull request would
+        # mutate is the cheapest use either has.
+        Get-PSMutationModeFault -ListOnly $true -Recheck $false -UpdateBaseline $false `
+            -MergeIntoBaseline $false -Changed $true | Should-Be ''
+    }
+
+    It 'permits a scoped run on its own' {
+        Get-PSMutationModeFault -ListOnly $false -Recheck $false -UpdateBaseline $false `
+            -MergeIntoBaseline $false -Changed $true | Should-Be ''
+    }
+}
+
+Describe 'Test-PSMutationCoverageNeeded with nothing to mutate' {
+    It 'skips the tracer when the scope matched no file' {
+        # Nothing to instrument, and Pester would be handed an empty coverage target.
+        Test-PSMutationCoverageNeeded -CoveredLinesOnly $true -Recheck $false -HasMutateFile $false |
+            Should-BeFalse
+    }
+
+    It 'still instruments when there IS something, all else equal' {
+        # The pair, so the row above cannot pass by the function ignoring its other arguments.
+        Test-PSMutationCoverageNeeded -CoveredLinesOnly $true -Recheck $false -HasMutateFile $true |
+            Should-BeTrue
+    }
+}
+
+Describe 'Get-PSMutationSandboxPlan ConfigByPath' {
+    BeforeAll {
+        $script:planRoot = Join-Path $TestDrive 'planrepo'
+        $script:planSb = Join-Path $TestDrive 'plansb'
+        $script:planCfg = [pscustomobject]@{
+            mutate = @('src/a.ps1', 'src/b.ps1')
+            tests  = [pscustomobject]@{ 'src/a.ps1' = @('tests/a.Tests.ps1'); 'src/b.ps1' = @('tests/b.Tests.ps1') }
+        }
+    }
+
+    It 'maps EVERY mutate file back to the spelling the config used' {
+        # Every one, starting at the first. A loop beginning at index 1 leaves the first file
+        # unmapped, and a run scoped to exactly that file then names its scope $null -- which is
+        # how a declaration about it would be judged against nothing.
+        $plan = Get-PSMutationSandboxPlan -Cfg $script:planCfg -SourceRoot $script:planRoot -SandboxRoot $script:planSb
+        $plan.ConfigByPath.Count | Should-Be 2
+        $plan.ConfigByPath[$plan.Mutate[0]] | Should-Be 'src/a.ps1'
+        $plan.ConfigByPath[$plan.Mutate[1]] | Should-Be 'src/b.ps1'
+    }
+}

@@ -559,6 +559,164 @@ Describe 'Invoke-PSMutation -ListOnly' {
     }
 }
 
+Describe 'Invoke-PSMutation -ChangedFile' {
+    BeforeEach {
+        $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:root -Force | Out-Null
+        $script:configFile = Join-Path $script:root 'psmutant.json'
+        [ordered]@{
+            mutate           = @('src/a.ps1', 'src/b.ps1')
+            tests            = @{ 'src/a.ps1' = @('tests/a.Tests.ps1'); 'src/b.ps1' = @('tests/b.Tests.ps1') }
+            operators        = @('BinaryOperator')
+            coveredLinesOnly = $true
+            thresholds       = @{ high = 85; low = 70; break = 50 }
+            reportPath       = 'reports/run.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+
+        Mock Assert-PSMutationPester { }
+        Mock Clear-PSMutationStaleSandbox { }
+        Mock New-PSMutationSandbox {
+            $sb = Join-Path $script:root 'sandbox'
+            foreach ($rel in 'src/a.ps1', 'src/b.ps1', 'tests/a.Tests.ps1', 'tests/b.Tests.ps1') {
+                $dest = Join-Path $sb $rel
+                New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+                Set-Content -LiteralPath $dest -Value '# copied by the sandbox'
+            }
+            $sb
+        }
+        Mock Remove-PSMutationSandbox { }
+        Mock Invoke-PSMutationBaseline { @{ Passed = $true; DurationSeconds = 2.0; CoveredLines = @{} } }
+        Mock Get-PSMutationSourceHashMap { @{ 'src/a.ps1' = 'hash' } }
+        # Returns one candidate per mutate file it is GIVEN, so the scoped set is visible in the
+        # counts rather than only in a Should-Invoke filter.
+        Mock Select-PSMutationCandidate {
+            $rows = foreach ($f in $MutateFiles) {
+                [pscustomobject]@{ File = $f; Produced = 1; Kept = 1
+                    ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 1; Kept = 1 } }
+                }
+            }
+            [pscustomobject]@{
+                Candidates = @($MutateFiles | ForEach-Object { "cand-$_" })
+                PerFile    = @($rows)
+            }
+        }
+        Mock Invoke-PSMutationLoop {
+            , @($Candidates | ForEach-Object {
+                    [pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 1; Operator = 'BinaryOperator'
+                        Description = 'd'; Status = 'Killed'
+                    }
+                })
+        }
+    }
+
+    It 'mutates only the changed file, not the whole mutate list' {
+        # The count is the observable half of the scoping. Unscoped this fixture yields two.
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('src/a.ps1') -Quiet
+        $r.Total | Should-Be 1
+        $r.Mode | Should-Be 'Changed'
+    }
+
+    It 'mutates everything when -ChangedFile is omitted' {
+        # The other arm, so the scoping cannot pass by the fixture only ever producing one.
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet
+        $r.Total | Should-Be 2
+        $r.Mode | Should-Be 'Full'
+        $null -eq $r.ChangedFiles | Should-BeTrue
+    }
+
+    It 'writes to the scoped report path and leaves the project one alone' {
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('src/a.ps1') -Quiet | Out-Null
+        Test-Path (Join-Path $script:root 'reports/run.changed.json') | Should-BeTrue
+        Test-Path (Join-Path $script:root 'reports/run.json') | Should-BeFalse
+    }
+
+    It 'refuses an empty list, and does not refuse an omitted one' {
+        # The pair. $null and @() are indistinguishable once bound to [string[]], so the question
+        # is asked of $PSBoundParameters -- and forcing that guard either way has to be visible.
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -ChangedFile @() -Quiet } |
+            Should-Throw -ExceptionMessage '*empty list*'
+        # No Should-NotThrow in this assertion family, so the outcome is captured as a value.
+        try { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null; $ran = $true }
+        catch { $ran = $false }
+        $ran | Should-BeTrue
+    }
+
+    It 'says on the console that the run was scoped' {
+        # A passing gate is otherwise silent about having measured part of the tree, and a number
+        # over part of a tree that nobody knows is partial is the one to worry about.
+        Mock Write-PSMutationOutput { }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('src/a.ps1') | Out-Null
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Lines.Text -match 'SCOPED run' }
+    }
+
+    It 'says nothing about scope on a whole-tree run' {
+        Mock Write-PSMutationOutput { }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root | Out-Null
+        Should-Invoke Write-PSMutationOutput -Exactly 0 -ParameterFilter { $Lines.Text -match 'SCOPED run' }
+    }
+
+    It 'passes a pull request that touched no mutable file, and says so' {
+        # 0 of 0 under break=50. Both halves: the verdict, and the line that explains it.
+        Mock Write-PSMutationOutput { }
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('README.md')
+        $r.ExitCode | Should-Be 0
+        $r.Total | Should-Be 0
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Lines.Text -match 'nothing to mutate' }
+    }
+
+    It 'DOES instrument coverage when the scope matched something' {
+        # The other side of the HasMutateFile decision. A count compared against 1 instead of 0
+        # turns a single-file pull request -- the ordinary case -- into an uninstrumented run,
+        # which then filters on coverage it never measured and evaluates nothing.
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('src/a.ps1') -Quiet | Out-Null
+        Should-Invoke Invoke-PSMutationBaseline -Exactly 1 -ParameterFilter { $Coverage }
+    }
+
+    It 'still fails a scoped run whose score is below the threshold' {
+        # The empty-scope pass must not leak into an ordinary scoped run. `-or` in place of `-and`
+        # makes every scoped run look empty, so a pull request with surviving mutants passes.
+        Mock Invoke-PSMutationLoop {
+            , @([pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 1; Operator = 'BinaryOperator'
+                    Description = 'd'; Status = 'Survived'
+                })
+        }
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('src/a.ps1') -Quiet
+        $r.Score | Should-Be 0
+        $r.ExitCode | Should-Be 1
+        $r.FailureReason | Should-Be 'BelowThreshold'
+    }
+
+    It 'does not claim there was nothing to mutate when there was' {
+        # The notice's false arm. Forced true it tells a reviewer their pull request touched no
+        # mutable file, over a run that just evaluated one.
+        Mock Write-PSMutationOutput { }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('src/a.ps1') | Out-Null
+        Should-Invoke Write-PSMutationOutput -Exactly 0 -ParameterFilter { $Lines.Text -match 'nothing to mutate' }
+    }
+
+    It 'does not instrument coverage when the scope matched nothing' {
+        # Nothing to instrument, and Pester would be handed an empty coverage target.
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('README.md') -Quiet | Out-Null
+        Should-Invoke Invoke-PSMutationBaseline -Exactly 1 -ParameterFilter { -not $Coverage }
+    }
+
+    It 'still runs the baseline for a docs-only run, so a red suite fails it' {
+        # The green gate is not scoped. A run that mutated nothing must still refuse to report on
+        # a broken suite -- the guard belongs on the tracer, not on the baseline.
+        Mock Assert-PSMutationBaselineGreen { throw 'baseline red' }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+                -ChangedFile @('README.md') -Quiet } | Should-Throw
+    }
+}
+
 Describe 'Get-PSMutationRunContext' {
     BeforeEach {
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))

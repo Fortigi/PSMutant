@@ -1556,6 +1556,45 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   the previous survivors are still alive. The waste this closes -- coverage nothing reads -- is
   the harmless disagreement; the other one is not.
 
+- **A function returning an empty array yields `$null`, and `.Count` cannot tell you.** Measured:
+  `return [string[]]@()` hands the caller `$null`; `return , [string[]]@()` hands back an array.
+  **`$null.Count` is 0**, so every `(...).Count | Should-Be 0` passes for both answers and can
+  never fail. That is how it shipped in #209 -- `Get-PSMutationFileWithNoCandidate` returned `$null`
+  on the ordinary clean run, three lines below a comment promising an array, with coverage,
+  self-mutation and the tests all green. Assert `-is [array]`, or `$null -eq` directly. Tracked in
+  **#212**.
+
+  A comma-wrapped function declares **both** types -- `[OutputType([string[]], [object[]])]`. `, $x`
+  is statically an `Object[]` wrapper that PowerShell unrolls on return, so
+  `PSUseOutputTypeCorrectly` contradicts a bare `[string[]]`. Rewriting the expression does not
+  help; only the declaration does. Declaring `[object[]]` alone silences it and stops documenting
+  what a caller actually receives, which is why both are named.
+
+- **A scoped run must judge only the declarations it could have matched.** An equivalence
+  declaration is stale when it matches no mutant -- and under `-ChangedFile`, every declaration
+  about a file outside the scope matches none, because the run never looked at that file. Reported
+  as stale it fails the gate at any score, for declarations that are perfectly correct. Verified by
+  planting: without the filter, a run scoped to `a.ps1` accuses `src/b.ps1:Get-Flag:-gt -> -le` of
+  describing a mutant that does not exist.
+
+  `Get-PSMutationDeclarationCoverageFault` already carried the note that this check "is the one
+  question in scoring that a subset cannot answer", written when per-file scores raised the same
+  hazard. A scoped run is that hazard one level up, and the fix is the same shape: `$null` scope
+  means judge everything, a list means judge only those.
+
+- **`-ChangedFile`, never `-ChangedSince <ref>`.** A diff is not a fact this module can compute:
+  it needs a base, and every failure -- shallow clone, detached HEAD, wrong merge base -- happens
+  in the CALLER's environment, several layers from where it can be fixed. The sibling module
+  refused the same parameter for the same reason, and the two must not disagree.
+
+  What earns its place is refusing an **empty list**: a `git diff` that fails prints nothing and
+  exits 0, which taken at face value is a confident pass over zero mutants. A list holding files
+  that are simply not in `mutate` is a docs-only pull request and passes, saying so. Conflating the
+  two either fails every documentation change or passes every broken diff.
+
+  Such a run scores 0 over 0, so `Get-PSMutationFailureReason` needs an explicit empty-scope arm
+  before the threshold check, or a break threshold fails a pull request for having nothing to say.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
