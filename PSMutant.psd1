@@ -66,6 +66,24 @@ at `workers: 3`: 1120 mutants, identical verdicts, 778s down to 306s.
 sharing a machine are slower for reasons unrelated to the fault in them, and an overrun scores as a
 **kill** -- so a solo-sized budget turns contention into kills and the score goes **up**.
 
+**An interrupted run can be CONTINUED, with `-ResumeFrom`.** Ctrl-C, a cancelled CI job or a killed
+agent already left a partial report; now it seeds the next run instead of only saying how far the
+last one got.
+
+```powershell
+Invoke-PSMutation -ConfigFile ./c.json -ResumeFrom ./reports/ps-mutation.json
+```
+
+Recorded mutants are carried over and only the ones never reached are evaluated. The result is a
+**complete** run and carries a real score -- the difference from `-RecheckFrom`, whose set is
+filtered and whose number would mean nothing. It cannot claim ONE run stood behind all of it, so
+the report says `resumed` and `carriedOverUnverified`.
+
+**It refuses rather than resuming when the carried-over verdicts might be stale**, on exactly the
+terms `-MergeIntoBaseline` uses: the report must be a partial one, numbered against the same source
+and operator set, and **no mapped test file may have shrunk or disappeared**. Adding a test cannot
+revive a mutant the earlier run killed; editing or deleting one can, and a resume never re-looks.
+
 **Configs pipe in, one independent run each.** There was no pipeline binding at all, so a monorepo
 gating per package meant a `foreach` with the exit codes collected by hand.
 
@@ -117,9 +135,8 @@ that state. It names those, and separately the files coverage emptied. `FilesWit
 { "mutate": ["src/a.ps1"], "survivorBaseline": ".psmutant-survivors.json" }
 ```
 
-A survivor **not** in the list fails the run. So does a listed one that has been **fixed** (leave it
-and the mutant can start surviving again with nothing failing), one whose **file has left `mutate`**
-(dropping a file hides its survivors), and one that is **also** declared equivalent.
+A survivor **not** in the list fails the run. So does a listed one that has been **fixed**, one
+whose **file has left `mutate`**, and one that is **also** declared equivalent.
 
 This is **debt, not equivalence**. `equivalents` means *this mutant cannot be killed* and carries a
 written argument the gate checks; a baseline entry means *this mutant is not killed yet* and is
@@ -134,17 +151,8 @@ failing run**, which adoption needs.
 **`-MergeIntoBaseline` folds a recheck''s verdicts back into the report it came from**, instead of a
 full run purely to refresh a baseline the rechecks already made stale. Each re-evaluated mutant
 takes its new verdict, everything else keeps its status, and the report is **re-scored** -- new
-verdicts under the old number is a self-contradictory document.
-
-**It refuses rather than merging when the carried-over statuses may be stale.** A merge is sound
-only for additive test changes: adding a test cannot revive a mutant the baseline killed, editing or
-deleting one can, and a recheck never looks at it. Reports record each mapped test file''s size, and
-the merge refuses when one **shrank** or disappeared. Length rather than a hash: hash equality asks
-"unchanged", which would refuse the very loop this serves.
-
-**A recheck refuses a report that describes a different run.** The compatibility gate walked the
-files *this* run mutates, so a file the **report** covers and the run does not was invisible --
-measured, a config mutating `a.ps1` accepted a report over `a.ps1` and `b.ps1` with zero reasons.
+verdicts under the old number is a self-contradictory document. It refuses when a mapped test file
+**shrank** or disappeared, for the reason -ResumeFrom does.
 
 **A recheck no longer pays for coverage instrumentation it cannot use.** It matches the mutants a
 prior report listed on `(File, Id)`, and ids come from the *unfiltered* candidate set, so the
@@ -196,10 +204,6 @@ file mapped to. `-Verbose` and `-Quiet` are **independent**. Per-mutant progress
 report says `schemaVersion: 1` and only that schema can validate it. The rule for the number is
 stated correctly now -- it moves when a field changes **meaning**, **disappears** or **becomes
 required**, never when an optional one is added.
-
-**Per-file paths in the report are repo-relative again.** `filesWithNoMutants` and the uncovered
-caveat carried absolute paths under a temp sandbox whose name changes every run, which no consumer
-can match against a checkout and which is deleted before a reader sees it.
 
 **Fixed: the `-ListOnly` result promised arrays and delivered `$null`** for
 `FilesWithNoCandidate` and `FilesEmptiedByCoverage` on a clean run. The report was unaffected.

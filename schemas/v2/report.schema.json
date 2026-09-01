@@ -261,6 +261,16 @@
         "type": "integer"
       },
       "description": "Each mapped test file's size in bytes when this report was written, keyed by the path the config names. Read by -MergeIntoBaseline to tell an added test from a deleted one: a merge carries over the status of every mutant the recheck did not evaluate, and a test that shrank may have revived one."
+    },
+    "resumed": {
+      "type": "boolean",
+      "const": true,
+      "description": "Present only on a run that CONTINUED an interrupted one via -ResumeFrom. Such a report is complete -- every mutant has a verdict -- so unlike a recheck it carries a real mutationScore; what it cannot claim is that one run stood behind all of it, which is what carriedOverUnverified says. Absent, rather than false, on an ordinary run: presence is what tells the two apart, and a report predating the feature would otherwise be indistinguishable from a resumed one."
+    },
+    "carriedOverUnverified": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "How many of the mutants below were evaluated by an EARLIER run and carried over unchanged. Zero is a real value -- an interruption before the first mutant finished -- so read `resumed` to tell a resumed run from an ordinary one, never this."
     }
   },
   "allOf": [
@@ -337,7 +347,7 @@
       }
     },
     {
-      "description": "An interrupted run carries what it evaluated and never a score, with the same boolean-false spelling and for the same reason.",
+      "description": "An interrupted run carries what it evaluated and never a score, with the same boolean-false spelling and for the same reason. It also REQUIRES testFiles, because a partial report exists to be read back: -ResumeFrom carries over every verdict in it, and those are only as good as the tests that produced them -- a resume with nothing to compare the tests against is refused, so a partial report without this field is one nobody can ever resume from. operators, sourceHashes and mutants are required of every report already, which is the rest of what a resume needs.",
       "if": {
         "required": [
           "mode"
@@ -352,7 +362,8 @@
         "required": [
           "note",
           "evaluated",
-          "planned"
+          "planned",
+          "testFiles"
         ],
         "properties": {
           "mutationScore": false
@@ -375,6 +386,19 @@
         "properties": {
           "testsWithoutKills": false
         }
+      }
+    },
+    {
+      "description": "carriedOverUnverified is meaningless without the flag that says this run continued another, so the schema refuses one without the other. Spelled as a `false` property rather than with `not`, because Test-Json silently ignores `not` and the obvious spelling would be a rule that can never fire.",
+      "if": {
+        "required": [
+          "carriedOverUnverified"
+        ]
+      },
+      "then": {
+        "required": [
+          "resumed"
+        ]
       }
     }
   ],
