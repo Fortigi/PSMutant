@@ -202,6 +202,33 @@ Finish with a full run before trusting a number or raising `thresholds.break`. A
 sound only for **additive** test changes: editing or deleting an existing test can revive a
 mutant that was killed before, and a recheck never evaluates those.
 
+### Resuming an interrupted run
+
+Ctrl-C, a cancelled CI job or a killed agent leaves a **partial report**. `-ResumeFrom` continues
+that run instead of starting over:
+
+```powershell
+Invoke-PSMutation -ConfigFile ./c.json -ResumeFrom ./reports/ps-mutation.json
+```
+
+The mutants it already recorded are carried over and only the ones it never reached are evaluated.
+The result is a **complete** run and carries a real score — which is what separates this from
+`-RecheckFrom`, whose set is filtered and whose number would mean nothing. What it cannot claim is
+that one run stood behind all of it, so the report says `resumed` and `carriedOverUnverified`.
+
+It **refuses rather than resuming** when the carried-over verdicts might be stale, on exactly the
+terms `-MergeIntoBaseline` uses:
+
+- the report must be a **partial** one — a completed report has nothing left to evaluate, and a
+  recheck report describes a different kind of run;
+- it must be numbered against the **same source and operator set**, because mutant ids are AST-walk
+  positions and an edit renumbers them;
+- **no mapped test file may have shrunk or disappeared.** Adding a test cannot revive a mutant the
+  earlier run killed; editing or deleting one can, and a resume never looks at it again.
+
+Up to one worker-count's worth of mutants may be re-evaluated, because a mutant can finish without
+being recorded. That is harmless — they simply run again.
+
 ### Declaring equivalent mutants
 
 Some mutants provably cannot change behaviour — `ConvertTo-Json -Depth 6` versus `-Depth 7`

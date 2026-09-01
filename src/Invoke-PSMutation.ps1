@@ -219,6 +219,9 @@ function Invoke-PSMutationRun {
     param(
         [Parameter(Mandatory)] [string]$ConfigFile,
         [Parameter(Mandatory)] [string]$SourceRoot,
+        # A PARTIAL report to continue. Empty means an ordinary run; see Get-PSMutationResumeState
+        # for why it is a path rather than a path plus a switch.
+        [AllowEmptyString()] [string]$ResumeFrom = '',
         [string]$RecheckFrom,
         [AllowEmptyString()] [string[]]$ChangedFile,
         [bool]$ChangedFileBound,
@@ -241,7 +244,7 @@ function Invoke-PSMutationRun {
     $inputFault = Get-PSMutationInputFault -SourceRoot $SourceRoot -ListOnly $ListOnly.IsPresent `
         -Recheck ([bool]$RecheckFrom) -UpdateBaseline $UpdateBaseline.IsPresent `
         -MergeIntoBaseline $MergeIntoBaseline.IsPresent -Changed $ChangedFileBound `
-        -ChangedFile $ChangedFile
+        -Resume ([bool]$ResumeFrom) -ChangedFile $ChangedFile
     if ($inputFault) { throw $inputFault }
     $root = (Resolve-Path $SourceRoot).Path
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
@@ -274,6 +277,17 @@ function Invoke-PSMutationRun {
         $cands = $ctx.Selection.Candidates
         $exec = $ctx.Exec
         $doc = $ctx.Doc
+        # BEFORE the pool is sized and before the deadline is derived, because both read the
+        # candidate count and a resume has fewer. Branch-free: an ordinary run gets its candidates
+        # back unchanged, no prior rows and no notice.
+        $resume = Get-PSMutationResumeState -ResumeFrom $ResumeFrom -Candidates $cands -Plan $t `
+            -SandboxRoot $sandbox -SourceHashes $ctx.SourceHashes -Operators $ctx.Operators
+        $cands = $resume.Candidates
+        # The splat carries the candidate list into the loop, so the narrowed set has to replace
+        # what the context built. Assigning through $exec rather than passing -Candidates beside
+        # the splat, which PowerShell refuses as a parameter given twice.
+        $exec.Candidates = $cands
+        Write-PSMutationOutput -Quiet:$Quiet -Lines $resume.Lines
         # One extra sandbox per worker past the first, created HERE rather than beside the
         # primary one. The prelude above throws on a red baseline and on a config path the
         # sandbox never received, and a pool of full tree copies left behind on those two
@@ -339,8 +353,14 @@ function Invoke-PSMutationRun {
         }
         finally {
             if (-not $done) {
+                # The test-file sizes are read HERE, inside the loop's finally, and that is the
+                # only place they can be: the outer finally removes the sandbox, and reading them
+                # after the run would measure a directory that is gone. They are what lets
+                # -ResumeFrom tell an edited test from an added one.
                 $written = Write-PSMutationPartialReport -Results @($partial) -Planned $cands.Count `
-                    -ReportPath $ctx.ReportPath -Operators $ctx.Operators -SourceHashes $ctx.SourceHashes -Provenance (& $provenance)
+                    -ReportPath $ctx.ReportPath -Operators $ctx.Operators -SourceHashes $ctx.SourceHashes `
+                    -TestFileLength (Get-PSMutationTestFileLength -Path $t.AllTests -SandboxRoot $sandbox) `
+                    -Provenance (& $provenance)
                 # Printed rather than returned: the run is being torn down, so there is no caller
                 # left to hand a value to, and a file written where nobody was told about it is
                 # only marginally better than no file.
@@ -351,7 +371,11 @@ function Invoke-PSMutationRun {
         }
         # Invoked here, not above: the elapsed time has to be read AFTER the loop, or
         # totalSeconds records how long the run took to start rather than to finish.
-        $summary = Write-PSMutationReport @doc -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $ctx.Exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $ctx.RecordAllKillers -MappedTests $t.AllTests `
+        # PREPENDED, not appended: the prior rows are a prefix of the candidate list, because
+        # finished mutants are retired in candidate order, so this restores the order a single
+        # uninterrupted run would have produced. Empty on an ordinary run.
+        $results = @($resume.PriorRows) + @($results)
+        $summary = Write-PSMutationReport @doc -Resumed:$resume.IsResume -CarriedOverUnverified @($resume.PriorRows).Count -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $ctx.Exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $ctx.RecordAllKillers -MappedTests $t.AllTests `
             -TestFileLength (Get-PSMutationTestFileLength -Path $t.AllTests -SandboxRoot $sandbox) `
             -ChangedFiles $ctx.ChangedFiles -InScopeFile $ctx.InScopeFile
         $band = Get-PSMutationScoreBand -Cfg $cfg
@@ -453,6 +477,25 @@ function Invoke-PSMutation {
         Piping FILES binds -ConfigFile by value AND -SourceRoot from the same object's FullName,
         which points the root at the config file. That is refused by name rather than left to
         surface later as a puzzling sandbox error.
+
+    .PARAMETER ResumeFrom
+        Path to a PARTIAL report -- the one an interrupted run leaves behind. Continues that run
+        instead of starting over: the mutants it already recorded are carried over, and only the
+        ones it never reached are evaluated.
+
+        The result is a COMPLETE run and carries a real score, which is what separates this from
+        -RecheckFrom. What it cannot claim is that one run stood behind all of it, so the report
+        says `resumed` and `carriedOverUnverified`.
+
+        It refuses rather than resuming when the carried-over verdicts may be stale, on the same
+        terms -MergeIntoBaseline uses: the report must be numbered against the same source and
+        the same operator set, and no mapped test file may have SHRUNK or disappeared. Adding a
+        test cannot revive a mutant the earlier run killed; editing or deleting one can, and a
+        resume never looks at it again.
+
+        Up to one worker-count's worth of mutants may be re-evaluated, because a mutant can finish
+        without being recorded -- the run is retired in candidate order, so anything past the last
+        recorded one is simply run again.
 
     .PARAMETER RecheckFrom
         Path to a report from a previous run -- full or from an earlier recheck.
@@ -632,6 +675,10 @@ function Invoke-PSMutation {
         [Parameter(ValueFromPipelineByPropertyName)] [Alias('FullName')]
         [string]$SourceRoot = (Get-Location).Path,
         [string]$RecheckFrom,
+        # Continue an interrupted run from the PARTIAL report it left. AllowEmptyString so an
+        # explicit '' behaves as absent rather than as a path that cannot be read -- the same
+        # shape Invoke-PSMutationRun takes it in, so there is one meaning of "not a resume".
+        [AllowEmptyString()] [string]$ResumeFrom,
         # Preview the mutant set and stop. Evaluates nothing, so it refuses to combine with
         # any switch that acts on verdicts -- see Get-PSMutationModeFault.
         [switch]$ListOnly,
@@ -658,6 +705,7 @@ function Invoke-PSMutation {
     # .OUTPUTS block says rather than leaving to be discovered.
     process {
         Invoke-PSMutationRun -ConfigFile $ConfigFile -SourceRoot $SourceRoot -RecheckFrom $RecheckFrom `
+            -ResumeFrom $ResumeFrom `
             -ChangedFile $ChangedFile -ChangedFileBound $PSBoundParameters.ContainsKey('ChangedFile') `
             -ListOnly:$ListOnly -Quiet:$Quiet -UpdateBaseline:$UpdateBaseline `
             -MergeIntoBaseline:$MergeIntoBaseline

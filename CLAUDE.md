@@ -767,6 +767,49 @@ escapes. A new temp artefact belongs in the sandbox, or it deletes itself.
 These are habits the codebase already has. They are written down because they are cheap to
 lose in a hurry and expensive to rebuild, and because each one has already earned its keep.
 
+- **A resume is a MERGE in disguise, and reusing the merge's guard is what made it small** (#194).
+  `-ResumeFrom` carries over every verdict a partial report holds, so it has exactly the staleness
+  hazard `-MergeIntoBaseline` guards: adding a test cannot revive a mutant the earlier run killed,
+  but editing or deleting one can, and a resume never re-looks. `Get-PSMutationResumeFault` asks
+  three questions in order -- is it a Partial report, was it numbered against this source
+  (`Test-PSMutationRecheckCompatible`), could the verdicts have gone stale
+  (`Get-PSMutationMergeFault`) -- and only the first is new.
+
+  The issue described "a JSONL sidecar and -ResumeFrom" as one piece of work. It was two, and the
+  second is #219: the partial report already survives Ctrl-C and a cancelled CI job, because a
+  `finally` sees a pipeline stop, so a sidecar buys only a HARD kill and costs a second artefact
+  outliving the run. That gets built when somebody can show hard kills are frequent enough to pay
+  for it.
+
+  **The blocker the issue named dissolved rather than got resolved.** It said out-of-order
+  evaluation would change what "already recorded" means. In-order retirement, which #1 added for
+  three other reasons, makes the partial report a genuine PREFIX -- so the question never arose.
+
+  What DID have to land first was `testFiles` on the partial report. Without it
+  `Get-PSMutationMergeFault` refuses outright -- correctly, since it cannot tell -- and every
+  resume there could ever be would be refused.
+
+- **A schema field may become REQUIRED without moving `schemaVersion` while that version has never
+  shipped.** `testFiles` is required on a Partial report, and the rule that a field becoming
+  required moves the number is about documents that would stop validating -- `v0.4.0` carried
+  `schemas/v1` alone, so no v2 document exists anywhere and none can be invalidated. An unshipped
+  schema is still being designed. Check `git ls-tree v<last tag> -- schemas/` before assuming
+  otherwise; the first draft of this reasoned from the version number rather than from the tag and
+  got it backwards.
+
+  It caught something immediately, which is the argument for making it required rather than
+  trusting the writer: a hand-built partial fixture in `EndToEnd.Tests.ps1`, doctored out of the
+  recheck report, had no `testFiles` and stopped validating -- while a real partial report still
+  did. That fixture is now the document a real interrupted run writes.
+
+- **`Test-Json` reports the FIRST unsatisfied `if` among several branches, not the one that
+  rejected.** The recorded trap was "a conditional schema reports the arm it did NOT take"; this is
+  it one layer deeper. Measured: a report carrying `carriedOverUnverified` without `resumed` is
+  refused by the branch requiring the pair, and the entire message is `Required properties
+  ["mode"] are not present` -- an `if` every full report leaves unsatisfied, naming a field that
+  is not the problem. Nothing about the new branch can fix that, so a test for such a rule asserts
+  INVALIDITY and pairs it with a valid document; asserting on the message would be pinning noise.
+
 - **A test that WRITES process state cannot be run beside itself, and a covering suite is run
   beside itself** (#216). `$env:` is per-PROCESS, not per-runspace -- measured, a child runspace's
   write is visible in the parent -- so a suite that sets a variable to exercise a branch races
@@ -1417,6 +1460,22 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   nothing'`, and that is the line that failed. Without it the test would have passed on both
   platforms while checking nothing at all. Every test that builds a broken fixture by editing a
   good one needs that guard.
+
+- **A RELATIVE path in a test fixture is a path some MUTANT will write to, and the sandbox does not
+  cover it.** Three stub candidates in `Runner.Tests.ps1` carried `File = 'a.ps1'`. Nothing writes
+  them in unmutated code -- the sweep skips a job that is still running -- but a mutant of the sweep
+  or of `Get-PSMutationJobState` reaches `Complete-PSMutantEvaluation`, whose `finally` restores the
+  file: `WriteAllText('a.ps1', '')` against the process working directory, which is the repo root.
+
+  The symptom is a stray empty `a.ps1` in the working tree that appears during self-mutation and
+  never when the suite is run on its own, so it survives every ordinary check and looks like it came
+  from nowhere. It cost a sweep of every test file, individually and together, before the shape of
+  it -- empty, and only under mutation -- named the cause.
+
+  **The sandbox does not protect against this**, and that is the part worth remembering. It protects
+  tracked source from the mutants of a RUN, by mapping every config path into a temp copy. A unit
+  test's own fixture never goes through that mapper, so a relative path in one is resolved against
+  whatever the working directory happens to be. Absolute, and under temp, always.
 
 - **A bare `function` inside a `Describe` is declared at DISCOVERY and gone by the time a test
   runs.** The same phase split as the `$script:` rule below, with a different symptom: every test in

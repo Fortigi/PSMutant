@@ -41,6 +41,16 @@ function Test-Fixture {
     # touches a runspace, which is what keeps this file cheap enough to be Runner.ps1's covering
     # suite -- mutating a timeout necessarily produces mutants that DISABLE it, and against a real
     # child each one burns the whole per-mutant deadline.
+    # ABSOLUTE, and under temp. A stub candidate's File is a path something eventually WRITES:
+    # Complete-PSMutantEvaluation restores it in a `finally`, and while the unmutated sweep never
+    # reaches that for a running job, a MUTANT of the sweep does. Spelled relatively -- 'a.ps1' --
+    # that write lands in the process working directory, which is the repo root, and a stray empty
+    # a.ps1 appears in the working tree during self-mutation and nowhere else.
+    #
+    # The sandbox does not cover this. It protects tracked source from the mutants of a RUN; this
+    # is a unit test's own fixture, and its path never went through the sandbox mapper at all.
+    $script:stubFile = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-stub-$($script:tag).ps1"
+
     function StubJob {
         param($Source, [int]$Index = 0, [double]$Seconds = 0, $Original = '', [bool]$Completed = $true,
             [int]$WorkerId = 0)
@@ -228,7 +238,7 @@ Describe 'Get-PSMutationLoopFault' {
 
 Describe 'the scheduler retires in candidate order' {
     BeforeAll {
-        $script:rowCand = [pscustomobject]@{ Id = 1; Function = 'F'; File = 'a.ps1'; Line = 1
+        $script:rowCand = [pscustomobject]@{ Id = 1; Function = 'F'; File = $script:stubFile; Line = 1
             Operator = 'BinaryOperator'; Description = 'x' }
         function StubContext {
             param($Sink, [int]$Total = 3)
@@ -243,7 +253,7 @@ Describe 'the scheduler retires in candidate order' {
         function StubParked {
             param([string]$Id)
             return [pscustomobject]@{
-                Row = [pscustomobject]@{ Id = $Id; File = 'a.ps1'; Line = 1; Description = 'x'; Status = 'Killed' }
+                Row = [pscustomobject]@{ Id = $Id; File = $script:stubFile; Line = 1; Description = 'x'; Status = 'Killed' }
                 Seconds = 0.0
             }
         }
@@ -286,7 +296,7 @@ Describe 'the scheduler sweep' {
     It 'passes over an idle worker and one whose mutant is still running' {
         # Two `continue`s, and neither is decoration: sweeping an idle slot would collect a $null
         # job, and collecting a running one would EndInvoke a pipeline that has not finished.
-        $cand = [pscustomobject]@{ Id = 1; Function = 'F'; File = 'a.ps1'; Line = 1
+        $cand = [pscustomobject]@{ Id = 1; Function = 'F'; File = $script:stubFile; Line = 1
             Operator = 'BinaryOperator'; Description = 'x' }
         $running = StubJob -Source $cand -Index 0 -Completed $false -WorkerId 1
         $sched = [pscustomobject]@{

@@ -429,6 +429,138 @@ function Get-PSMutationRecheckSummaryLine {
     return [object[]]$lines.ToArray()
 }
 
+function Select-PSMutationResumeCandidate {
+    <#
+    .SYNOPSIS
+        The candidates a prior partial report did NOT record. Pure.
+    .DESCRIPTION
+        The INVERSE of Select-PSMutationRecheckCandidate, and deliberately a separate function
+        rather than a switch on that one: the two keep different rows for opposite reasons -- a
+        recheck wants the survivors it recorded, a resume wants everything it never reached -- and
+        a parameter choosing between them would put two features behind one name.
+
+        Matched on (File, Id), the same key a recheck uses, rather than on a COUNT. A partial
+        report is a genuine prefix -- finished mutants are retired in candidate order, which is
+        one of the three things that ordering buys -- so "the first N" would be correct today.
+        It would also be a second definition of the same thing, and the one that breaks silently
+        if the ordering ever changes. The key does not.
+
+        Declared equivalents are NOT skipped here, unlike in a recheck. A recheck re-runs
+        survivors and a declared equivalent is guaranteed-wasted work; a resume is completing a
+        measurement, and a mutant nobody has evaluated has to be evaluated whatever the config
+        says about it -- the declaration is checked against the RESULT, and a result it never
+        produced cannot be checked at all.
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    $done = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::Ordinal)
+    foreach ($m in @($Report.mutants)) { [void]$done.Add("$($m.File)|$($m.Id)") }
+    $out = [System.Collections.Generic.List[object]]::new()
+    foreach ($c in $Candidates) {
+        $key = "$(ConvertFrom-PSMutationSandboxPath -Path $c.File -SandboxRoot $SandboxRoot)|$($c.Id)"
+        if (-not $done.Contains($key)) { $out.Add($c) }
+    }
+    return , $out.ToArray()
+}
+
+function Get-PSMutationResumeFault {
+    <#
+    .SYNOPSIS
+        Why a resume may not proceed, as text. Nothing when it may.
+    .DESCRIPTION
+        Three questions, sequenced, and the order is the message's quality.
+
+        1. **Is it a partial report at all?** A full report has nothing left to resume and a
+           recheck report describes a different kind of run. Asked first because every answer
+           below assumes the document is the shape this reads.
+        2. **Was it numbered against this source?** Mutant ids are AST-walk positions, so a
+           changed file or a changed operator set makes the recorded ids point at other mutants.
+           That is exactly the question `-RecheckFrom` asks, and it is asked with the same
+           function -- a second implementation would be a second answer.
+        3. **Could the carried-over verdicts have gone stale?** THIS is the one the issue behind
+           the feature did not name. A resume carries over every verdict in the report, and those
+           are only as good as the tests that produced them: adding a test cannot revive a mutant
+           the earlier run killed, but editing or deleting one can, and a resume never re-looks.
+           `Get-PSMutationMergeFault` already decides this, on test-file length, for
+           `-MergeIntoBaseline` -- a resume is a merge in disguise and asks it unchanged.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Report,
+        [Parameter(Mandatory)] [hashtable]$SourceHashes,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Operators,
+        [Parameter(Mandatory)] [hashtable]$CurrentTests
+    )
+    if ($Report.mode -ne 'Partial') {
+        return ("that report is '$($Report.mode)', not 'Partial'. -ResumeFrom continues a run that " +
+            'was INTERRUPTED; a completed report has nothing left to evaluate and a recheck report ' +
+            'describes a different kind of run.')
+    }
+    $why = Test-PSMutationRecheckCompatible -Report $Report -SourceHashes $SourceHashes -Operators $Operators
+    if ($why.Count -gt 0) { return ($why -join '; ') + '. Run the full set to start over.' }
+    $stale = Get-PSMutationMergeFault -BaselineTests $Report.testFiles -CurrentTests $CurrentTests
+    if ($stale.Count -gt 0) {
+        return ($stale -join '; ') + '. A resume carries those verdicts over without re-running them.'
+    }
+    return ''
+}
+
+function Get-PSMutationResumeState {
+    <#
+    .SYNOPSIS
+        What a run continuing an interrupted one has to know: which candidates are left, which
+        rows it inherits, and what to say about it.
+    .DESCRIPTION
+        Returns the same shape whether or not this IS a resume, so the caller needs no branch --
+        an ordinary run gets its candidates back unchanged, no prior rows and no notice. That is
+        not tidiness: `Invoke-PSMutationRun` was already at 13 of a ceiling of 15, and a feature
+        that spends two of the remaining branches on asking whether it is switched on has nothing
+        left for the feature.
+
+        It THROWS rather than returning a fault, for the reason -RecheckFrom does: a resume that
+        cannot be trusted is a fault in what the caller asked for, not a verdict about the code,
+        and returning a false score would be the confident-number-over-a-subset failure this
+        module exists to prevent.
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        # Empty means this is not a resume. A [string] rather than a switch plus a path, because
+        # the two can never disagree that way.
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$ResumeFrom,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
+        [Parameter(Mandatory)] [hashtable]$Plan,
+        [Parameter(Mandatory)] [string]$SandboxRoot,
+        [Parameter(Mandatory)] [hashtable]$SourceHashes,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Operators
+    )
+    if (-not $ResumeFrom) {
+        return [pscustomobject]@{ IsResume = $false; Candidates = $Candidates; PriorRows = @(); Lines = @() }
+    }
+    $prior = Get-Content $ResumeFrom -Raw | ConvertFrom-Json
+    $fault = Get-PSMutationResumeFault -Report $prior -SourceHashes $SourceHashes -Operators $Operators `
+        -CurrentTests (Get-PSMutationTestFileLength -Path $Plan.AllTests -SandboxRoot $SandboxRoot)
+    if ($fault) { throw "Cannot resume from '$ResumeFrom': $fault" }
+    $remaining = Select-PSMutationResumeCandidate -Candidates $Candidates -Report $prior -SandboxRoot $SandboxRoot
+    $carried = @($prior.mutants)
+    return [pscustomobject]@{
+        IsResume   = $true
+        Candidates = $remaining
+        PriorRows  = $carried
+        # Said BEFORE the loop, because that is when it can still be acted on, and because a
+        # resumed run is otherwise indistinguishable from a short one that measured everything.
+        Lines      = @(New-PSMutationLine -Role 'Muted' -Text (
+                "  RESUMED from {0}: {1} mutant(s) carried over from that run, {2} left to evaluate. Up to one worker-count's worth may be re-run, because a mutant can finish without being recorded." -f `
+                (Split-Path $ResumeFrom -Leaf), $carried.Count, @($remaining).Count))
+    }
+}
+
 function Invoke-PSMutationRecheckRun {
     # The whole -RecheckFrom path. Impure -- it reads the prior report and drives the
     # loop -- so tests mock Invoke-PSMutationLoop rather than evaluating real mutants,

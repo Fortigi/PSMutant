@@ -183,6 +183,52 @@ Describe 'Get-PSMutationExitCode' {
 }
 
 Describe 'Write-PSMutationReport' {
+    It 'says a run was RESUMED, and how much of the score it did not measure itself' {
+        # The caveat lives in the ARTIFACT, not only in the console. Everything downstream reads
+        # this file as a measurement and part of it was measured by an earlier run -- a resumed
+        # report is COMPLETE, so unlike a recheck it may carry a real score, but a reader must
+        # still be able to see what fraction of it this run stood behind.
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-resumed-$($script:tag)/report.json"
+        try {
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null `
+                -Resumed -CarriedOverUnverified 2 | Out-Null
+            $json = Get-Content $out -Raw | ConvertFrom-Json
+            $json.resumed | Should-BeTrue
+            $json.carriedOverUnverified | Should-Be 2
+            # Still a real score, which is the whole difference from a recheck report.
+            $json.mutationScore | Should-Be 66.7
+        }
+        finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'carries NEITHER field on an ordinary run, so presence is what tells them apart' {
+        # The paired half. Written unconditionally the fields would say "resumed: false" on every
+        # report ever produced, and a consumer could no longer tell a resumed run from one that
+        # simply predates the feature.
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-notresumed-$($script:tag)/report.json"
+        try {
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+            $json = Get-Content $out -Raw | ConvertFrom-Json
+            $json.PSObject.Properties.Name | Should-NotContainCollection 'resumed'
+            $json.PSObject.Properties.Name | Should-NotContainCollection 'carriedOverUnverified'
+        }
+        finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'records a resume that carried over NOTHING, which a sentinel could not express' {
+        # An interruption before the first mutant finished is a real case, and the reason the
+        # signal is a switch plus a count rather than a count with a magic value: zero carried
+        # over is not the same as "not a resume".
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-resumed0-$($script:tag)/report.json"
+        try {
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Resumed | Out-Null
+            $json = Get-Content $out -Raw | ConvertFrom-Json
+            $json.resumed | Should-BeTrue
+            $json.carriedOverUnverified | Should-Be 0
+        }
+        finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It 'writes a JSON report with the score and survivors' {
         $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-report-$PID-$($script:tag)/report.json"
         try {
@@ -1140,11 +1186,21 @@ Describe 'Write-PSMutationPartialReport' {
             param($Results = @(), [int]$Planned = 7)
             $path = Join-Path $script:pRoot "p-$([System.Guid]::NewGuid().ToString('N')).json"
             $null = Write-PSMutationPartialReport -Results $Results -Planned $Planned -ReportPath $path `
-                -Operators @('BinaryOperator') -SourceHashes @{ 'a.ps1' = 'h' } -Provenance $script:pProv
+                -Operators @('BinaryOperator') -SourceHashes @{ 'a.ps1' = 'h' } `
+                -TestFileLength @{ 'tests/a.Tests.ps1' = 42 } -Provenance $script:pProv
             return (Get-Content $path -Raw | ConvertFrom-Json)
         }
     }
     AfterAll { Remove-Item $script:pRoot -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'records what each mapped test file measured, so a resume can be refused when one shrank' {
+        # A partial report exists to be READ BACK. -ResumeFrom carries over every verdict in it,
+        # and those are only as good as the tests that produced them: adding a test cannot revive
+        # a mutant this run killed, editing or deleting one can, and a resume never re-looks.
+        # Without this field Get-PSMutationMergeFault refuses every resume -- correctly, since it
+        # cannot tell, and uselessly, since that is every partial report there is.
+        (script:WritePartial).testFiles.'tests/a.Tests.ps1' | Should-Be 42
+    }
 
     It 'marks the document Partial so nothing reads it as a measurement' {
         (script:WritePartial).mode | Should-Be 'Partial'
@@ -1205,7 +1261,8 @@ Describe 'Write-PSMutationPartialReport' {
         # "wrote a partial report to " and stop.
         $path = Join-Path $script:pRoot "ret-$([System.Guid]::NewGuid().ToString('N')).json"
         $returned = Write-PSMutationPartialReport -Results @() -Planned 3 -ReportPath $path `
-            -Operators @('BinaryOperator') -SourceHashes @{ 'a.ps1' = 'h' } -Provenance $script:pProv
+            -Operators @('BinaryOperator') -SourceHashes @{ 'a.ps1' = 'h' } `
+            -TestFileLength @{ 'tests/a.Tests.ps1' = 42 } -Provenance $script:pProv
         $returned | Should-Be $path
     }
 

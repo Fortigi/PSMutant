@@ -826,7 +826,13 @@ function Write-PSMutationReport {
         [string[]]$ChangedFiles = $null,
         # The subset of `mutate` this run covered, as the config spells them; $null on a
         # whole-tree run. Read only to scope equivalence declarations.
-        [string[]]$InScopeFile = $null
+        [string[]]$InScopeFile = $null,
+        # This run continued an interrupted one, and how many of the rows below it did not
+        # evaluate itself. A SWITCH plus a count rather than a count with a sentinel: a resume
+        # that carried over zero rows -- an interruption before the first mutant finished -- is a
+        # real case, and a sentinel would make it indistinguishable from an ordinary run.
+        [switch]$Resumed,
+        [int]$CarriedOverUnverified = 0
     )
     # The only place holding EVERY row, so the only place that can ask whether a
     # declaration matched nothing. The per-set fold no longer answers it.
@@ -916,6 +922,17 @@ function Write-PSMutationReport {
         $document | Add-Member -NotePropertyName changedFiles -NotePropertyValue (
             ConvertTo-PSMutationList -Value $ChangedFiles)
     }
+    # THE CAVEAT LIVES IN THE ARTIFACT, not only in the console, for the reason the merged report
+    # gives: everything downstream reads this file as a measurement, and part of it was measured by
+    # an earlier run. Added afterwards rather than written into the literal above, so an ordinary
+    # report carries neither field and a consumer can tell the two apart by presence.
+    #
+    # A resumed run IS complete -- every mutant has a verdict -- so unlike a recheck it may carry a
+    # real score. What it may not do is let a reader assume one run stood behind all of it.
+    if ($Resumed) {
+        $document | Add-Member -NotePropertyName resumed -NotePropertyValue $true
+        $document | Add-Member -NotePropertyName carriedOverUnverified -NotePropertyValue $CarriedOverUnverified
+    }
     Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath
     return $summary
 }
@@ -947,6 +964,14 @@ function Write-PSMutationPartialReport {
         [Parameter(Mandatory)] [string]$ReportPath,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Operators,
         [Parameter(Mandatory)] [hashtable]$SourceHashes,
+        # What each mapped test file measured when this run started. MANDATORY, unlike the full
+        # report's optional one, because a partial report exists to be READ BACK: -ResumeFrom
+        # carries over every verdict recorded here, which is only as good as the tests that
+        # produced them, and Get-PSMutationMergeFault refuses outright when a report records
+        # nothing about its test files. Optional here, the field would be missing on exactly the
+        # reports somebody is about to resume from, and every resume would be refused -- correctly,
+        # and uselessly.
+        [Parameter(Mandatory)] [hashtable]$TestFileLength,
         [hashtable]$Provenance = @{}
     )
     $document = [pscustomobject]@{
@@ -967,6 +992,9 @@ function Write-PSMutationPartialReport {
         # Carried so a later run can prove this partial was numbered against the same source.
         sourceHashes  = $SourceHashes
         operators     = @($Operators | Sort-Object)
+        # Spelled the same as the full report's, because a resume reads it with the same function
+        # a merge does. A second spelling would be a second thing to keep in step.
+        testFiles     = [pscustomobject]$TestFileLength
         mutants       = $Results
     }
     Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath

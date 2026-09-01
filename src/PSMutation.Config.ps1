@@ -377,12 +377,13 @@ function Get-PSMutationInputFault {
         [Parameter(Mandatory)] [bool]$UpdateBaseline,
         [Parameter(Mandatory)] [bool]$MergeIntoBaseline,
         [Parameter(Mandatory)] [bool]$Changed,
+        [bool]$Resume,
         [AllowEmptyString()] [AllowEmptyCollection()] [string[]]$ChangedFile = @()
     )
     $fault = Get-PSMutationSourceRootFault -SourceRoot $SourceRoot
     if ($fault) { return $fault }
     $fault = Get-PSMutationModeFault -ListOnly $ListOnly -Recheck $Recheck `
-        -UpdateBaseline $UpdateBaseline -MergeIntoBaseline $MergeIntoBaseline -Changed $Changed
+        -UpdateBaseline $UpdateBaseline -MergeIntoBaseline $MergeIntoBaseline -Changed $Changed -Resume $Resume
     if ($fault) { return $fault }
     return $Changed ? (Get-PSMutationChangedFileFault -ChangedFile $ChangedFile) : ''
 }
@@ -442,30 +443,65 @@ function Get-PSMutationModeFault {
         [Parameter(Mandatory)] [bool]$Recheck,
         [Parameter(Mandatory)] [bool]$UpdateBaseline,
         [Parameter(Mandatory)] [bool]$MergeIntoBaseline,
-        [bool]$Changed
+        [bool]$Changed,
+        [bool]$Resume
     )
     # -ChangedFile first, because its conflicts hold whether or not -ListOnly is present, and
     # -ListOnly WITH -ChangedFile is the one combination here that is not a conflict at all:
     # previewing what a pull request would mutate is the cheapest use either has.
-    $scoped = [System.Collections.Generic.List[string]]::new()
-    if ($Changed -and $Recheck) { $scoped.Add('-RecheckFrom') }
-    # A scoped run measures part of the tree. Folding its survivors into a whole-project
-    # baseline would record "no survivors" for every file the run never looked at, which is
-    # the baseline quietly forgetting debt rather than the run finding none.
-    if ($Changed -and $UpdateBaseline) { $scoped.Add('-UpdateBaseline') }
-    if ($Changed -and $MergeIntoBaseline) { $scoped.Add('-MergeIntoBaseline') }
-    if ($scoped.Count -gt 0) {
-        return ("-ChangedFile scopes the run to part of the tree, so it cannot be combined with {0}. " -f ($scoped -join ' or ')) +
+    #
+    # A scoped run measures part of the tree. Folding its survivors into a whole-project baseline
+    # would record "no survivors" for every file the run never looked at, which is the baseline
+    # quietly forgetting debt rather than the run finding none. And a scoped resume of a
+    # whole-tree partial is not a thing: the partial's rows cover files this run would not touch.
+    $scoped = Get-PSMutationConflictName -When $Changed -Against @(
+        @{ Name = '-RecheckFrom'; On = $Recheck }
+        @{ Name = '-ResumeFrom'; On = $Resume }
+        @{ Name = '-UpdateBaseline'; On = $UpdateBaseline }
+        @{ Name = '-MergeIntoBaseline'; On = $MergeIntoBaseline })
+    if ($scoped) {
+        return "-ChangedFile scopes the run to part of the tree, so it cannot be combined with $scoped. " +
             'Run the whole tree for a project-wide answer, or drop -ChangedFile.'
     }
-    if (-not $ListOnly) { return '' }
-    $with = [System.Collections.Generic.List[string]]::new()
-    if ($Recheck) { $with.Add('-RecheckFrom') }
-    if ($UpdateBaseline) { $with.Add('-UpdateBaseline') }
-    if ($MergeIntoBaseline) { $with.Add('-MergeIntoBaseline') }
-    if ($with.Count -eq 0) { return '' }
-    return ("-ListOnly evaluates no mutants, so it cannot be combined with {0}. " -f ($with -join ' or ')) +
+    # -RecheckFrom and -ResumeFrom each name a PRIOR REPORT to read, and they read different
+    # kinds for different purposes -- one re-runs recorded survivors, the other continues an
+    # interrupted run. -MergeIntoBaseline belongs to the recheck, so it goes with it.
+    $resumed = Get-PSMutationConflictName -When $Resume -Against @(
+        @{ Name = '-RecheckFrom'; On = $Recheck }
+        @{ Name = '-MergeIntoBaseline'; On = $MergeIntoBaseline })
+    if ($resumed) {
+        return "-ResumeFrom continues an interrupted run, so it cannot be combined with $resumed. " +
+            'Those name a different prior report and a different kind of run.'
+    }
+    $with = Get-PSMutationConflictName -When $ListOnly -Against @(
+        @{ Name = '-RecheckFrom'; On = $Recheck }
+        @{ Name = '-ResumeFrom'; On = $Resume }
+        @{ Name = '-UpdateBaseline'; On = $UpdateBaseline }
+        @{ Name = '-MergeIntoBaseline'; On = $MergeIntoBaseline })
+    if (-not $with) { return '' }
+    return "-ListOnly evaluates no mutants, so it cannot be combined with $with. " +
         'Drop -ListOnly to run, or drop the other switch to preview the mutant set.'
+}
+
+function Get-PSMutationConflictName {
+    <#
+    .SYNOPSIS
+        The switches that conflict with one that is present, joined for a message. Pure.
+    .DESCRIPTION
+        Extracted because the complexity gate said so, and it earned its keep immediately: the
+        three lists below were nine `if`s and adding -ResumeFrom would have made twelve, against
+        a ceiling of fifteen. As data they are one loop, and the ORDER of the message is the
+        order of the array rather than whatever a hashtable enumerates -- which is why this takes
+        an ordered list and not a map.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [bool]$When,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Against
+    )
+    if (-not $When) { return '' }
+    return (@($Against | Where-Object { $_.On } | ForEach-Object { $_.Name }) -join ' or ')
 }
 
 function Get-PSMutationChangedFileFault {

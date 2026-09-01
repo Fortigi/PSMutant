@@ -778,20 +778,100 @@ Describe 'the published report schema' {
         $script:fullText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.json'))
         $script:recheckText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.recheck.json'))
 
+        # A REAL partial report, from a run stopped by its own wall-clock budget. Its own fixture
+        # rather than a value another Describe left behind: this suite is run in both directions
+        # -- tools/Test-PSMutantOrderIndependence.ps1 reverses it -- so a block that depends on
+        # another having run first is green one way and red the other.
+        #
+        # Deterministic rather than lucky: the covering suite sleeps 1500ms and the budget is 1s,
+        # so the check after the FIRST mutant always fires and the report always records one.
+        $script:pProj = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-partial-e2e-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:pProj 'src') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:pProj 'tests') -Force | Out-Null
+        'function Get-Sign { param($n) if ($n -gt 0) { return 1 } else { return 2 } }' |
+            Set-Content (Join-Path $script:pProj 'src/p.ps1') -Encoding utf8
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'p.ps1'); Start-Sleep -Milliseconds 1500 }
+Describe 'Get-Sign' {
+    It 'is 1 for positive' { Get-Sign 5 | Should -Be 1 }
+    It 'is 2 otherwise' { Get-Sign -5 | Should -Be 2 }
+}
+'@ | Set-Content (Join-Path $script:pProj 'tests/p.Tests.ps1') -Encoding utf8
+        [ordered]@{
+            mutate            = @('src/p.ps1')
+            tests             = @{ 'src/p.ps1' = @('tests/p.Tests.ps1') }
+            operators         = @('BinaryOperator', 'NumberLiteral', 'ConditionalBoundary')
+            runTimeoutSeconds = 1
+            reportPath        = 'reports/partial.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content (Join-Path $script:pProj 'p.config.json') -Encoding utf8
+        try { Invoke-PSMutation -ConfigFile (Join-Path $script:pProj 'p.config.json') -SourceRoot $script:pProj -Quiet | Out-Null }
+        catch { Write-Verbose "expected: $($_.Exception.Message)" }
+        $script:partialText = [System.IO.File]::ReadAllText((Join-Path $script:pProj 'reports/partial.json'))
+
         function Test-AgainstSchema { param([string]$Json)
             try { Test-Json -Json $Json -Schema $script:schema -ErrorAction Stop | Out-Null; return $true }
             catch { return $false }
         }
     }
 
+    AfterAll { Remove-Item $script:pProj -Recurse -Force -ErrorAction SilentlyContinue }
+
     It 'accepts the full report a real run just wrote' {
         Should-BeTrue -Actual (Test-AgainstSchema -Json $script:fullText)
+    }
+
+    It 'accepts the PARTIAL report a real interrupted run just wrote' {
+        # The third shape, and the one a resume reads. All three travel different call paths, and
+        # wiring a field into one writer and not the others is invisible until somebody opens the
+        # file.
+        Should-BeTrue -Actual (Test-AgainstSchema -Json $script:partialText)
     }
 
     It 'accepts the recheck report a real run just wrote' {
         # Both shapes, because the recheck report travels a different call path -- wiring a
         # field into one writer and not the other is invisible until someone opens the file.
         Should-BeTrue -Actual (Test-AgainstSchema -Json $script:recheckText)
+    }
+
+    It 'refuses a PARTIAL report that records nothing about its test files' {
+        # A partial report exists to be read back, and -ResumeFrom carries over every verdict in
+        # it -- which is only sound while no mapped test file has shrunk. Without this field a
+        # resume is refused at run time, so the document is one nobody can ever use. The schema
+        # makes that shape unrepresentable rather than leaving it to the writer.
+        #
+        # REQUIRED rather than optional, and that is only affordable because schemas/v2 has never
+        # shipped: v0.4.0 carried v1 alone. "Becomes required" moves schemaVersion when documents
+        # exist that would stop validating; none do.
+        $bad = $script:partialText -replace '(?m)^[ \t]*"testFiles":.*\r?$', ''
+        $bad | Should-NotBe $script:partialText -Because 'the fixture must actually differ, or this asserts nothing'
+        Should-BeFalse -Actual (Test-AgainstSchema -Json $bad)
+        Should-BeTrue -Actual (Test-AgainstSchema -Json $script:partialText)
+    }
+
+    It 'refuses a count of carried-over mutants with nothing saying the run was resumed' {
+        # A document nobody can read: carriedOverUnverified says how much of the score this run
+        # did not measure, and without `resumed` a reader cannot tell that from an ordinary
+        # report with a stray field. Costs no previously-valid report, because neither field
+        # existed before -- which is why it is a widening rather than a schemaVersion move.
+        #
+        # Asserted as INVALID rather than on the message, and that is a fact about Test-Json
+        # rather than a weaker test. Measured: the whole message for this document is
+        # 'Required properties ["mode"] are not present' -- the first UNSATISFIED `if` among the
+        # branches above, which every full report leaves unsatisfied and which has nothing to do
+        # with the fault. It is the "reports the arm it did NOT take" trap already recorded here,
+        # one layer deeper: with several conditional branches it reports the first one, not the
+        # one that actually rejected. The pairing below is what keeps this from being vacuous.
+        $bad = $script:fullText -replace '"generatedFrom"', '"carriedOverUnverified": 3, "generatedFrom"'
+        $bad | Should-NotBe $script:fullText -Because 'the fixture must actually differ, or this asserts nothing'
+        Should-BeFalse -Actual (Test-AgainstSchema -Json $bad)
+    }
+
+    It 'accepts the pair together, so the rule above is not simply refusing the field' {
+        # The pairing this repo requires of every refusal. Without it the rule would pass just as
+        # well if carriedOverUnverified were forbidden outright, which would reject every resumed
+        # report the module writes.
+        $good = $script:fullText -replace '"generatedFrom"', '"resumed": true, "carriedOverUnverified": 3, "generatedFrom"'
+        Should-BeTrue -Actual (Test-AgainstSchema -Json $good)
     }
 
     It 'refuses a scored report that omits filesWithNoCandidate' {
@@ -842,19 +922,16 @@ Describe 'the published report schema' {
         (Get-Content $v1 -Raw | ConvertFrom-Json).properties.schemaVersion.minimum | Should-Be 1
     }
 
-    It 'accepts a PARTIAL report and refuses one carrying a score' {
-        # The third shape. Same promise as a recheck -- counts, never a score -- so the schema
-        # forbids the number rather than trusting a writer never to add it.
-        $partial = $script:recheckText | ConvertFrom-Json
-        $partial.PSObject.Properties.Remove('recheckedFrom')
-        $partial.PSObject.Properties.Remove('priorSurvivors')
-        $partial.PSObject.Properties.Remove('rechecked')
-        $partial.PSObject.Properties.Remove('nowKilled')
-        $partial.mode = 'Partial'
-        $partial | Add-Member -NotePropertyName evaluated -NotePropertyValue 2
-        $partial | Add-Member -NotePropertyName planned -NotePropertyValue 7
-        Should-BeTrue -Actual (Test-AgainstSchema -Json ($partial | ConvertTo-Json -Depth 12))
-
+    It 'refuses a PARTIAL report carrying a score' {
+        # Same promise as a recheck -- counts, never a score -- so the schema forbids the number
+        # rather than trusting a writer never to add it.
+        #
+        # The accepting half used to live here, built by editing the recheck report into the
+        # shape of a partial one. It now sits above against the document a real interrupted run
+        # wrote, which is strictly better and is what caught this: the hand-built fixture had no
+        # testFiles, and once that became required the doctored document stopped being a valid
+        # partial report -- while a real one still was.
+        #
         # The score fixture is built from the FULL report rather than from the partial one, and
         # that is what makes the assertion mean anything. A partial document simply lacks the
         # full-run disclosures, so a score added to it is already refused for missing those --
@@ -1259,5 +1336,125 @@ Describe 'Get-Step' {
         # a sandbox whose owning process is gone, so a long-lived host would keep all of them.
         @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter "psmut-sandbox-$PID-*" `
                 -ErrorAction SilentlyContinue).Count | Should-Be 0
+    }
+}
+
+Describe 'a resumed run answers exactly what an uninterrupted one does' {
+    # The promise -ResumeFrom makes. Its own fixture, because this suite is run in both
+    # directions and a block that depends on another having run first is green one way and red
+    # the other -- and because the interruption has to be deterministic: the covering suite
+    # sleeps 900ms and the budget is 1s, so the run always stops partway rather than sometimes.
+    BeforeAll {
+        $script:rProj = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-resume-e2e-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:rProj 'src') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:rProj 'tests') -Force | Out-Null
+        @'
+function Get-Band {
+    param($n)
+    if ($n -gt 100) { return 'high' }
+    if ($n -gt 10) { return 'mid' }
+    return 'low'
+}
+'@ | Set-Content (Join-Path $script:rProj 'src/band.ps1') -Encoding utf8
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'band.ps1'); Start-Sleep -Milliseconds 900 }
+Describe 'Get-Band' {
+    It 'is high above a hundred' { Get-Band 500 | Should -Be 'high' }
+    It 'is mid above ten' { Get-Band 50 | Should -Be 'mid' }
+    It 'is low otherwise' { Get-Band 1 | Should -Be 'low' }
+}
+'@ | Set-Content (Join-Path $script:rProj 'tests/band.Tests.ps1') -Encoding utf8
+
+        function script:WriteResumeConfig {
+            param([string]$Name, $RunTimeout)
+            $cfg = [ordered]@{
+                mutate     = @('src/band.ps1')
+                tests      = @{ 'src/band.ps1' = @('tests/band.Tests.ps1') }
+                operators  = @('BinaryOperator', 'NumberLiteral', 'ConditionalBoundary')
+                reportPath = "reports/$Name.json"
+            }
+            if ($null -ne $RunTimeout) { $cfg.runTimeoutSeconds = $RunTimeout }
+            $p = Join-Path $script:rProj "$Name.config.json"
+            $cfg | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
+            return $p
+        }
+
+        # 1. A run stopped by its own wall-clock budget, leaving a partial report.
+        try { Invoke-PSMutation -ConfigFile (script:WriteResumeConfig -Name 'stop' -RunTimeout 1) -SourceRoot $script:rProj -Quiet | Out-Null }
+        catch { Write-Verbose "expected: $($_.Exception.Message)" }
+        $script:partial = Get-Content (Join-Path $script:rProj 'reports/stop.json') -Raw | ConvertFrom-Json
+        Copy-Item (Join-Path $script:rProj 'reports/stop.json') (Join-Path $script:rProj 'carried.json')
+
+        # 2. The same config, resumed from it.
+        $script:resumeResult = Invoke-PSMutation -ConfigFile (script:WriteResumeConfig -Name 'resumed' -RunTimeout $null) `
+            -SourceRoot $script:rProj -ResumeFrom (Join-Path $script:rProj 'carried.json') -Quiet
+        $script:resumed = Get-Content (Join-Path $script:rProj 'reports/resumed.json') -Raw | ConvertFrom-Json
+
+        # 3. And a clean run of the same config, for comparison.
+        $script:freshResult = Invoke-PSMutation -ConfigFile (script:WriteResumeConfig -Name 'fresh' -RunTimeout $null) `
+            -SourceRoot $script:rProj -Quiet
+        $script:fresh = Get-Content (Join-Path $script:rProj 'reports/fresh.json') -Raw | ConvertFrom-Json
+    }
+
+    AfterAll { Remove-Item $script:rProj -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'stopped partway, which is what makes the rest of this mean anything' {
+        # Guarded, not assumed. A fixture that finished would make every assertion below pass
+        # against a resume that carried nothing and did all the work itself.
+        $script:partial.mode | Should-Be 'Partial'
+        $script:partial.evaluated | Should-BeGreaterThan 0
+        $script:partial.evaluated | Should-BeLessThan $script:partial.planned
+    }
+
+    It 'produces the same rows, in the same order, as a run that was never interrupted' {
+        # The whole promise. Same mutants, same verdicts, same order -- the order because
+        # finished mutants are retired in candidate order, which is what makes a partial report
+        # a genuine prefix rather than whichever mutants happened to land first.
+        $a = @($script:resumed.mutants | ForEach-Object { "$($_.Id)|$($_.File)|$($_.Line)|$($_.Description)|$($_.Status)" })
+        $b = @($script:fresh.mutants | ForEach-Object { "$($_.Id)|$($_.File)|$($_.Line)|$($_.Description)|$($_.Status)" })
+        $a | Should-BeCollection $b
+    }
+
+    It 'reaches the same score, and it is a REAL one' {
+        # The difference from a recheck, which may not carry a score at all: a resumed run is
+        # complete, so every mutant has a verdict and the percentage is over all of them.
+        $script:resumeResult.Score | Should-Be $script:freshResult.Score
+        $script:resumeResult.Total | Should-Be $script:freshResult.Total
+        $script:resumed.mutationScore | Should-Be $script:fresh.mutationScore
+    }
+
+    It 'says how much of that score it did not measure itself' {
+        # Everything downstream reads this file as a measurement and part of it was measured by
+        # an earlier run. A reader has to be able to see which part.
+        $script:resumed.resumed | Should-BeTrue
+        $script:resumed.carriedOverUnverified | Should-Be $script:partial.evaluated
+    }
+
+    It 'leaves an ordinary run saying neither, so presence is the discriminator' {
+        $script:fresh.PSObject.Properties.Name | Should-NotContainCollection 'resumed'
+        $script:fresh.PSObject.Properties.Name | Should-NotContainCollection 'carriedOverUnverified'
+    }
+
+    It 'refuses to resume once the source has moved under the recorded ids' {
+        # Mutant ids are AST-walk positions, so an edit renumbers them and the carried-over rows
+        # would describe other mutants. Same guard -RecheckFrom uses, asked with the same
+        # function.
+        $src = Join-Path $script:rProj 'src/band.ps1'
+        $before = [System.IO.File]::ReadAllText($src)
+        try {
+            [System.IO.File]::WriteAllText($src, "function Get-Extra { 1 }`n" + $before)
+            { Invoke-PSMutation -ConfigFile (script:WriteResumeConfig -Name 'moved' -RunTimeout $null) `
+                    -SourceRoot $script:rProj -ResumeFrom (Join-Path $script:rProj 'carried.json') -Quiet } |
+                Should-Throw -ExceptionMessage '*Cannot resume from*changed since the report was written*'
+        }
+        finally { [System.IO.File]::WriteAllText($src, $before) }
+    }
+
+    It 'refuses to resume from a report that is not a partial one' {
+        # A completed report has nothing left to evaluate. Pointed at the full report this same
+        # fixture just wrote, so the refusal is against a real document rather than a stub.
+        { Invoke-PSMutation -ConfigFile (script:WriteResumeConfig -Name 'notpartial' -RunTimeout $null) `
+                -SourceRoot $script:rProj -ResumeFrom (Join-Path $script:rProj 'reports/fresh.json') -Quiet } |
+            Should-Throw -ExceptionMessage "*not 'Partial'*"
     }
 }

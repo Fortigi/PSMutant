@@ -1162,12 +1162,70 @@ Describe 'Test-PSMutationBaselineNeeded' {
     }
 }
 
+Describe 'Get-PSMutationConflictName' {
+    It 'says nothing when the switch it is asking about is absent' {
+        # The guard that lets the caller ask three times without three nested conditions. Extracted
+        # because the complexity gate said so: the lists were nine `if`s and -ResumeFrom would have
+        # made twelve, against a ceiling of fifteen.
+        Get-PSMutationConflictName -When $false -Against @(@{ Name = '-A'; On = $true }) | Should-Be ''
+    }
+
+    It 'says nothing when nothing it is asked about is present' {
+        Get-PSMutationConflictName -When $true -Against @(
+            @{ Name = '-A'; On = $false }
+            @{ Name = '-B'; On = $false }) | Should-Be ''
+    }
+
+    It 'keeps the ORDER of the list, which is why it takes a list and not a map' {
+        # The messages read in a fixed order, and a hashtable would enumerate in whatever order it
+        # liked -- so the same conflict would be described differently between runs, and the
+        # existing assertions on those messages would be pinning luck.
+        Get-PSMutationConflictName -When $true -Against @(
+            @{ Name = '-RecheckFrom'; On = $true }
+            @{ Name = '-ResumeFrom'; On = $false }
+            @{ Name = '-UpdateBaseline'; On = $true }) | Should-Be '-RecheckFrom or -UpdateBaseline'
+    }
+}
+
 Describe 'Get-PSMutationModeFault' {
     It 'permits every combination when -ListOnly is absent' {
         # The switches it refuses are legitimate together WITHOUT -ListOnly: a recheck folding
         # its verdicts back into the baseline is the documented -MergeIntoBaseline flow.
         Get-PSMutationModeFault -ListOnly $false -Recheck $true -UpdateBaseline $true `
             -MergeIntoBaseline $true | Should-Be ''
+    }
+
+    It 'permits -ResumeFrom with the switches it does not conflict with' {
+        # -UpdateBaseline is legitimate: a resumed run is COMPLETE, so its survivor set is the
+        # whole one and recording it as accepted debt records nothing it did not measure.
+        Get-PSMutationModeFault -ListOnly $false -Recheck $false -UpdateBaseline $true `
+            -MergeIntoBaseline $false -Resume $true | Should-Be ''
+    }
+
+    It 'refuses -ResumeFrom with a switch that names a different prior run' -ForEach @(
+        @{ R = $true; M = $false; Named = '-RecheckFrom' }
+        @{ R = $false; M = $true; Named = '-MergeIntoBaseline' }
+    ) {
+        # Each names a PRIOR REPORT of a different kind, for a different purpose: one re-runs
+        # recorded survivors, the other continues an interrupted run. -MergeIntoBaseline belongs
+        # to the recheck, so it goes with it.
+        Get-PSMutationModeFault -ListOnly $false -Recheck $R -UpdateBaseline $false `
+            -MergeIntoBaseline $M -Resume $true | Should-MatchString "cannot be combined with $Named"
+    }
+
+    It 'refuses -ChangedFile with -ResumeFrom' {
+        # A scoped resume of a whole-tree partial is not a thing: the partial's rows cover files
+        # this run would not touch, so carrying them over would report a whole-tree score for a
+        # run that measured part of one.
+        Get-PSMutationModeFault -ListOnly $false -Recheck $false -UpdateBaseline $false `
+            -MergeIntoBaseline $false -Changed $true -Resume $true |
+            Should-MatchString '-ChangedFile scopes the run.*-ResumeFrom'
+    }
+
+    It 'refuses -ListOnly with -ResumeFrom' {
+        Get-PSMutationModeFault -ListOnly $true -Recheck $false -UpdateBaseline $false `
+            -MergeIntoBaseline $false -Resume $true |
+            Should-MatchString '-ListOnly evaluates no mutants.*-ResumeFrom'
     }
 
     It 'permits -ListOnly on its own' {

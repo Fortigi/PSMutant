@@ -860,3 +860,200 @@ Describe 'Get-PSMutationTestFileLength' {
             Should-BeCollection @('tests/a.Tests.ps1')
     }
 }
+
+Describe 'Select-PSMutationResumeCandidate' {
+    BeforeAll {
+        $script:rRoot = [System.IO.Path]::GetTempPath()
+        function script:ResumeCand([int]$Id, [string]$Leaf = 'a.ps1') {
+            [pscustomobject]@{ Id = $Id; File = (Join-Path $script:rRoot $Leaf) }
+        }
+        function script:ResumeReport([object[]]$Rows) {
+            [pscustomobject]@{ mode = 'Partial'; mutants = $Rows }
+        }
+    }
+
+    It 'keeps exactly what the prior report did not record' {
+        # The INVERSE of the recheck selector. A resume finishes a measurement, so what it wants
+        # is everything the interrupted run never reached.
+        $report = script:ResumeReport @(
+            [pscustomobject]@{ File = 'a.ps1'; Id = 1 }
+            [pscustomobject]@{ File = 'a.ps1'; Id = 2 })
+        $left = Select-PSMutationResumeCandidate -SandboxRoot $script:rRoot `
+            -Candidates @((script:ResumeCand 1), (script:ResumeCand 2), (script:ResumeCand 3)) -Report $report
+        @($left | ForEach-Object { $_.Id }) | Should-BeCollection @(3)
+    }
+
+    It 'matches on FILE as well as id, so two files do not share a numbering' {
+        # Ids are per-file AST-walk positions, so id 1 exists in every file. Keyed on the id
+        # alone, recording a.ps1:1 would silently retire b.ps1:1 as well -- a mutant nobody
+        # evaluated, carried into the score with whatever status its namesake had.
+        $report = script:ResumeReport @([pscustomobject]@{ File = 'a.ps1'; Id = 1 })
+        $left = Select-PSMutationResumeCandidate -SandboxRoot $script:rRoot `
+            -Candidates @((script:ResumeCand 1 'a.ps1'), (script:ResumeCand 1 'b.ps1')) -Report $report
+        @($left | ForEach-Object { ConvertFrom-PSMutationSandboxPath -Path $_.File -SandboxRoot $script:rRoot }) |
+            Should-BeCollection @('b.ps1')
+    }
+
+    It 'keeps everything when the interrupted run recorded nothing' {
+        # The earliest possible interruption: stopped before the first mutant finished. A resume
+        # from it is an ordinary run, and must not be an empty one.
+        $left = Select-PSMutationResumeCandidate -SandboxRoot $script:rRoot `
+            -Candidates @((script:ResumeCand 1), (script:ResumeCand 2)) -Report (script:ResumeReport @())
+        @($left).Count | Should-Be 2
+    }
+
+    It 'returns an ARRAY when everything was already recorded, not $null' {
+        # The comma-wrap. A resume from a report that got all the way to the last mutant leaves
+        # nothing to run, and an unwrapped empty result unrolls to $null -- which the loop's
+        # mandatory -Candidates would then refuse, turning a legitimate outcome into a crash.
+        $report = script:ResumeReport @([pscustomobject]@{ File = 'a.ps1'; Id = 1 })
+        $left = Select-PSMutationResumeCandidate -SandboxRoot $script:rRoot `
+            -Candidates @((script:ResumeCand 1)) -Report $report
+        @($left).Count | Should-Be 0
+        $left -is [array] | Should-BeTrue
+    }
+
+    It 'does NOT skip declared equivalents, unlike a recheck' {
+        # The two selectors differ here on purpose. A recheck re-runs survivors, and re-running
+        # one the config argues cannot be killed is guaranteed-wasted work. A resume is completing
+        # a measurement: a declaration is a claim checked against a RESULT, and a mutant nobody
+        # evaluated has no result to check it against. This selector takes no -Equivalents at all,
+        # which is what makes that impossible to get wrong.
+        (Get-Command Select-PSMutationResumeCandidate).Parameters.Keys | Should-NotContainCollection 'Equivalents'
+    }
+}
+
+Describe 'Get-PSMutationResumeFault' {
+    BeforeAll {
+        $script:okHashes = @{ 'a.ps1' = 'h1' }
+        $script:okTests = @{ 'tests/a.Tests.ps1' = 100 }
+        function script:PartialFor([hashtable]$Over = @{}) {
+            $d = @{ mode = 'Partial'; sourceHashes = [pscustomobject]@{ 'a.ps1' = 'h1' }
+                operators = @('BinaryOperator'); testFiles = [pscustomobject]@{ 'tests/a.Tests.ps1' = 100 } }
+            foreach ($k in $Over.Keys) { $d[$k] = $Over[$k] }
+            return [pscustomobject]$d
+        }
+        function script:ResumeFaultFor($Report) {
+            Get-PSMutationResumeFault -Report $Report -SourceHashes $script:okHashes `
+                -Operators @('BinaryOperator') -CurrentTests $script:okTests
+        }
+    }
+
+    It 'says nothing when the report is a partial one describing this source' {
+        script:ResumeFaultFor (script:PartialFor) | Should-Be ''
+    }
+
+    It 'refuses a report that is not PARTIAL, and says which it is' -ForEach @(
+        @{ Mode = 'Recheck' }
+        @{ Mode = 'Changed' }
+        @{ Mode = $null }
+    ) {
+        # A full report has nothing left to evaluate and a recheck report describes a different
+        # kind of run. Asked FIRST because every check below assumes the document is this shape.
+        # $null covers the ordinary full report, which carries no mode at all.
+        script:ResumeFaultFor (script:PartialFor @{ mode = $Mode }) |
+            Should-MatchString 'not .Partial.'
+    }
+
+    It 'refuses when the source moved under the recorded ids' {
+        # Mutant ids are AST-walk positions. Asked with the same function -RecheckFrom uses: a
+        # second implementation would be a second answer to one question.
+        script:ResumeFaultFor (script:PartialFor @{ sourceHashes = [pscustomobject]@{ 'a.ps1' = 'DIFFERENT' } }) |
+            Should-MatchString 'a.ps1 changed since the report was written'
+    }
+
+    It 'refuses when the operator set changed' {
+        script:ResumeFaultFor (script:PartialFor @{ operators = @('BooleanLiteral') }) |
+            Should-MatchString 'operator set changed'
+    }
+
+    It 'refuses when a mapped test file SHRANK, because that is what revives a mutant' {
+        # The check the issue behind this feature did not name. A resume carries over every
+        # verdict in the report, and adding a test cannot revive a mutant the earlier run killed
+        # -- editing or deleting one can, and a resume never re-looks. Same decision
+        # -MergeIntoBaseline uses, asked unchanged.
+        Get-PSMutationResumeFault -Report (script:PartialFor) -SourceHashes $script:okHashes `
+            -Operators @('BinaryOperator') -CurrentTests @{ 'tests/a.Tests.ps1' = 40 } |
+            Should-MatchString 'carries those verdicts over without re-running them'
+    }
+
+    It 'ALLOWS a test file that grew, or the loop this serves would be refused' {
+        # Growth permits rather than certifies -- see Get-PSMutationMergeFault. Paired with the
+        # shrink case above so neither can pass by the guard being inert.
+        Get-PSMutationResumeFault -Report (script:PartialFor) -SourceHashes $script:okHashes `
+            -Operators @('BinaryOperator') -CurrentTests @{ 'tests/a.Tests.ps1' = 400 } | Should-Be ''
+    }
+
+    It 'asks about the SOURCE before it asks about the tests' {
+        # Order is the message's quality. A report numbered against different source cannot have
+        # its verdicts carried over at all, so complaining about a test file first would send the
+        # reader to look at the wrong thing.
+        Get-PSMutationResumeFault -Report (script:PartialFor @{ operators = @('BooleanLiteral') }) `
+            -SourceHashes $script:okHashes -Operators @('BinaryOperator') `
+            -CurrentTests @{ 'tests/a.Tests.ps1' = 40 } | Should-MatchString 'operator set changed'
+    }
+}
+
+Describe 'Get-PSMutationResumeState' {
+    BeforeAll {
+        $script:sRoot = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-resume-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:sRoot -Force | Out-Null
+        $script:sPlan = @{ AllTests = @() }
+        $script:sCands = @(
+            [pscustomobject]@{ Id = 1; File = (Join-Path $script:sRoot 'a.ps1') }
+            [pscustomobject]@{ Id = 2; File = (Join-Path $script:sRoot 'a.ps1') })
+        function script:WriteResumeReport($Document) {
+            $p = Join-Path $script:sRoot "r-$([System.Guid]::NewGuid().ToString('N')).json"
+            $Document | ConvertTo-Json -Depth 8 | Set-Content -LiteralPath $p -Encoding utf8
+            return $p
+        }
+        function script:StateFor([string]$Path) {
+            Get-PSMutationResumeState -ResumeFrom $Path -Candidates $script:sCands -Plan $script:sPlan `
+                -SandboxRoot $script:sRoot -SourceHashes @{} -Operators @('BinaryOperator')
+        }
+    }
+    AfterAll { Remove-Item $script:sRoot -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'hands an ORDINARY run its candidates back untouched' {
+        # The whole reason this returns the same shape either way: Invoke-PSMutationRun was
+        # already at 13 of a ceiling of 15, and a feature that spends two of the branches it has
+        # left on asking whether it is switched on has none for the feature.
+        $s = script:StateFor ''
+        $s.IsResume | Should-BeFalse
+        @($s.Candidates).Count | Should-Be 2
+        @($s.PriorRows).Count | Should-Be 0
+        @($s.Lines).Count | Should-Be 0
+    }
+
+    It 'narrows the candidates and carries the recorded rows' {
+        $path = script:WriteResumeReport ([pscustomobject]@{
+                mode = 'Partial'; operators = @('BinaryOperator')
+                sourceHashes = [pscustomobject]@{}; testFiles = [pscustomobject]@{}
+                mutants = @([pscustomobject]@{ File = 'a.ps1'; Id = 1; Status = 'Killed' })
+            })
+        $s = script:StateFor $path
+        $s.IsResume | Should-BeTrue
+        @($s.Candidates | ForEach-Object { $_.Id }) | Should-BeCollection @(2)
+        @($s.PriorRows).Count | Should-Be 1
+    }
+
+    It 'says what it is doing, because a resumed run is otherwise indistinguishable from a short one' {
+        $path = script:WriteResumeReport ([pscustomobject]@{
+                mode = 'Partial'; operators = @('BinaryOperator')
+                sourceHashes = [pscustomobject]@{}; testFiles = [pscustomobject]@{}
+                mutants = @([pscustomobject]@{ File = 'a.ps1'; Id = 1; Status = 'Killed' })
+            })
+        $line = @((script:StateFor $path).Lines)[0]
+        $line.Text | Should-MatchString 'RESUMED from'
+        $line.Text | Should-MatchString '1 mutant\(s\) carried over'
+        $line.Text | Should-MatchString '1 left to evaluate'
+    }
+
+    It 'THROWS rather than returning a fault, and names the report' {
+        # The same choice -RecheckFrom makes: a resume that cannot be trusted is a fault in what
+        # the caller asked for, not a verdict about the code. Returning a score built on it would
+        # be the confident-number-over-a-subset failure this module exists to prevent.
+        $path = script:WriteResumeReport ([pscustomobject]@{ mode = 'Recheck'; mutants = @() })
+        { script:StateFor $path } | Should-Throw -ExceptionMessage '*Cannot resume from*not ''Partial''*'
+    }
+}
