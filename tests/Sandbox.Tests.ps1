@@ -370,3 +370,89 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         Get-PSMutationProcessStart -Process ([pscustomobject]@{ StartTime = $when }) | Should-Be $when
     }
 }
+
+Describe 'Get-PSMutationWorkerPath' {
+    It 'leaves worker 0 alone, because it mutates the primary sandbox itself' {
+        # An identity rather than a special case: with one worker the whole re-rooting question
+        # does not arise, which is what keeps a serial run byte-identical to what it was before
+        # workers existed.
+        $sb = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
+        Get-PSMutationWorkerPath -Path (Join-Path $sb 'src/a.ps1') -SandboxRoot $sb -WorkerRoot $sb |
+            Should-Be (Join-Path $sb 'src/a.ps1')
+    }
+
+    It 'answers even when both roots are empty, which is what shows the two arms differ' {
+        # The identity arm is not an optimisation of the other one. GetRelativePath THROWS on an
+        # empty base, so with the guard forced away this input fails outright -- which is the only
+        # thing that tells the two apart, since for a normalised path under a real root they
+        # return the same string.
+        Get-PSMutationWorkerPath -Path '/x/a.ps1' -SandboxRoot '' -WorkerRoot '' | Should-Be '/x/a.ps1'
+    }
+
+    It 'moves a path into another worker''s copy, structure preserved' {
+        $sb = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
+        $w = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
+        Get-PSMutationWorkerPath -Path (Join-Path $sb 'src/a.ps1') -SandboxRoot $sb -WorkerRoot $w |
+            Should-Be ([System.IO.Path]::GetFullPath((Join-Path $w 'src/a.ps1')))
+    }
+
+    It 'refuses a path that escapes the worker sandbox, on the same terms as the primary one' {
+        # Reused rather than string-replaced, so a worker path is refused for escaping on exactly
+        # the terms the primary one is -- and so a root that is a prefix of an unrelated directory
+        # beside it cannot be matched by accident.
+        $sb = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
+        $w = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
+        { Get-PSMutationWorkerPath -Path (Join-Path $sb '../outside.ps1') -SandboxRoot $sb -WorkerRoot $w } |
+            Should-Throw -ExceptionMessage '*resolves outside the source root*'
+    }
+}
+
+Describe 'New-PSMutationWorkerSandbox' {
+    BeforeAll {
+        $script:pRoot = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-primary-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:pRoot 'src') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:pRoot 'src/a.ps1') -Value 'original'
+        $script:made = @()
+    }
+    AfterAll {
+        foreach ($m in $script:made) { Remove-Item $m -Recurse -Force -ErrorAction SilentlyContinue }
+        Remove-Item $script:pRoot -Recurse -Force -ErrorAction SilentlyContinue
+    }
+
+    It 'creates through the sandbox factory, so -WhatIf still reaches it' {
+        # There is no ShouldProcess of its own: a second gate over the same act is unobservable,
+        # and New-PSMutationSandbox already has one. What has to stay true is that this goes
+        # THROUGH that function rather than copying by hand, or the guards on the sandbox name
+        # and the reparse-point check would be bypassed for every worker past the first.
+        Mock New-PSMutationSandbox { 'stand-in' }
+        # ASSIGNED, never piped: the return is comma-wrapped so an empty result survives, and a
+        # pipeline hands the wrapper along as one object rather than unrolling it.
+        $made = New-PSMutationWorkerSandbox -SandboxRoot $script:pRoot -Subtrees @('src') -Count 3
+        $made | Should-BeCollection @('stand-in', 'stand-in', 'stand-in')
+        Should-Invoke New-PSMutationSandbox -Exactly 3 -ParameterFilter { $RepoRoot -eq $script:pRoot }
+    }
+
+    It 'copies nothing for a serial run' {
+        # Worker 0 mutates the primary sandbox, so one worker means nothing extra is copied --
+        # and the caller needs no branch to say so.
+        $r = New-PSMutationWorkerSandbox -SandboxRoot $script:pRoot -Subtrees @('src') -Count 0
+        @($r).Count | Should-Be 0
+        # An ARRAY, not $null. The caller counts it to learn how many workers it has, and $null
+        # would still count 0 while joining a null root into the pool that no worker can mutate in.
+        $r -is [array] | Should-BeTrue
+    }
+
+    It 'clones the PRIMARY SANDBOX, once per extra worker' {
+        # Cloned from the sandbox rather than from tracked source: the primary is what the
+        # candidate list, the covered lines and the baseline were all computed against, so a
+        # worker's copy is the same bytes those decisions were made on. Re-copying the repo would
+        # re-read files that may have been edited since the run started.
+        $r = New-PSMutationWorkerSandbox -SandboxRoot $script:pRoot -Subtrees @('src') -Count 2
+        $script:made += @($r)
+        @($r).Count | Should-Be 2
+        $r[0] | Should-NotBe $r[1]
+        foreach ($w in $r) {
+            Get-Content -LiteralPath (Join-Path $w 'src/a.ps1') -Raw | Should-MatchString 'original'
+        }
+    }
+}

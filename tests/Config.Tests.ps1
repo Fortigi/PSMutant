@@ -106,7 +106,7 @@ Describe 'Get-PSMutationSubtree' {
 Describe 'Get-PSMutationTimeout' {
     It 'scales the budget with the baseline duration' {
         # 10s baseline x the default factor of 4.
-        Get-PSMutationTimeout -Cfg ([pscustomobject]@{}) -BaselineSeconds 10 | Should-Be 40
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{}) -BaselineSeconds 10 -Workers 1 | Should-Be 40
     }
 
     It 'never drops below the floor, however fast the baseline is' {
@@ -114,7 +114,7 @@ Describe 'Get-PSMutationTimeout' {
         # int budget that is 0, every mutant is cut off on time rather than on
         # behaviour, and the run reports a perfect score against tests that never
         # finished. The floor is what stops a fast suite scoring 100% for free.
-        Get-PSMutationTimeout -Cfg ([pscustomobject]@{}) -BaselineSeconds 0.2 | Should-Be 15
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{}) -BaselineSeconds 0.2 -Workers 1 | Should-Be 15
     }
 
     It 'refuses a budget the unmutated suite could not itself meet' {
@@ -123,7 +123,7 @@ Describe 'Get-PSMutationTimeout' {
         # the clock, an expiry is scored as a kill, and the run reports 100% over tests that
         # never finished. Both configs below are taken from a run that did exactly that.
         $cfg = [pscustomobject]@{ timeoutFactor = 0.5; timeoutFloorSeconds = 0.5 }
-        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.6 } |
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.6 -Workers 1 } |
             Should-Throw -ExceptionMessage '*resolves to 0s*below the 0.6s*'
     }
 
@@ -131,7 +131,7 @@ Describe 'Get-PSMutationTimeout' {
         # The reader has to know which of the two numbers to change, and why a budget that
         # looks merely small is actually fatal.
         $cfg = [pscustomobject]@{ timeoutFactor = 0.001; timeoutFloorSeconds = 0.5 }
-        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.6 } |
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.6 -Workers 1 } |
             Should-Throw -ExceptionMessage "*scored as a kill*'timeoutFloorSeconds' (currently 0.5)*'timeoutFactor' (currently 0.001)*"
     }
 
@@ -139,7 +139,7 @@ Describe 'Get-PSMutationTimeout' {
         # The boundary, and the whole difference between -lt and -le. A mutant given exactly
         # as long as the unmutated suite took is tight but not fatal; one given less is.
         Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFactor = 1; timeoutFloorSeconds = 1 }) `
-            -BaselineSeconds 30 | Should-Be 30
+            -BaselineSeconds 30 -Workers 1 | Should-Be 30
     }
 
     It 'allows a one-second budget when the baseline is faster than a second' {
@@ -148,7 +148,7 @@ Describe 'Get-PSMutationTimeout' {
         # exactly 1 is allowed. Raise that minimum to 2 and this config starts being refused
         # for no reason, which is a mutant nothing else here can catch.
         Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFactor = 1; timeoutFloorSeconds = 1 }) `
-            -BaselineSeconds 0.5 | Should-Be 1
+            -BaselineSeconds 0.5 -Workers 1 | Should-Be 1
     }
 
     It 'reports the baseline to one decimal place' {
@@ -156,7 +156,7 @@ Describe 'Get-PSMutationTimeout' {
         # precision rather than merely the presence of a number. A message quoting
         # 0.66000000001s would be technically true and useless to read.
         $cfg = [pscustomobject]@{ timeoutFactor = 0.1; timeoutFloorSeconds = 0.1 }
-        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.66 } |
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.66 -Workers 1 } |
             Should-Throw -ExceptionMessage '*below the 0.7s*'
     }
 
@@ -164,25 +164,42 @@ Describe 'Get-PSMutationTimeout' {
         # A sub-second baseline must not license a 0s budget just because it is larger than
         # the baseline: 0 is never a budget, whatever the arithmetic says.
         $cfg = [pscustomobject]@{ timeoutFactor = 0.1; timeoutFloorSeconds = 0.1 }
-        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.2 } | Should-Throw
+        { Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 0.2 -Workers 1 } | Should-Throw
     }
 
     It 'honours a configured factor and floor' {
-        Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFactor = 10 }) -BaselineSeconds 10 | Should-Be 100
-        Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFloorSeconds = 60 }) -BaselineSeconds 1 | Should-Be 60
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFactor = 10 }) -BaselineSeconds 10 -Workers 1 | Should-Be 100
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFloorSeconds = 60 }) -BaselineSeconds 1 -Workers 1 | Should-Be 60
     }
 
     It 'takes whichever of floor and scaled-baseline is larger' {
         # Both configured, so neither default can mask a wrong comparison: the floor
         # wins for a quick baseline and the scaled value wins for a slow one.
         $cfg = [pscustomobject]@{ timeoutFactor = 2; timeoutFloorSeconds = 30 }
-        Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 5   | Should-Be 30   # floor
-        Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 100 | Should-Be 200  # scaled
+        Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 5   -Workers 1 | Should-Be 30   # floor
+        Get-PSMutationTimeout -Cfg $cfg -BaselineSeconds 100 -Workers 1 | Should-Be 200  # scaled
+    }
+
+    It 'multiplies the budget by the worker count' {
+        # #62, and the direction is what matters. The baseline is measured ONCE, ALONE; N mutants
+        # sharing the machine are slower for reasons that have nothing to do with the fault in
+        # them, and an overrun is scored KILLED -- so a budget sized for a solo run turns
+        # contention into kills and the score goes UP. A repo adopting parallelism to make the
+        # gate affordable would watch its score improve with no way to tell that from better
+        # tests.
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{}) -BaselineSeconds 10 -Workers 4 | Should-Be 160
+    }
+
+    It 'does not scale the FLOOR with the worker count' {
+        # The floor exists for suites so fast that the factor gives a near-zero budget, and a
+        # fast suite is still fast under contention. Scaled, eight workers would give a 0.2s
+        # suite two minutes per mutant and a wedged one would sit there for all of it.
+        Get-PSMutationTimeout -Cfg ([pscustomobject]@{}) -BaselineSeconds 0.2 -Workers 8 | Should-Be 15
     }
 
     It 'returns whole seconds' {
         # The value is handed to a job timeout that expects an int.
-        $t = Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFloorSeconds = 1 }) -BaselineSeconds 2.6
+        $t = Get-PSMutationTimeout -Cfg ([pscustomobject]@{ timeoutFloorSeconds = 1 }) -BaselineSeconds 2.6 -Workers 1
         $t | Should-HaveType ([int])
         $t | Should-Be 10
     }
@@ -287,7 +304,7 @@ Describe 'Assert-PSMutationConfig' {
         # set, a validator that rejected a legitimate key would still look correct.
         $all = '{ "mutate": ["a"], "tests": { "a": ["t"] }, "operators": ["BinaryOperator"],
                   "coveredLinesOnly": true, "sandboxSubtrees": ["src"], "timeoutFactor": 4,
-                  "timeoutFloorSeconds": 15, "equivalents": {}, "reportPath": "r.json",
+                  "timeoutFloorSeconds": 15, "equivalents": {}, "reportPath": "r.json", "workers": 4,
                   "thresholds": { "high": 85, "low": 70, "break": 100 } }'
         Assert-PSMutationConfig -Cfg ($all | ConvertFrom-Json)
     }
@@ -391,8 +408,8 @@ Describe 'the defaults the README documents' {
 
     It 'defaults timeoutFactor to 4 and timeoutFloorSeconds to 15' {
         # Read off one call each: the floor wins for a fast baseline, the factor for a slow one.
-        Get-PSMutationTimeout -Cfg ('{}' | ConvertFrom-Json) -BaselineSeconds 0.5 | Should-Be 15
-        Get-PSMutationTimeout -Cfg ('{}' | ConvertFrom-Json) -BaselineSeconds 100 | Should-Be 400
+        Get-PSMutationTimeout -Cfg ('{}' | ConvertFrom-Json) -BaselineSeconds 0.5 -Workers 1 | Should-Be 15
+        Get-PSMutationTimeout -Cfg ('{}' | ConvertFrom-Json) -BaselineSeconds 100 -Workers 1 | Should-Be 400
     }
 
     It 'defaults the colour bands to high 85 and low 70' {
@@ -1001,6 +1018,81 @@ Describe 'Get-PSMutationSurvivorBaselinePath' {
     }
 }
 
+Describe 'Get-PSMutationWorkerCount' {
+    It 'is ONE when the config says nothing' {
+        # Not a missing default. Parallel evaluation runs the consumer's covering suite N times
+        # concurrently, and a suite that binds a fixed port or an absolute temp path is not
+        # parallel-safe -- so turning it on by default would fail such a gate for a reason that
+        # is not about the tests' quality.
+        Get-PSMutationWorkerCount -Cfg ([pscustomobject]@{}) -ProcessorCount 24 | Should-Be 1
+    }
+
+    It 'takes the number the config asks for' {
+        Get-PSMutationWorkerCount -Cfg ([pscustomobject]@{ workers = 6 }) -ProcessorCount 24 | Should-Be 6
+    }
+
+    It 'reads ZERO as this machine, leaving one core for the host running them' {
+        # The sentinel. A run with no workers evaluates nothing, so zero has no other possible
+        # meaning here -- which is what lets one integer key express "auto" without a type union
+        # the config schema would have to spend a oneOf on.
+        Get-PSMutationWorkerCount -Cfg ([pscustomobject]@{ workers = 0 }) -ProcessorCount 24 | Should-Be 23
+    }
+
+    It 'still gives one worker on a single-core machine' {
+        # The floor, and it is reachable: ProcessorCount - 1 is 0 on one core, and a config
+        # asking for "this machine" wants a run rather than an error about its own hardware.
+        Get-PSMutationWorkerCount -Cfg ([pscustomobject]@{ workers = 0 }) -ProcessorCount 1 | Should-Be 1
+    }
+
+    It 'never asks for more workers than WaitAny can wait on' {
+        # The framework's ceiling, not a taste. The scheduler blocks on WaitHandle.WaitAny, which
+        # throws above 64 handles -- measured: 70 gives "The number of WaitHandles must be less
+        # than or equal to 64." Without this a 128-core machine asking for "this machine" would
+        # resolve to 127 and die at the first wait, on the largest machine anybody pointed it at.
+        Get-PSMutationWorkerCount -Cfg ([pscustomobject]@{ workers = 0 }) -ProcessorCount 128 | Should-Be 64
+        Get-PSMutationWorkerCount -Cfg ([pscustomobject]@{ workers = 500 }) -ProcessorCount 8 | Should-Be 64
+    }
+
+    It 'pins the ceiling to the number the framework actually enforces' {
+        # Pinned rather than left to whatever the constant says, because the test above is written
+        # in terms of the behaviour and would follow the constant anywhere. 64 is WaitAny's limit;
+        # raising it does not raise WaitAny's.
+        $script:PSMutationMaxWorkers | Should-Be 64
+    }
+
+    It 'asks the machine when nothing tells it otherwise' {
+        # The default the injected parameter replaces. Asserted against the same API the code
+        # reads rather than a number, because the point is that it asks at all -- a default of
+        # any literal would be a machine this test happens to run on.
+        Get-PSMutationWorkerCount -Cfg ([pscustomobject]@{ workers = 0 }) |
+            Should-Be ([math]::Max(1, [math]::Min([Environment]::ProcessorCount - 1, 64)))
+    }
+}
+
+Describe 'Get-PSMutationWorkerSandboxCount' {
+    It 'needs no extra sandbox for a serial run' {
+        # Worker 0 mutates the primary sandbox, so one worker means nothing extra is copied --
+        # which is what keeps a serial run costing exactly what it did before workers existed.
+        Get-PSMutationWorkerSandboxCount -Workers 1 -CandidateCount 100 | Should-Be 0
+    }
+
+    It 'copies the tree once per worker past the first' {
+        Get-PSMutationWorkerSandboxCount -Workers 4 -CandidateCount 100 | Should-Be 3
+    }
+
+    It 'never makes a sandbox no mutant can be dispatched into' {
+        # The -RecheckFrom case. Two surviving mutants on a 24-core machine would otherwise copy
+        # the tree 23 times to leave 21 workers idle, and a full subtree copy is not free.
+        Get-PSMutationWorkerSandboxCount -Workers 24 -CandidateCount 2 | Should-Be 1
+    }
+
+    It 'copies nothing at all when there are no mutants' {
+        # The floor, and it is reachable: a scoped run over a docs-only change selects nothing,
+        # and Min(workers, 0) - 1 is negative.
+        Get-PSMutationWorkerSandboxCount -Workers 8 -CandidateCount 0 | Should-Be 0
+    }
+}
+
 Describe 'Get-PSMutationRunDeadlineBudget' {
     It 'derives a bound no correct run can exceed' {
         # Baseline plus twice one per-mutant budget for every mutant. The x2 covers per-mutant
@@ -1009,14 +1101,14 @@ Describe 'Get-PSMutationRunDeadlineBudget' {
         # overnight hang, not to trim a run having a bad day, and a bound that fired on a
         # slow-but-working run would be switched off within a week.
         Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{}) -CandidateCount 10 `
-            -TimeoutSeconds 15 -BaselineSeconds 20 | Should-Be 320
+            -TimeoutSeconds 15 -BaselineSeconds 20 -Workers 1 | Should-Be 320
     }
 
     It 'lets an explicit setting win, including a small one' {
         # A caller who knows their run's shape can tighten it. Asserted with a value FAR below
         # the derived one, so this cannot pass by the derivation happening to agree.
         Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{ runTimeoutSeconds = 42 }) `
-            -CandidateCount 10 -TimeoutSeconds 15 -BaselineSeconds 20 | Should-Be 42
+            -CandidateCount 10 -TimeoutSeconds 15 -BaselineSeconds 20 -Workers 1 | Should-Be 42
     }
 
     It 'treats zero as disabled rather than as absent' {
@@ -1024,14 +1116,23 @@ Describe 'Get-PSMutationRunDeadlineBudget' {
         # wedged jobs should be able to say so, not tune a number they do not care about. Read as
         # absent, zero would silently re-derive the bound they asked not to have.
         Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{ runTimeoutSeconds = 0 }) `
-            -CandidateCount 10 -TimeoutSeconds 15 -BaselineSeconds 20 | Should-Be 0
+            -CandidateCount 10 -TimeoutSeconds 15 -BaselineSeconds 20 -Workers 1 | Should-Be 0
+    }
+
+    It 'DIVIDES the bound by the worker count' {
+        # The other half of the same arithmetic. The per-mutant budget already carries a factor
+        # of Workers, so leaving this undivided would let a parallel run take N^2 times the
+        # patience of the serial one it replaced -- a bound that has stopped bounding anything.
+        # 20 + (10 x 15 x 2 / 4) = 20 + 75.
+        Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{}) -CandidateCount 10 `
+            -TimeoutSeconds 15 -BaselineSeconds 20 -Workers 4 | Should-Be 95
     }
 
     It 'scales with the mutant count, not just the budget' {
         # A run of 1000 mutants is legitimately longer than one of 10, and a bound that ignored
         # the count would fire on every large repo.
-        $small = Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{}) -CandidateCount 10 -TimeoutSeconds 15 -BaselineSeconds 20
-        $large = Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{}) -CandidateCount 1000 -TimeoutSeconds 15 -BaselineSeconds 20
+        $small = Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{}) -CandidateCount 10 -TimeoutSeconds 15 -BaselineSeconds 20 -Workers 1
+        $large = Get-PSMutationRunDeadlineBudget -Cfg ([pscustomobject]@{}) -CandidateCount 1000 -TimeoutSeconds 15 -BaselineSeconds 20 -Workers 1
         $large | Should-BeGreaterThan $small
     }
 }

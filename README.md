@@ -253,6 +253,59 @@ A **loop-condition guard** drops any candidate inside a `while`/`for`/`do` condi
 flipped comparison can never spin an infinite loop — which is what makes in-process
 execution safe and fast.
 
+### Running mutants in parallel
+
+Wall-clock is `mutants × suite`, and that is the reason mutation testing gets set off and walked
+away from rather than run in an edit loop. `workers` evaluates several at once:
+
+```jsonc
+{ "workers": 0 }   // this machine: ProcessorCount - 1
+{ "workers": 4 }   // exactly four
+```
+
+**Capped at 64**, which is the framework's number rather than a taste: the scheduler blocks on
+`WaitHandle.WaitAny`, and that throws above 64 handles. Clamped rather than refused, because the
+worker count does not change the answer.
+
+Each worker gets **its own sandbox copy and its own Pester-loaded runspace**, so nothing is shared
+but the read-only candidate list. Finished mutants are recorded in candidate order rather than
+completion order, so the answer does not depend on which worker finished first. Measured against
+PSComplexity, whole config:
+
+| | mutants | wall | score |
+|---|---|---|---|
+| serial | 554 | 266s | 100 |
+| `workers: 8` | 554 | 100s | 100 |
+
+The two reports are **identical row for row** — same order, same verdicts, same `KilledBy` — with
+only the duration fields differing. That is asserted by a test that runs one fixture both ways and
+compares, because "deterministic regardless of scheduling" is a claim worth checking rather than
+reasoning about.
+
+**It is opt-in, and the default is 1.** Your covering suite runs N times concurrently; file
+isolation is complete, but nothing isolates a *process-wide* resource. Two kinds turned up in
+PSMutant's own suite and had to be fixed before it could switch this on, and they are the two to
+look for in yours:
+
+- **An environment variable a test WRITES.** A runspace does not get its own environment, so two
+  workers setting the same variable to different values race. Reading is safe; writing is not.
+- **A temp file named after `$PID`.** Every worker shares one process id — they are runspaces in
+  one process — so a pid-named fixture is one they all write and all delete. `$PID` meant "this
+  run" only while one process ran one suite.
+
+The symptom in both cases is a **verdict**, not an error: a flipped value fails an assertion that
+should have passed, which is scored as a killed mutant. So turning this on by default would move
+your score for a reason that is not about your tests' quality. Try it, and if the score moves, the
+two runs disagree about your suite rather than about your code.
+
+**The per-mutant timeout is multiplied by `workers`.** The baseline is measured once, alone, with
+the machine to itself; N mutants sharing it are slower for reasons that have nothing to do with the
+fault injected in them — and an overrun is scored **Killed**, so a budget sized for a solo run turns
+ordinary contention into kills and the score goes **up**. A repo adopting parallelism to make the
+gate affordable would watch its score improve with no way to tell that from having written better
+tests. The cost of the other direction is that a genuinely non-terminating mutant takes N times
+longer to cut off, bounded by the run deadline, which is patience rather than a wrong answer.
+
 ## Operators
 
 | Name | Mutation |
@@ -314,7 +367,8 @@ schema cannot give.
 | `operators` | Operator classes to inject. Default is the four expression operators; `StringLiteral`, `ConditionalBoundary`, `ConditionForcing` and `ReturnValue` are opt-in. |
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |
-| `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, baseline × factor)` (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
+| `workers` | How many mutants to evaluate at once, each in its own sandbox copy and its own Pester runspace. Default `1`; `0` means this machine (`ProcessorCount - 1`). See [Running mutants in parallel](#running-mutants-in-parallel) — it is opt-in for a reason. |
+| `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, baseline × factor × workers)` (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
 | `equivalents` | `file:function:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator. The run fails if a declaration is killed, matches nothing, **or matches more than one mutant** — a declaration argues about one mutant, so matching several is ambiguous rather than a broader claim. `description` is `<original> -> <mutated>`, taken from the source. `file:line:description` is still accepted, and is the only form available for code outside any function; prefer the function form, because a line number moves whenever anything above it is edited. |
 | `thresholds.high` / `thresholds.low` | Colour bands for the console score: green at or above `high`, yellow at or above `low`, red below (defaults 85 / 70). They affect the printed colour only, never the exit code. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |

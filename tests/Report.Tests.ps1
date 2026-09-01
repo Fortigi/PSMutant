@@ -2,6 +2,12 @@
 # Also the covering suite for self-mutating src/PSMutation.Report.ps1 - keep it self-contained.
 
 BeforeAll {
+    # UNIQUE PER RUN, not per process. $PID was unique enough while one process ran one suite;
+    # `workers` runs several mutants of the same file at once, in separate runspaces of ONE
+    # process, each running THIS file -- so a pid-named fixture is a fixture two of them share,
+    # and one's cleanup deletes the other's file mid-test. Measured: it killed a mutant declared
+    # equivalent, which the report then shows as a stale declaration rather than as a race.
+    $script:tag = [System.Guid]::NewGuid().ToString('N')
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     . (Join-Path $src 'PSMutation.Output.ps1')
     . (Join-Path $src 'PSMutation.Report.ps1')
@@ -178,7 +184,7 @@ Describe 'Get-PSMutationExitCode' {
 
 Describe 'Write-PSMutationReport' {
     It 'writes a JSON report with the score and survivors' {
-        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-report-$PID/report.json"
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-report-$PID-$($script:tag)/report.json"
         try {
             $summary = Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds ([pscustomobject]@{ break = $null })
             $summary.Score | Should-Be 66.7
@@ -195,7 +201,7 @@ Describe 'Write-PSMutationReport' {
         # -RecheckFrom matches mutants by AST-walk id, which is only meaningful for
         # identical source and operators. If these two fields stop being written, a
         # recheck cannot tell that the code moved and would recheck the wrong mutants.
-        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-report2-$PID/report.json"
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-report2-$PID-$($script:tag)/report.json"
         try {
             Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null `
                 -SourceHashes @{ 'a.ps1' = 'abc123' } -Operators @('BooleanLiteral', 'BinaryOperator') | Out-Null
@@ -514,7 +520,7 @@ Describe 'the contract a consumer actually depends on' {
     }
 
     It 'writes exactly the documented top-level report fields' {
-        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-contract-$PID/report.json"
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-contract-$PID-$($script:tag)/report.json"
         try {
             Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
             (Get-Content $out -Raw | ConvertFrom-Json).PSObject.Properties.Name |
@@ -1023,7 +1029,7 @@ Describe 'New-PSMutationProvenance' {
 
 Describe 'the provenance a report carries' {
     It 'writes the block into a full report' {
-        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-prov-$PID/report.json"
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-prov-$PID-$($script:tag)/report.json"
         try {
             $prov = New-PSMutationProvenance -ModuleVersion '9.9.9' -BaselineSeconds 1 -TotalSeconds 2 -PerMutantTimeoutSeconds 15
             Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Provenance $prov | Out-Null
@@ -1043,7 +1049,7 @@ Describe 'the provenance a report carries' {
     It 'still writes a report when no provenance is supplied' {
         # The parameter is optional so a caller that has not been updated -- or a test --
         # gets a report rather than an error. The fields are simply absent.
-        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-noprov-$PID/report.json"
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-noprov-$PID-$($script:tag)/report.json"
         try {
             Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
             (Get-Content $out -Raw | ConvertFrom-Json).mutationScore | Should-Be 66.7

@@ -8,6 +8,12 @@
 # against a real child runspace each one burns the whole per-mutant deadline.
 
 BeforeAll {
+    # UNIQUE PER RUN, not per process. $PID was unique enough while one process ran one suite;
+    # `workers` runs several mutants of the same file at once, in separate runspaces of ONE
+    # process, each running THIS file -- so a pid-named fixture is a fixture two of them share,
+    # and one's cleanup deletes the other's file mid-test. Measured: it killed a mutant declared
+    # equivalent, which the report then shows as a stale declaration rather than as a race.
+    $script:tag = [System.Guid]::NewGuid().ToString('N')
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     . (Join-Path $src 'PSMutation.Operators.ps1')
     . (Join-Path $src 'PSMutation.Sandbox.ps1')
@@ -15,7 +21,7 @@ BeforeAll {
     . (Join-Path $src 'PSMutation.Output.ps1')
     . (Join-Path $src 'PSMutation.Runner.ps1')
 
-    $script:fixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-runner-$PID.ps1"
+    $script:fixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-runner-$PID-$($script:tag).ps1"
     @'
 function Test-Fixture {
     param($x)
@@ -28,6 +34,30 @@ function Test-Fixture {
     # directory rather than temp itself, so a test can assert the file lands INSIDE it.
     $script:coverageDir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-cov-$([System.Guid]::NewGuid().ToString('N'))"
     New-Item -ItemType Directory -Path $script:coverageDir -Force | Out-Null
+
+    # What a FINISHED job looks like from the scheduler's side. Dispatch is asynchronous, so a
+    # test that wants to control a mutant's verdict mocks the PAIR: Start hands back a job whose
+    # handle is already signalled, and Complete answers with the verdict under test. Nothing here
+    # touches a runspace, which is what keeps this file cheap enough to be Runner.ps1's covering
+    # suite -- mutating a timeout necessarily produces mutants that DISABLE it, and against a real
+    # child each one burns the whole per-mutant deadline.
+    function StubJob {
+        param($Source, [int]$Index = 0, [double]$Seconds = 0, $Original = '', [bool]$Completed = $true,
+            [int]$WorkerId = 0)
+        return [pscustomobject]@{
+            WorkerId        = $WorkerId
+            Shell           = $null
+            Async           = [pscustomobject]@{
+                IsCompleted     = $Completed
+                AsyncWaitHandle = [System.Threading.ManualResetEvent]::new($Completed)
+            }
+            Candidate       = $Source
+            Source          = $Source
+            Index           = $Index
+            OriginalContent = $Original
+            Clock           = [pscustomobject]@{ Elapsed = [timespan]::FromSeconds($Seconds) }
+        }
+    }
 }
 
 AfterAll {
@@ -112,6 +142,203 @@ Describe 'Get-PSMutationProgressLine' {
     }
 }
 
+# The pure scheduler decisions come FIRST in this file, and the order is load-bearing. Several
+# mutants of them do not produce a wrong answer but an INFINITE LOOP in Invoke-PSMutationLoop --
+# a sweep that never collects anything, a dispatch that never dispatches. Reached through a loop
+# test, each costs the whole per-mutant budget and is scored TimedOut; reached through the unit
+# tests below, each fails in milliseconds. Pester stops a mutant's suite at the first failure, so
+# whichever Describe runs first decides which of those two happens.
+
+Describe 'Get-PSMutationFreeWorker' {
+    It 'takes the LOWEST idle worker, so the choice is a fact rather than an enumeration order' {
+        Get-PSMutationFreeWorker -InFlight @('busy', $null, $null) | Should-Be 1
+    }
+
+    It 'reports -1 when every worker is busy' {
+        # Not 0 and not $null: the dispatch loop compares against zero to decide whether to stop,
+        # and either of those would look like "worker 0 is free" and start a second mutant on a
+        # [PowerShell] instance that is already running one, which throws.
+        Get-PSMutationFreeWorker -InFlight @('busy', 'busy') | Should-Be -1
+    }
+
+    It 'binds an IDLE POOL, which is an array whose every element is null' {
+        # PowerShell's mandatory check unwraps a single-element collection before testing it, so a
+        # one-worker pool with nothing in flight is `@($null)` and binds as null -- refused unless
+        # the parameter also says [AllowNull()]. The serial case, which every other test here
+        # exercises, failed at the first dispatch while every parallel one bound fine.
+        Get-PSMutationFreeWorker -InFlight ([object[]]::new(1)) | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationJobState' {
+    It 'asks whether the child FINISHED before it asks the clock' {
+        # A child that finished a hair before its budget ran out has a verdict, and reading the
+        # clock first would throw that verdict away and score the mutant Killed on a timeout it
+        # did not have -- toward the flattering answer.
+        Get-PSMutationJobState -Completed $true -ElapsedSeconds 99 -TimeoutSeconds 5 | Should-Be 'Complete'
+    }
+
+    It 'expires a child that is still running past its budget' {
+        Get-PSMutationJobState -Completed $false -ElapsedSeconds 5 -TimeoutSeconds 5 | Should-Be 'Expired'
+    }
+
+    It 'leaves a child inside its budget running' {
+        Get-PSMutationJobState -Completed $false -ElapsedSeconds 4.9 -TimeoutSeconds 5 | Should-Be 'Running'
+    }
+}
+
+Describe 'Get-PSMutationWaitBudget' {
+    It 'waits only as long as the SOONEST budget still has left' {
+        # The least, not the average and not a fixed poll interval: a mutant is cut off on its own
+        # budget, and one that expires while the scheduler is asleep on somebody else's clock has
+        # overrun by however long the nap was.
+        Get-PSMutationWaitBudget -ElapsedSeconds @(1.0, 9.5, 3.0) -TimeoutSeconds 10 | Should-Be 500
+    }
+
+    It 'never returns zero, however far past its budget a mutant is' {
+        # A zero timeout makes WaitAny a non-blocking poll, so a mutant already past its budget
+        # would spin the scheduler at full speed until the sweep reached it.
+        Get-PSMutationWaitBudget -ElapsedSeconds @(99) -TimeoutSeconds 10 | Should-Be 1
+    }
+
+    It 'falls back to the whole budget when nothing has started yet' {
+        Get-PSMutationWaitBudget -ElapsedSeconds @() -TimeoutSeconds 7 | Should-Be 7000
+    }
+}
+
+Describe 'Get-PSMutationLoopFault' {
+    It 'reports a STALLED mutant ahead of an over-budget run' {
+        # The order is the answer's quality. A mutant whose own clock says its bound never fired
+        # names the CAUSE; a run past its total budget names only the symptom, and both are true
+        # at once on a machine that slept mid-run.
+        Get-PSMutationLoopFault -MutantSeconds 52500 -ElapsedSeconds 60000 -TimeoutSeconds 15 `
+            -DeadlineSeconds 100 -Index 3 -Total 9 | Should-MatchString 'suspended or wedged'
+    }
+
+    It 'falls through to the run budget when no single mutant is to blame' {
+        Get-PSMutationLoopFault -MutantSeconds 2 -ElapsedSeconds 600 -TimeoutSeconds 15 `
+            -DeadlineSeconds 100 -Index 3 -Total 9 | Should-MatchString 'passed its wall-clock budget'
+    }
+
+    It 'says nothing about a run that is merely working' {
+        Should-BeNull -Actual (Get-PSMutationLoopFault -MutantSeconds 2 -ElapsedSeconds 30 `
+                -TimeoutSeconds 15 -DeadlineSeconds 100 -Index 3 -Total 9)
+    }
+}
+
+Describe 'the scheduler retires in candidate order' {
+    BeforeAll {
+        $script:rowCand = [pscustomobject]@{ Id = 1; Function = 'F'; File = 'a.ps1'; Line = 1
+            Operator = 'BinaryOperator'; Description = 'x' }
+        function StubContext {
+            param($Sink, [int]$Total = 3)
+            return [pscustomobject]@{
+                Candidates = @(); Total = $Total; Roots = @('/s'); SandboxRoot = '/s'
+                TestsByFile = @{}; AllTests = @('t.ps1'); TimeoutSeconds = 15
+                RecordAllKillers = $false; Quiet = $true; DeadlineSeconds = 0
+                Originals = @{}; Sink = $Sink
+                RunClock = [System.Diagnostics.Stopwatch]::StartNew()
+            }
+        }
+        function StubParked {
+            param([string]$Id)
+            return [pscustomobject]@{
+                Row = [pscustomobject]@{ Id = $Id; File = 'a.ps1'; Line = 1; Description = 'x'; Status = 'Killed' }
+                Seconds = 0.0
+            }
+        }
+    }
+
+    It 'records finished mutants in candidate order, not completion order' {
+        # Workers finish out of order -- a killed mutant stops at the first failing test and a
+        # survivor runs the whole suite, a 6x spread measured on this repo's sibling -- and a
+        # report whose row order depended on that would differ between two runs of one config.
+        $sink = [System.Collections.Generic.List[object]]::new()
+        $sched = [pscustomobject]@{
+            InFlight = [object[]]::new(3)
+            Parked = @{ 2 = (StubParked -Id 'third'); 0 = (StubParked -Id 'first')
+                1 = (StubParked -Id 'second') }
+            Next = 3; Retired = 0
+        }
+        Complete-PSMutationRetirement -Schedule $sched -Context (StubContext -Sink $sink)
+        @($sink | ForEach-Object { $_.Id }) | Should-BeCollection @('first', 'second', 'third')
+        $sched.Retired | Should-Be 3
+    }
+
+    It 'holds a finished mutant back while an earlier one is still running' {
+        # Which is what makes the partial report an interrupted run writes a genuine PREFIX of
+        # the full one, rather than whichever mutants happened to land first.
+        $sink = [System.Collections.Generic.List[object]]::new()
+        $sched = [pscustomobject]@{
+            InFlight = [object[]]::new(3); Parked = @{ 1 = (StubParked -Id 'second') }
+            Next = 2; Retired = 0
+        }
+        Complete-PSMutationRetirement -Schedule $sched -Context (StubContext -Sink $sink)
+        $sink.Count | Should-Be 0
+        $sched.Retired | Should-Be 0
+        # And it is still parked, not dropped: the run would otherwise report fewer mutants than
+        # it evaluated, which is the one arithmetic error a mutation score must never make.
+        $sched.Parked.ContainsKey(1) | Should-BeTrue
+    }
+}
+
+Describe 'the scheduler sweep' {
+    It 'passes over an idle worker and one whose mutant is still running' {
+        # Two `continue`s, and neither is decoration: sweeping an idle slot would collect a $null
+        # job, and collecting a running one would EndInvoke a pipeline that has not finished.
+        $cand = [pscustomobject]@{ Id = 1; Function = 'F'; File = 'a.ps1'; Line = 1
+            Operator = 'BinaryOperator'; Description = 'x' }
+        $running = StubJob -Source $cand -Index 0 -Completed $false -WorkerId 1
+        $sched = [pscustomobject]@{
+            InFlight = [object[]]@($null, $running); Parked = @{}; Next = 1; Retired = 0
+        }
+        $ctx = [pscustomobject]@{ TimeoutSeconds = 3600; SandboxRoot = '/s' }
+        Complete-PSMutationSweep -Schedule $sched -Context $ctx
+        $sched.Parked.Count | Should-Be 0
+        [object]::ReferenceEquals($sched.InFlight[1], $running) | Should-BeTrue
+    }
+
+    It 'PARKS a worker whose mutant has finished, and says it was not expired' {
+        # The other arm, and the one the idle/running test cannot reach. Forcing the guard so that
+        # every job looks Running leaves nothing ever swept -- which is not a wrong answer but an
+        # infinite loop, so it has to be caught here rather than by a loop test discovering it as
+        # a timeout.
+        $cand = [pscustomobject]@{ Id = 1; Function = 'F'; Line = 1
+            Operator = 'BinaryOperator'; Description = 'x'
+            File = (Join-Path ([System.IO.Path]::GetTempPath()) 'a.ps1') }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $sched = [pscustomobject]@{
+            InFlight = [object[]]@((StubJob -Source $cand -Index 4 -WorkerId 0)); Parked = @{}
+            Next = 5; Retired = 0
+        }
+        Complete-PSMutationSweep -Schedule $sched -Context ([pscustomobject]@{ TimeoutSeconds = 3600
+                SandboxRoot = [System.IO.Path]::GetTempPath() })
+        # Parked under its CANDIDATE index, not the worker's, or the retirement order is scheduling.
+        $sched.Parked.ContainsKey(4) | Should-BeTrue
+        $sched.InFlight[0] | Should-BeNull
+        # A finished job is collected for its verdict, never stopped. Reversed, every completed
+        # mutant would be scored TimedOut -- which counts with the kills, so the run would look
+        # fine and the report would say the suite never finished.
+        Should-Invoke Complete-PSMutantEvaluation -Exactly 1 -ParameterFilter { -not $Expired }
+    }
+
+    It 'EXPIRES a worker whose mutant outlived its budget' {
+        $cand = [pscustomobject]@{ Id = 1; Function = 'F'; Line = 1
+            Operator = 'BinaryOperator'; Description = 'x'
+            File = (Join-Path ([System.IO.Path]::GetTempPath()) 'a.ps1') }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'TimedOut'; Killers = @() } }
+        $sched = [pscustomobject]@{
+            InFlight = [object[]]@((StubJob -Source $cand -Index 0 -WorkerId 0 -Seconds 99 -Completed $false))
+            Parked = @{}; Next = 1; Retired = 0
+        }
+        Complete-PSMutationSweep -Schedule $sched -Context ([pscustomobject]@{ TimeoutSeconds = 5
+                SandboxRoot = [System.IO.Path]::GetTempPath() })
+        $sched.Parked.ContainsKey(0) | Should-BeTrue
+        Should-Invoke Complete-PSMutantEvaluation -Exactly 1 -ParameterFilter { $Expired }
+    }
+}
+
+
 Describe 'Invoke-PSMutationLoop' {
     It 'accepts an empty candidate set and returns no results' {
         # Reachable two ways: a mutate file with no covered candidates, and a
@@ -127,7 +354,8 @@ Describe 'Invoke-PSMutationLoop' {
         # being honoured -- get it wrong and every mutant runs the entire suite,
         # which is correct but turns a minutes-long run into an hours-long one.
         $script:seenTests = $null
-        Mock Invoke-PSMutant { $script:seenTests = $CoveringTests; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Start-PSMutantEvaluation { $script:seenTests = $CoveringTests; StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -143,7 +371,8 @@ Describe 'Invoke-PSMutationLoop' {
 
     It 'renders a progress line naming the mutant it just finished' {
         # Every other test here passes -Quiet, so this branch would otherwise never run.
-        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         Mock Write-PSMutationOutput { }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
@@ -163,7 +392,8 @@ Describe 'Invoke-PSMutationLoop' {
         # switch on, because Write-PSMutationOutput is the single place -Quiet is honoured
         # -- so what has to be proven here is that the switch is FORWARDED. A loop that
         # dropped it would print for real while any "was not called" assertion stayed green.
-        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         Mock Write-PSMutationOutput { }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
@@ -185,7 +415,8 @@ Describe 'Invoke-PSMutationLoop' {
         # test's value -- with the mock never firing at all, which is exactly the case it exists
         # to catch.
         $script:seenTests = $null
-        Mock Invoke-PSMutant { $script:seenTests = $CoveringTests; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Start-PSMutantEvaluation { $script:seenTests = $CoveringTests; StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -293,33 +524,32 @@ Describe 'Invoke-PSMutationBaseline' {
     }
 }
 
-Describe 'Invoke-PSMutant' {
-    # Invoke-PSMutant is also exercised for real in tests/Mutant.Tests.ps1, against a
-    # live child runspace. These mocked versions exist so this file alone can be the
-    # self-mutation covering suite for Runner.ps1: mutating a timeout mechanism produces
-    # mutants that DISABLE the timeout, and against a real runspace each of those runs
-    # until the outer per-mutant deadline -- minutes apiece, for the same verdict.
-    BeforeEach {
-        $script:target = Join-Path $TestDrive 'mutable.ps1'
-        $script:before = "function Get-Thing { return 1 }`n"
-        [System.IO.File]::WriteAllText($script:target, $script:before)
-        $script:candidate = [pscustomobject]@{ File = $script:target }
-    }
-
+Describe 'Get-PSMutationVerdict' {
     It 'reports Survived only when the suite still fully passes' {
-        Mock Invoke-PSBoundedPester { [pscustomobject]@{ Result = 'Passed'; Killers = @() } }
-        Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 |
-            Select-Object -ExpandProperty Status | Should-Be 'Survived'
+        (Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Passed'; Killers = @() })).Status |
+            Should-Be 'Survived'
     }
 
     It 'reports TimedOut apart from Killed, because a hang is not evidence' {
         # The bounded runner has always distinguished this; the verdict was discarded one
         # line later, so a suite that was merely too slow scored kills it never earned.
-        Mock Invoke-PSBoundedPester { [pscustomobject]@{ Result = 'TimedOut'; Killers = @() } }
-        Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 |
-            Select-Object -ExpandProperty Status | Should-Be 'TimedOut'
+        (Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'TimedOut'; Killers = @() })).Status |
+            Should-Be 'TimedOut'
+    }
+
+    It 'reports Killed for any outcome that is not a clean pass' {
+        # Anything but Passed is a kill, which is why an outcome that means "we could
+        # not tell" must never reach here -- see Receive-PSMutationJob.
+        $v = Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @('a test') })
+        $v.Status | Should-Be 'Killed'
+        $v.Killers | Should-BeCollection @('a test')
+    }
+
+    It 'carries an EMPTY killer list for a survivor and a timeout, never none' {
+        # "Nothing killed it" and "we did not look" must not be the same value, and they differ
+        # most at exactly these two verdicts.
+        @((Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Passed'; Killers = @('x') })).Killers).Count | Should-Be 0
+        @((Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'TimedOut'; Killers = @('x') })).Killers).Count | Should-Be 0
     }
 
     It 'refuses an outcome it does not model rather than scoring it' {
@@ -327,61 +557,92 @@ Describe 'Invoke-PSMutant' {
         # scored Killed, so a Pester that grew a third run-level state would report a perfect
         # score with no test failing and nothing to notice. A rename fails loudly at the
         # baseline; a widening does not, which is why the set is closed here.
-        Mock Invoke-PSBoundedPester { [pscustomobject]@{ Result = 'Inconclusive'; Killers = @() } }
-        { Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-                -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } |
+        { Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Inconclusive'; Killers = @() }) } |
             Should-Throw -ExceptionMessage '*flatters the score*'
         # Asserted on the LAST fragment of the message, not the first. Breaking a `+` between
         # the fragments raises a conversion error that QUOTES its left operand, so a pattern
         # taken from an earlier fragment matches the mutant's own failure and the assertion
         # passes against a message that was never built.
     }
+}
 
-    It 'reports Killed for any outcome that is not a clean pass' -ForEach @(
-        @{ Outcome = 'Failed' }
-    ) {
-        # Anything but Passed is a kill, which is why an outcome that means "we could
-        # not tell" must never reach here -- see Invoke-PSBoundedPester.
-        Mock Invoke-PSBoundedPester { [pscustomobject]@{ Result = $Outcome; Killers = @() } }
-        Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'mutated' `
-            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 |
-            Select-Object -ExpandProperty Status | Should-Be 'Killed'
+Describe 'one mutant, started and completed' {
+    BeforeEach {
+        $script:target = Join-Path $TestDrive 'mutable.ps1'
+        $script:before = "function Get-Thing { return 1 }`n"
+        [System.IO.File]::WriteAllText($script:target, $script:before)
+        $script:candidate = [pscustomobject]@{ File = $script:target }
+        $script:stub = [pscustomobject]@{
+            WorkerId = 0; Shell = $null; Async = $null
+            Candidate = $script:candidate; Source = $script:candidate; Index = 0
+            OriginalContent = $script:before
+            Clock = [pscustomobject]@{ Elapsed = [timespan]::Zero }
+        }
     }
 
-    It 'writes the mutant into the file and restores it afterwards' {
-        # The restore is what lets the next mutant start from clean source. Miss it and
-        # every later mutant is evaluated against an accumulating pile of earlier ones.
-        Mock Invoke-PSBoundedPester { $script:during = [System.IO.File]::ReadAllText($script:target); [pscustomobject]@{ Result = 'Passed'; Killers = @() } }
+    It 'writes the mutant into the file, and puts it back when the job is collected' {
+        # The restore is what lets the next mutant on this worker start from clean source. Miss
+        # it and every later mutant is evaluated against an accumulating pile of earlier ones.
+        # Split across the pair now, so both halves are asserted where they happen.
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
 
-        Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'MUTATED' `
-            -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 | Out-Null
+        $job = Start-PSMutantEvaluation -Candidate $script:candidate -Source $script:candidate -Index 0 `
+            -MutatedContent 'MUTATED' -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -WorkerId 0
+        [System.IO.File]::ReadAllText($script:target) | Should-Be 'MUTATED'
 
-        $script:during | Should-Be 'MUTATED'
+        $null = $job.Async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds(30))
+        (Complete-PSMutantEvaluation -Job $job).Status | Should-Be 'Survived'
         [System.IO.File]::ReadAllText($script:target) | Should-Be $script:before
     }
 
     It 'restores the file even when the covering run throws' {
-        # A child that cannot be evaluated now throws rather than scoring a kill, so the
-        # restore has to survive that path too -- otherwise one broken mutant leaves the
-        # sandbox corrupted for every mutant after it.
-        Mock Invoke-PSBoundedPester { throw 'child exploded' }
-        { Invoke-PSMutant -Candidate $script:candidate -MutatedContent 'MUTATED' `
-                -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 5 } | Should-Throw
+        # A child that cannot be evaluated throws rather than scoring a kill, so the restore has
+        # to survive that path too -- otherwise one broken mutant leaves the sandbox corrupted
+        # for every mutant after it.
+        [System.IO.File]::WriteAllText($script:target, 'MUTATED')
+        Mock Receive-PSMutationJob { throw 'child exploded' }
+        { Complete-PSMutantEvaluation -Job $script:stub } | Should-Throw
         [System.IO.File]::ReadAllText($script:target) | Should-Be $script:before
+    }
+
+    It 'collects an EXPIRED job by stopping it, not by asking it for a verdict' {
+        # The scheduler decides which of the two happened, because only it knows what else is in
+        # flight. Asking here would mean a second clock reading and a second answer to a question
+        # already settled -- and a job that is still running has no verdict to end-invoke for.
+        Mock Stop-PSMutationJob { [pscustomobject]@{ Result = 'TimedOut'; Killers = @() } }
+        Mock Receive-PSMutationJob { throw 'must not be asked' }
+        (Complete-PSMutantEvaluation -Job $script:stub -Expired).Status | Should-Be 'TimedOut'
+        Should-Invoke Stop-PSMutationJob -Exactly 1
     }
 }
 
-Describe 'Invoke-PSBoundedPester' {
-    # Get-PSMutationPesterPath is NOT mocked here any more. The runspace is warmed once and
+Describe "a worker's child runspace" {
+    # Get-PSMutationPesterPath is NOT mocked here. The runspace is warmed once per worker and
     # reused, and warming it means really importing Pester -- so a fake path would break the
     # import rather than being ignored the way it was when the child script carried it.
+    BeforeAll {
+        $script:childCand = [pscustomobject]@{ File = (Join-Path $TestDrive 'child.ps1') }
+        Set-Content -LiteralPath $script:childCand.File -Value 'x'
+
+        # Defined in BeforeAll, not beside it. A bare `function` inside a Describe is declared
+        # during DISCOVERY and is gone by the time a test runs, so every test here failed with
+        # "not recognized" while the file read perfectly well.
+        function Invoke-ChildForTest {
+            param([int]$TimeoutSeconds = 10)
+            $job = Start-PSMutantEvaluation -Candidate $script:childCand -Source $script:childCand -Index 0 `
+                -MutatedContent 'x' -OriginalContent 'x' -CoveringTests @('t.Tests.ps1') -WorkerId 0
+            $done = $job.Async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))
+            return $done ? (Receive-PSMutationJob -Job $job) : (Stop-PSMutationJob -Job $job)
+        }
+    }
+
     It 'hands back the verdict the child produced' {
-        Mock Get-PSMutationWarmPesterScript { 'param($tests) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
-        (Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10).Result | Should-Be 'Passed'
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
+        (Invoke-ChildForTest).Result | Should-Be 'Passed'
     }
 
     It 'fails loudly when the child returns no verdict, and says what the child said' {
-        # A child that returned nothing proved nothing, but Invoke-PSMutant reads
+        # A child that returned nothing proved nothing, but the verdict reader takes
         # anything-but-Passed as a kill -- so silence used to score as a caught fault.
         # That is how the Pester version collision produced a fake 100%.
         #
@@ -389,9 +650,8 @@ Describe 'Invoke-PSBoundedPester' {
         # literal prefix is not discriminating: if the concatenation breaks, the
         # resulting conversion error QUOTES the prefix, so a prefix-only pattern still
         # matches and the diagnosis is silently lost.
-        Mock Get-PSMutationWarmPesterScript { 'param($tests) Write-Error "child said no"' }
-        { Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10 } |
-            Should-Throw -ExceptionMessage '*produced no result*child said no*'
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) Write-Error "child said no"' }
+        { Invoke-ChildForTest } | Should-Throw -ExceptionMessage '*produced no result*child said no*'
     }
 
     It 'takes the LAST thing the child emitted as the verdict' {
@@ -404,8 +664,8 @@ Describe 'Invoke-PSBoundedPester' {
         # enumerates .Result across the collection and the first value can still look like a
         # verdict. Two records with DIFFERENT verdicts is what distinguishes "last" from "any":
         # take both and the outcome is 'Failed Passed', which no known outcome matches.
-        Mock Get-PSMutationWarmPesterScript { 'param($tests) [pscustomobject]@{ Result = "Failed"; Killers = @() }; [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
-        (Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 10).Result | Should-Be 'Passed'
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Failed"; Killers = @() }; [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
+        (Invoke-ChildForTest).Result | Should-Be 'Passed'
     }
 
     It 'cuts off a child that overruns and reports TimedOut' {
@@ -414,18 +674,25 @@ Describe 'Invoke-PSBoundedPester' {
         # spinning a mutated loop -- same branch, a fraction of the wall clock.
         #
         # ONE second, not two, and the second matters more than it looks. This file is the
-        # covering suite for src/PSMutation.Runner.ps1, so every one of that file's 70 mutants
-        # re-runs this test and waits out the deadline: at two seconds that was ~140s of a 277s
-        # self-mutation run spent sleeping. One is the floor -- TimeoutSeconds is [int] and zero
-        # expires immediately, which is a different branch the config gate refuses outright.
-        Mock Get-PSMutationWarmPesterScript { 'param($tests) Start-Sleep -Seconds 30' }
+        # covering suite for src/PSMutation.Runner.ps1, so every one of that file's mutants
+        # re-runs this test and waits out the deadline.
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) Start-Sleep -Seconds 30' }
 
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $outcome = (Invoke-PSBoundedPester -CoveringTests @('t.Tests.ps1') -TimeoutSeconds 1).Result
+        $outcome = (Invoke-ChildForTest -TimeoutSeconds 1).Result
         $sw.Stop()
 
         $outcome | Should-Be 'TimedOut'
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 20   # cut off, not waited out
+    }
+
+    It 'discards the worker whose child it had to stop' {
+        # Stop() leaves a runspace unusable, so handing it to the next mutant would fail every
+        # one of them -- and anything-but-Passed is a kill, so the run would report a perfect
+        # score after the first timeout.
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) Start-Sleep -Seconds 30' }
+        $null = Invoke-ChildForTest -TimeoutSeconds 1
+        $script:PSMutationWarmShell.ContainsKey(0) | Should-BeFalse
     }
 }
 
@@ -713,7 +980,8 @@ Describe 'the mutant row the report publishes' {
         # Mutated are deliberately absent. Widening it to project the whole candidate would
         # re-publish the undeclared nine-field object #48 just withdrew, through the report
         # instead of through an export.
-        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $cand = [pscustomobject]@{
             Id = 7; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = '-eq -> -ne'; StartOffset = 0; EndOffset = 1; Mutated = ' '
@@ -743,7 +1011,8 @@ Describe 'the mutate file is read once per FILE, not twice per mutant' {
     # mutant is HANDED the original text instead of fetching it, and that is observable.
     It 'hands every mutant of a file the same original text, read by the loop' {
         $script:seenOriginals = @()
-        Mock Invoke-PSMutant { $script:seenOriginals += $OriginalContent; 'Killed' }
+        Mock Start-PSMutantEvaluation { $script:seenOriginals += $OriginalContent; StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $cands = 1..5 | ForEach-Object {
             [pscustomobject]@{
                 Id = $_; Function = ''; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
@@ -773,13 +1042,14 @@ Describe 'the mutate file is read once per FILE, not twice per mutant' {
         $original = [System.IO.File]::ReadAllText($script:fixture)
         $script:seenOriginals = @()
         $script:calls = 0
-        Mock Invoke-PSMutant {
+        Mock Start-PSMutantEvaluation {
             $script:calls++
             $script:seenOriginals += $OriginalContent
             # Corrupt the file behind the loop's back, once, after the first mutant.
             if ($script:calls -eq 1) { [System.IO.File]::WriteAllText($script:fixture, 'CORRUPTED') }
-            'Killed'
+            StubJob -Source $Source -Index $Index -WorkerId $WorkerId
         }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $cands = 1..2 | ForEach-Object {
             [pscustomobject]@{
                 Id = $_; Function = ''; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
@@ -842,7 +1112,8 @@ Describe 'the loop is bounded as a whole' {
         # 600ms a mutant against a 1s budget: the check after the first passes, the one after the
         # second does not. Three candidates so the throw is demonstrably mid-loop rather than
         # something that only happens once there is nothing left to do.
-        Mock Invoke-PSMutant { Start-Sleep -Milliseconds 600; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { Start-Sleep -Milliseconds 600; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         { Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) `
                 -Candidates @($script:dCand, $script:dCand, $script:dCand) -TestsByFile @{} -AllTests @('t.ps1') `
                 -TimeoutSeconds 5 -SandboxRoot $TestDrive -Quiet -DeadlineSeconds 1 } |
@@ -853,7 +1124,8 @@ Describe 'the loop is bounded as a whole' {
         # The whole point of stopping BETWEEN mutants rather than at the end. The orchestrator's
         # finally writes a partial report from this list, so a hang now says how far it got
         # instead of leaving the zero-byte report the observed case did.
-        Mock Invoke-PSMutant { Start-Sleep -Milliseconds 600; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { Start-Sleep -Milliseconds 600; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $sink = [System.Collections.Generic.List[object]]::new()
         try {
             Invoke-PSMutationLoop -Sink $sink -Candidates @($script:dCand, $script:dCand, $script:dCand) `
@@ -874,7 +1146,8 @@ Describe 'the loop is bounded as a whole' {
         # is mocked rather than provoked because the real limit has a 30-second floor -- there so
         # an ordinary overrun cannot trip it -- and waiting that out would buy nothing this
         # assertion does not already say.
-        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         Mock Get-PSMutationStalledFault { 'the handle never came back' }
         $sink = [System.Collections.Generic.List[object]]::new()
         { Invoke-PSMutationLoop -Sink $sink -Candidates @($script:dCand, $script:dCand) `
@@ -888,7 +1161,8 @@ Describe 'the loop is bounded as a whole' {
     It 'runs to completion when the budget is zero' {
         # Zero disables the bound, for a harness that already kills wedged jobs. Without this arm
         # a caller who does not want the bound would have to invent a number they do not care about.
-        Mock Invoke-PSMutant { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) `
             -Candidates @($script:dCand, $script:dCand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot $TestDrive -Quiet -DeadlineSeconds 0
@@ -1075,5 +1349,68 @@ Describe 'Get-PSMutationRunBaseline' {
         $b = Get-PSMutationRunBaseline -Plan $script:plan -SandboxRoot $script:coverageDir -Measure -Quiet
         $b.DurationSeconds | Should-Be 7.5
         $b.CoveredLines.Count | Should-Be 1
+    }
+}
+
+
+Describe 'the worker pool the loop is given' {
+    It 'spreads mutants across every worker, each in its OWN sandbox' {
+        # The isolation the whole feature rests on. Two workers writing the same file would
+        # splice one mutant over another and score both against source neither chose -- and the
+        # TESTS are re-rooted too, which is the half that is easy to forget: a worker running the
+        # primary sandbox's test files would dot-source unmutated source and every mutant would
+        # survive.
+        $root = [System.IO.Path]::GetTempPath()
+        $script:seenWorkers = @()
+        $script:seenFiles = @()
+        $script:seenSuites = @()
+        Mock Start-PSMutantEvaluation {
+            $script:seenWorkers += $WorkerId
+            $script:seenFiles += $Candidate.File
+            $script:seenSuites += $CoveringTests[0]
+            StubJob -Source $Source -Index $Index -WorkerId $WorkerId
+        }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $cands = 1..3 | ForEach-Object {
+            [pscustomobject]@{
+                Id = $_; Function = 'F'; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
+                Description = "m$_"; StartOffset = 0; EndOffset = 1; Mutated = ' '
+            }
+        }
+        $w1 = Join-Path $root 'psmut-w1'
+        $w2 = Join-Path $root 'psmut-w2'
+
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) `
+            -TestsByFile @{} -AllTests @((Join-Path $root 'all.Tests.ps1')) -TimeoutSeconds 5 `
+            -SandboxRoot $root -WorkerSandbox @($w1, $w2) -Quiet
+
+        @($r).Count | Should-Be 3
+        @($script:seenWorkers | Sort-Object) | Should-BeCollection @(0, 1, 2)
+        # Worker 0 mutates the PRIMARY sandbox -- that identity is what keeps a serial run
+        # byte-identical to what it was before workers existed -- and the other two do not.
+        $script:seenFiles[0] | Should-Be $script:fixture
+        $script:seenFiles[1] | Should-Be (Join-Path $w1 (Split-Path $script:fixture -Leaf))
+        $script:seenSuites[2] | Should-Be (Join-Path $w2 'all.Tests.ps1')
+    }
+
+    It 'still reports every row against the PRIMARY sandbox, whichever worker ran it' {
+        # Which worker ran a mutant is scheduling, and scheduling must not be visible in the
+        # answer: a row naming a per-worker temp directory would differ between two runs of the
+        # same config, and a consumer diffing reports would see churn that means nothing.
+        $root = [System.IO.Path]::GetTempPath()
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $cands = 1..2 | ForEach-Object {
+            [pscustomobject]@{
+                Id = $_; Function = 'F'; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
+                Description = "m$_"; StartOffset = 0; EndOffset = 1; Mutated = ' '
+            }
+        }
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) `
+            -TestsByFile @{} -AllTests @((Join-Path $root 'all.Tests.ps1')) -TimeoutSeconds 5 `
+            -SandboxRoot $root -WorkerSandbox @((Join-Path $root 'psmut-w1')) -Quiet
+
+        @($r | ForEach-Object { $_.File } | Sort-Object -Unique) |
+            Should-BeCollection @((Split-Path $script:fixture -Leaf))
     }
 }

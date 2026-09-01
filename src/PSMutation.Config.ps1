@@ -630,7 +630,11 @@ function Get-PSMutationRunDeadlineBudget {
         $Cfg,
         [Parameter(Mandatory)] [int]$CandidateCount,
         [Parameter(Mandatory)] [int]$TimeoutSeconds,
-        [Parameter(Mandatory)] [double]$BaselineSeconds
+        [Parameter(Mandatory)] [double]$BaselineSeconds,
+        # Mandatory for the reason it is on Get-PSMutationTimeout: this bound and that budget are
+        # two halves of one arithmetic, and a default on either would let them describe different
+        # runs.
+        [Parameter(Mandatory)] [int]$Workers
     )
     # Every MUTANT is bounded and the RUN is not, which is a gap that only shows up as patience.
     # Observed: a run suspended overnight -- 875 minutes elapsed against 333 seconds of CPU --
@@ -647,7 +651,12 @@ function Get-PSMutationRunDeadlineBudget {
     # machine. It is deliberately loose: this exists to end an overnight hang, not to trim a run
     # that is merely having a bad day, and a bound that fires on a slow-but-working run would be
     # switched off within a week.
-    $derived = [int]([math]::Ceiling($BaselineSeconds) + ($CandidateCount * $TimeoutSeconds * 2))
+    # DIVIDED by the worker count, because N mutants running at once is N times less wall clock
+    # for the same work. Left undivided the bound would grow with the very thing that makes a run
+    # shorter -- the per-mutant budget already carries a factor of Workers -- so a parallel run
+    # would be allowed N^2 times the patience of the serial one it replaced, which is a bound
+    # that has stopped bounding anything.
+    $derived = [int]([math]::Ceiling($BaselineSeconds) + ($CandidateCount * $TimeoutSeconds * 2 / $Workers))
     # An explicit setting wins, including a deliberately small one, so a caller who knows their
     # run's shape can tighten it. Zero disables the bound: a consumer running in a harness that
     # already kills wedged jobs should be able to say so rather than tune a number they do not
@@ -980,6 +989,88 @@ function Get-PSMutationScoreBand {
     return @{ High = [double]$high; Low = [double]$low }
 }
 
+# The most mutants that can be in flight at once. WaitHandle.WaitAny -- which is how the scheduler
+# blocks until something finishes -- throws above 64 handles, so this is the framework's number and
+# not a tuning choice. Named rather than inlined because Get-PSMutationWorkerCount clamps to it and
+# a test pins it: a literal in both places is a limit that can drift apart from the thing enforcing
+# it.
+$script:PSMutationMaxWorkers = 64
+
+function Get-PSMutationWorkerCount {
+    <#
+    .SYNOPSIS
+        How many mutants this run may evaluate at once.
+    .DESCRIPTION
+        Absent means ONE, and that is a decision rather than a missing default. Parallel
+        evaluation runs the consumer's covering suite N times CONCURRENTLY, each in its own
+        sandbox copy; file isolation is complete, but a suite that binds a fixed port, writes an
+        absolute temp path or leans on any other machine-wide resource is not parallel-safe, and
+        turning it on by default would fail such a gate for a reason that is not about the tests'
+        quality. So it is opted into, per config, by someone who can look at their own suite.
+
+        The condition for changing that default, recorded now so it is not re-argued from
+        memory: evidence from real consumer suites that a pool of workers reproduces the serial
+        report. This repo's own suite is one data point and the wrong kind -- it is written by
+        the people who wrote the scheduler.
+
+        ZERO means "this machine", resolved as ProcessorCount - 1, leaving a core for the host
+        that is orchestrating them. Zero rather than a string, because a config is validated
+        against a JSON schema and a type union spends a `oneOf` -- which reports a failure in
+        every branch -- to express what one sentinel expresses exactly. Zero has no other
+        possible meaning here: a run with no workers evaluates nothing.
+
+        SIXTY-FOUR IS A HARD CEILING, and it is the framework's rather than a taste. The scheduler
+        blocks on `WaitHandle.WaitAny`, which throws above 64 handles -- measured: 70 gives "The
+        number of WaitHandles must be less than or equal to 64." So on a 128-core machine
+        `workers: 0` would resolve to 127 and the run would die at the first wait, on the largest
+        machine anybody pointed it at.
+
+        Clamped rather than refused, unlike most numbers here, because the worker count does not
+        change the ANSWER -- a parallel run and a serial one produce identical reports, which
+        tests/EndToEnd.Tests.ps1 asserts. Refusing would fail a run over a number that is merely
+        optimistic, and would fail "this machine" for owning a big one.
+    .OUTPUTS
+        [int] between 1 and 64.
+    #>
+    [OutputType([int])]
+    [CmdletBinding()]
+    param(
+        $Cfg,
+        # Injected so the decision is testable without asking what machine the test is on. A run
+        # never passes it; a test always does.
+        [int]$ProcessorCount = [Environment]::ProcessorCount
+    )
+    if ($null -eq $Cfg.workers) { return 1 }
+    $want = ([int]$Cfg.workers -eq 0) ? ($ProcessorCount - 1) : [int]$Cfg.workers
+    # Floored at 1 rather than refused: a single-core machine asking for "this machine" wants a
+    # run, not an error about its own hardware. Capped at the WaitAny ceiling above it.
+    return [int][math]::Max(1, [math]::Min($want, $script:PSMutationMaxWorkers))
+}
+
+function Get-PSMutationWorkerSandboxCount {
+    <#
+    .SYNOPSIS
+        How many EXTRA sandbox copies a run needs -- one per worker past the first.
+    .DESCRIPTION
+        Capped at the mutant count, because a sandbox no mutant can be dispatched into is a full
+        subtree copy paid for nothing. That matters most on the runs parallelism is for: a
+        -RecheckFrom over two surviving mutants on a 24-core machine would otherwise copy the
+        tree 23 times to leave 21 workers idle.
+
+        The cap is NOT applied to the per-mutant timeout, deliberately. That budget is sized on
+        what the config asked for, which is the concurrency the machine may actually see; sizing
+        it on the smaller number would be a second answer to "how many workers", and the two
+        would differ on exactly the short runs where a wrong budget is cheapest to ship.
+    #>
+    [OutputType([int])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [int]$Workers,
+        [Parameter(Mandatory)] [int]$CandidateCount
+    )
+    return [int][math]::Max(0, [math]::Min($Workers, $CandidateCount) - 1)
+}
+
 function Get-PSMutationTimeout {
     # Per-mutant timeout in whole seconds.
     #
@@ -991,10 +1082,30 @@ function Get-PSMutationTimeout {
     # Killed -- which is the right answer for a non-terminating loop.
     [OutputType([int])]
     [CmdletBinding()]
-    param($Cfg, [Parameter(Mandatory)] [double]$BaselineSeconds)
+    param(
+        $Cfg,
+        [Parameter(Mandatory)] [double]$BaselineSeconds,
+        # How many mutants will be sharing this machine. MANDATORY rather than defaulted to 1:
+        # a default is a second answer to a question the caller already knows, and the caller
+        # that forgot it would get a budget sized for a machine it does not have.
+        [Parameter(Mandatory)] [int]$Workers
+    )
     $factor = $Cfg.timeoutFactor ? $Cfg.timeoutFactor : 4
     $floor = $Cfg.timeoutFloorSeconds ? $Cfg.timeoutFloorSeconds : 15
-    $budget = [int][math]::Max($floor, $BaselineSeconds * $factor)
+    # x Workers, and the asymmetry is the whole argument. The baseline is measured ONCE, ALONE,
+    # with the machine to itself; N mutants sharing it are slower for reasons that have nothing
+    # to do with the fault injected in them. A mutant that overruns is scored KILLED, so a budget
+    # sized for a solo run turns ordinary contention into kills -- and the score goes UP. A repo
+    # adopting parallelism to make the gate affordable would watch its score improve and have no
+    # way to tell that from having written better tests.
+    #
+    # The error in the other direction is that a genuinely non-terminating mutant takes N times
+    # longer to cut off, bounded by the run deadline, which is patience rather than a wrong
+    # answer. Between a slow truth and a fast flattering lie this module takes the slow truth.
+    #
+    # The FLOOR is not scaled. It exists for suites so fast that the factor gives a near-zero
+    # budget, and a fast suite is still fast under contention.
+    $budget = [int][math]::Max($floor, $BaselineSeconds * $factor * $Workers)
 
     # Refuse a budget the unmutated suite could not itself meet. Below that line every
     # mutant expires on the clock rather than on behaviour, and an expiry is scored as a

@@ -18,15 +18,15 @@ BeforeAll {
     # pull request with warnings a reviewer cannot open, sitting beside the real ones the gate
     # produces. Seventeen of them, before this.
     #
-    # Cleared for the file and RESTORED afterwards, never left as $null: $env: is process
-    # state, this suite runs inside CI where the variable is genuinely set, and a file that
-    # resets it silently decides what every later file sees.
+    # NOTHING HERE WRITES $env:. This file used to clear GITHUB_ACTIONS so a run under CI would
+    # not annotate, and restore it afterwards. That is unsafe the moment a covering suite runs
+    # beside another one: `$env:` is PROCESS state and every runspace in a process shares it, so
+    # this file's clear and Output.Tests.ps1's writes would reach into each other -- and the
+    # symptom is a failing assertion, which is scored as a KILLED mutant rather than as an error.
     #
-    # The annotation path itself is tested by MOCKING Test-PSMutationAnnotationHost, which is
-    # hermetic and does not care which file ran first.
-    $script:priorActions = $env:GITHUB_ACTIONS
-    $env:GITHUB_ACTIONS = $null
-
+    # Every Describe below mocks Test-PSMutationAnnotationHost to $false instead. That is the
+    # thing this file actually wanted -- do not annotate -- said as a mock rather than as a
+    # write to a variable somebody else is reading.
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
         'PSMutation.Config.ps1', 'PSMutation.Output.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
@@ -36,10 +36,12 @@ BeforeAll {
 }
 
 
-AfterAll { $env:GITHUB_ACTIONS = $script:priorActions }
-
 Describe 'Invoke-PSMutation' {
     BeforeEach {
+        # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
+        # runspace in the process shares -- see this file's header. An It that wants the annotation
+        # path mocks it back to $true and overrides this one.
+        Mock Test-PSMutationAnnotationHost { $false }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         $script:configFile = Join-Path $script:root 'psmutant.json'
@@ -423,6 +425,10 @@ Describe 'Invoke-PSMutation' {
 
 Describe 'Invoke-PSMutation -ListOnly' {
     BeforeEach {
+        # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
+        # runspace in the process shares -- see this file's header. An It that wants the annotation
+        # path mocks it back to $true and overrides this one.
+        Mock Test-PSMutationAnnotationHost { $false }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         $script:configFile = Join-Path $script:root 'psmutant.json'
@@ -561,6 +567,10 @@ Describe 'Invoke-PSMutation -ListOnly' {
 
 Describe 'Invoke-PSMutation pipeline binding' {
     BeforeEach {
+        # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
+        # runspace in the process shares -- see this file's header. An It that wants the annotation
+        # path mocks it back to $true and overrides this one.
+        Mock Test-PSMutationAnnotationHost { $false }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         foreach ($n in 'one', 'two') {
@@ -643,6 +653,10 @@ Describe 'Invoke-PSMutation pipeline binding' {
 
 Describe 'Invoke-PSMutation -ChangedFile' {
     BeforeEach {
+        # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
+        # runspace in the process shares -- see this file's header. An It that wants the annotation
+        # path mocks it back to $true and overrides this one.
+        Mock Test-PSMutationAnnotationHost { $false }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         $script:configFile = Join-Path $script:root 'psmutant.json'
@@ -801,6 +815,10 @@ Describe 'Invoke-PSMutation -ChangedFile' {
 
 Describe 'Get-PSMutationRunContext' {
     BeforeEach {
+        # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
+        # runspace in the process shares -- see this file's header. An It that wants the annotation
+        # path mocks it back to $true and overrides this one.
+        Mock Test-PSMutationAnnotationHost { $false }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         $script:configFile = Join-Path $script:root 'psmutant.json'

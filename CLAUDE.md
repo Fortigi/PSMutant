@@ -254,7 +254,7 @@ Its behaviour is pinned by the normal suite at 100% coverage instead.
 
 ---
 
-## The mutant runspace is warm, and what that costs to keep true
+## The mutant runspaces are warm and KEYED BY WORKER, and what that costs to keep true
 
 Every mutant used to get a fresh `[PowerShell]` and its own `Import-Module Pester`. Measured with
 a real consumer repo as the target, which is a better subject than this module's own
@@ -265,6 +265,21 @@ The runspace is now built once and reused, and the covering suite stops at the f
 end, interleaved, two pairs: **221 s -> 71 s** over 225 mutants, 225 killed both sides, every
 per-mutant verdict identical.
 
+**It is a POOL now, one runspace per worker, and that is what #1 needed from this file.** A
+singleton would hand the same `[PowerShell]` instance to two workers at once, and a second
+`BeginInvoke` on a busy instance throws -- so the failure would not be a subtle wrong answer but a
+run that dies depending on scheduling. Three tables keyed by worker id replaced three scalars, and
+the per-worker recycle and the post-timeout discard now mean for one worker what they used to mean
+for the process. Two things that only bite once there is more than one worker:
+
+- **A key is REMOVED on close, never set to `$null`.** A key whose value is `$null` still answers
+  `ContainsKey`, so the close guard fires again and disposes `$null`, and the getter hands back
+  nothing while believing it has a shell.
+- **`Close-PSMutationWarmRunspacePool` snapshots `.Keys` with `@()`.** A hashtable being enumerated
+  cannot be modified, and the per-worker close removes the key it is given -- so iterating `.Keys`
+  directly throws on the second worker, which is a failure that appears only once somebody runs in
+  parallel.
+
 Four things about it are easy to undo:
 
 - **Reuse is safe because nothing about a mutant is cached.** The covering suite dot-sources the
@@ -274,11 +289,12 @@ Four things about it are easy to undo:
   larger number buys almost nothing and widens the window in which a leak goes unnoticed. A test
   pins the number for exactly that reason -- the boundary test is written in terms of the constant,
   so changing it would otherwise slide past.
-- **A timeout discards the runspace.** `Stop()` leaves it unusable, so handing it to the next mutant
-  would fail every subsequent one.
+- **A timeout discards THAT WORKER'S runspace.** `Stop()` leaves it unusable, so handing it to the
+  next mutant would fail every subsequent one. Discarding the pool instead would make every other
+  worker pay a cold start for one mutant's overrun.
 - **A failed Pester import throws rather than yielding a shell.** A shell without Pester runs every
-  covering suite into a command-not-found and returns no verdict -- which `Invoke-PSMutant` reads as
-  a KILL. Same shape as the version collision this file already documents at length, reached through
+  covering suite into a command-not-found and returns no verdict -- which `Get-PSMutationVerdict`
+  reads as a KILL. Same shape as the version collision this file already documents at length, reached through
   a different door. There is deliberately no `HadErrors` check beside the `catch`: the child's
   `-ErrorAction Stop` makes a failed import terminating, so that branch could never fire.
 - **`SkipRemainingOnFailure` is feature-detected, never version-compared.** It arrived in **Pester
@@ -678,18 +694,27 @@ trade it away. The cost of leaving an invariant unnamed is already on the record
 `Sandbox.ps1` mutation exclusion was explained two different wrong ways before the third, because
 the reason behind it had no name.
 
-- **1. Sequential evaluation is a CORRECTNESS mechanism, not a performance default.**
-  `Invoke-PSMutant` writes the mutant into the one shared sandbox copy
-  (`Runner.ps1` `WriteAllText($Candidate.File, $MutatedContent)`) and restores it afterwards, and
-  the covering tests run against the whole sandbox tree. Two mutants in different files are
-  therefore **not independent**: each child would see the other's mutation, and a "Survived"
-  verdict would be a verdict about a double mutant. **Serialisation, not the sandbox, is what keeps
-  mutants apart.**
+- **1. What keeps mutants apart is ONE SANDBOX PER WORKER. It used to be serialisation, and this
+  clause is the record of that changing.** A mutant is a file spliced in place, and the covering
+  tests run against the whole sandbox tree -- so two mutants sharing a sandbox are **not
+  independent**: each child sees the other's mutation, and a "Survived" verdict is a verdict about
+  a double mutant.
 
-  Reading this as a tuning default is the single most plausible way to break the tool's core claim
-  while improving a benchmark. *It stops being right when each worker gets its own sandbox copy* --
-  which is what #1 has to buy before it can evaluate anything in parallel, and is a cost that
-  belongs in that issue's estimate rather than being discovered inside it.
+  Until #1 the answer was that only one mutant ran at a time. The condition this clause recorded in
+  advance -- *it stops being right when each worker gets its own sandbox copy* -- is what #1 bought,
+  and the cost it predicted is exactly what was paid: `New-PSMutationWorkerSandbox` clones the
+  primary sandbox once per worker past the first, and `Get-PSMutationWorkerPath` re-roots both the
+  candidate's file and its covering tests into that copy.
+
+  **Re-rooting the TESTS is the half that is easy to forget.** A worker running the primary
+  sandbox's test files would dot-source the primary sandbox's source, so every mutant would run
+  against unmutated code and survive -- a score of zero, arrived at silently. The candidate is a
+  COPY for the same reason: the candidate list is shared across workers, and re-rooting in place
+  would point every later worker at whichever sandbox ran it last.
+
+  *It stops being right if anything a worker touches lives outside its sandbox* -- a fixed port, an
+  absolute temp path, an environment variable. That is the consumer's suite rather than this
+  module's code, which is why `workers` is opt-in and defaults to 1.
 
 - **2. Rows are accumulated in a CALLER-OWNED list, and the report is written once at the end --
   except on interruption.** This clause changed with #39 and the old wording is no longer true.
@@ -714,10 +739,12 @@ the reason behind it had no name.
   removed; a live sandbox now survives its own sweep.
 
   What remains is that a pid still answers both "who owns this" and "is that owner alive", which
-  cannot distinguish two runs inside one process. *It stops being right when one process holds
-  several sandboxes at once*, which is #1 -- and the cost that belongs in #1's estimate is that
-  each worker needs its own full sandbox COPY, not a name inside a shared one, because the child
-  reads the mutant off disk and runs the covering tests over the whole tree.
+  cannot distinguish two runs inside one process. The condition recorded here -- *it stops being
+  right when one process holds several sandboxes at once* -- **is now the ordinary case**: a
+  parallel run holds one per worker, all under the same pid. Nothing is broken by it, because the
+  sweep spares a live pid and every sandbox this run made is removed in the same `finally`; what it
+  costs is that the sweep can no longer distinguish a leaked sandbox from a live sibling by name
+  alone. #53 is where that gets decided, and it is now reachable rather than hypothetical.
 
 **Every temp artefact a run creates lives inside the sandbox.** `PSMutation.Sandbox.ps1` is a full
 lifecycle -- an owner id, a liveness test, and three cleanup paths -- and an artefact written
@@ -739,6 +766,108 @@ escapes. A new temp artefact belongs in the sandbox, or it deletes itself.
 
 These are habits the codebase already has. They are written down because they are cheap to
 lose in a hurry and expensive to rebuild, and because each one has already earned its keep.
+
+- **A test that WRITES process state cannot be run beside itself, and a covering suite is run
+  beside itself** (#216). `$env:` is per-PROCESS, not per-runspace -- measured, a child runspace's
+  write is visible in the parent -- so a suite that sets a variable to exercise a branch races
+  with the other mutants of the same file, which are running that same suite in other runspaces of
+  the same process.
+
+  The symptom is a VERDICT, not an error. A flipped value fails an assertion that should have
+  passed, which is scored as a KILLED mutant: one the suite did not actually catch, with the score
+  moving toward the flattering answer and nothing to notice.
+
+  TWO instances, and the second is the one nobody would have found by reading.
+
+  1. **An environment variable a test WRITES.** `Test-PSMutationAnnotationHost` is now split into a
+     pure `Test-PSMutationAnnotationFlag` that takes the VALUE, so the three cases are decided
+     without touching the environment, and `Orchestrator.Tests.ps1` says "do not annotate" with a
+     mock instead of by clearing the variable other tests read. READING is safe and stays.
+
+  2. **`$PID` used as a uniqueness token in a temp fixture name.** Every worker shares one process
+     id, so `psmut-ops-$PID.ps1` was a file four workers wrote and four workers deleted -- one's
+     `AfterAll` removing it out from under another's test. Twenty such names in
+     `Operators.Tests.ps1`, five in `Report.Tests.ps1`, one each in `Runner.Tests.ps1` and
+     `SandboxSweep.Tests.ps1`. They all carry a per-run GUID now; `$PID` stays only where the
+     name's shape is the thing under test.
+
+  The gate found the second one, not a reviewer: the parallel run reported a **stale equivalence
+  declaration** -- a mutant declared equivalent had been "killed" -- and failed. That is the
+  equivalence mechanism paying for itself, because without it the race would have been a silent
+  +1 to the numerator.
+
+  **The acceptance for turning `workers` on anywhere is two numbers** -- the same mutant COUNT and
+  the same verdicts as the serial run -- not a score that happens to match. Measured here: 1120
+  mutants both ways, identical verdicts in identical order, no stale declarations, **778s serial
+  against 306s**. `psmutant.self.config.json` sets `workers` on the strength of that and nothing
+  else.
+
+  What is NOT process state, checked rather than assumed: `Set-Location` is per-runspace (a child
+  setting its own location leaves both `$PWD` and `[Environment]::CurrentDirectory` alone in the
+  parent), and `$script:` in a dot-sourced source file belongs to the runspace that sourced it.
+  Those are why `Push-Location` in two covering suites is harmless.
+
+- **The worker count is PINNED at 3 rather than set to `0`, and the reason is a bound, not a core
+  count.** `0` means ProcessorCount - 1, and on the ubuntu-latest runner a public repo gets 4 vCPU,
+  so the two are the same number in CI. They differ on a developer's machine, and there `0` is
+  worse: the per-mutant budget is `baseline x factor x workers`, so 23 workers on a 24-core box
+  gave **2699s per mutant** and a derived run bound of about three days -- a bound that has stopped
+  bounding anything.
+
+  It buys nothing, measured on this suite: **4 workers 306s, 23 workers 290s**, because the gate is
+  dominated by per-file covering suites and a 30s baseline rather than by cores. The condition for
+  revisiting is written in the config beside the number: the runner size changing, or the timeout
+  ceasing to scale linearly with the worker count.
+
+- **One execution path, and a serial run is a POOL OF ONE through it.** `workers: 1` does not take a
+  simpler route; it builds a one-slot scheduler and dispatches through the same
+  `Start-PSMutantEvaluation` / `Complete-PSMutantEvaluation` pair. Two paths would be two places a
+  verdict is decided, and they would disagree in whichever case nobody tests -- which is the failure
+  this module exists to find in other people's code. It is also what makes the determinism test
+  meaningful: `tests/EndToEnd.Tests.ps1` runs one fixture at `workers: 1` and `workers: 4` and
+  compares the rows, and that comparison would prove nothing if the two ran different code.
+
+- **Finished mutants are RETIRED IN CANDIDATE ORDER, and that one mechanism answers three
+  requirements.** Workers finish out of order -- a killed mutant stops at the first failing test and
+  a survivor runs the whole suite, an 83% spread measured on this repo's sibling -- so a finished
+  mutant is parked under its index and recorded only once every mutant before it has been. That
+  makes the report deterministic, keeps the progress line a monotonic `[n/total]` instead of jumping
+  about, and makes the partial report an interrupted run writes a genuine PREFIX of the full one
+  rather than whichever mutants happened to land first. Nothing waits on it: at most one worker
+  count's worth of mutants can be finished and unrecorded, and they are still finished.
+
+  Sorting at the end would give the first of those three and neither of the others.
+
+- **`[AllowNull()]` beside a mandatory array parameter is not decoration when the array can be all
+  nulls.** PowerShell's mandatory check UNWRAPS a single-element collection before testing it, so an
+  idle one-worker pool -- `@($null)` -- binds as null and is refused. Measured the hard way: the
+  serial case, which every existing test exercised, failed at the first dispatch while every
+  parallel one bound fine.
+
+- **A budget measured alone is wrong for work that shares a machine, and the error runs toward the
+  flattering answer.** The per-mutant timeout is `max(floor, baseline x factor x workers)`. The
+  baseline is measured once with the machine to itself; N mutants sharing it are slower for reasons
+  that have nothing to do with the fault injected in them, and an overrun is scored **Killed** -- so
+  a solo-sized budget turns ordinary contention into kills and the score goes UP. A repo adopting
+  parallelism to make the gate affordable would watch its score improve with no way to tell that
+  from having written better tests. The cost of erring the other way is that a genuinely
+  non-terminating mutant takes N times longer to cut off, bounded by the run deadline: patience
+  rather than a wrong answer. The run deadline is DIVIDED by the same number for the same reason --
+  undivided it would allow N^2 times the patience of the run it replaced.
+
+  The FLOOR is not scaled. It exists for suites so fast that the factor gives a near-zero budget,
+  and a fast suite is still fast under contention.
+
+- **The scheduler waits on the SOONEST deadline, not on a fixed poll interval.**
+  `Get-PSMutationWaitBudget` returns the least budget any in-flight mutant has left, and `WaitAny`
+  is given exactly that -- so a mutant is cut off on its own clock rather than whenever the next
+  tick happens to arrive. Floored at 1ms: a zero timeout makes `WaitAny` a non-blocking poll, and a
+  mutant already past its budget would spin the scheduler at full speed until the sweep reached it.
+
+  `Wait-PSMutationWorker` is NOT guarded against an empty in-flight set, and the invariant that
+  makes that safe is written in its docstring rather than defended by a branch. A guard for a state
+  the loop cannot reach is a branch no test can distinguish from its own absence, and it would turn
+  a future scheduling bug into a spin instead of an exception.
 
 - **A comment names the failure it prevents, not the mechanism.** `# Read coverage from the
   result object; steer the XML to temp so we don't litter a coverage.xml in the working
@@ -1240,6 +1369,11 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   nothing'`, and that is the line that failed. Without it the test would have passed on both
   platforms while checking nothing at all. Every test that builds a broken fixture by editing a
   good one needs that guard.
+
+- **A bare `function` inside a `Describe` is declared at DISCOVERY and gone by the time a test
+  runs.** The same phase split as the `$script:` rule below, with a different symptom: every test in
+  the block fails with "not recognized" while the file reads perfectly well. A helper a test calls
+  belongs in that block's `BeforeAll`.
 
 - **A top-level `$script:` assignment in a test file runs at DISCOVERY and never reaches the run
   phase.** It does not merely leave the variable empty when the block runs alone -- it leaves the

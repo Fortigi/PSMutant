@@ -175,16 +175,63 @@ Describe 'Get-PSMutationRunspaceError' {
 # still COVER the function while being unable to kill any of its mutants, because
 # psmutant.self.config.json maps each source file to one covering suite.
 
-Describe 'the warm mutant runspace' {
-    AfterEach { Close-PSMutationWarmRunspace }
+Describe 'the warm mutant runspace pool' {
+    AfterEach { Close-PSMutationWarmRunspacePool }
 
     It 'hands back the same shell until its lifetime is spent' {
         # The whole point of the change: creating a runspace and importing Pester into it cost
         # about 396 ms on every mutant, 27% of a measured 801s run over this repo's sibling.
-        Close-PSMutationWarmRunspace
-        $first = Get-PSMutationWarmShell
-        $second = Get-PSMutationWarmShell
+        Close-PSMutationWarmRunspacePool
+        $first = Get-PSMutationWarmShell -WorkerId 0
+        $second = Get-PSMutationWarmShell -WorkerId 0
         [object]::ReferenceEquals($first, $second) | Should-BeTrue
+    }
+
+    It 'gives each worker its OWN shell' {
+        # The isolation parallel evaluation rests on. One [PowerShell] instance cannot run two
+        # pipelines: a second BeginInvoke on a busy one throws, so a shared shell would not be a
+        # subtly wrong answer but a run that dies depending on scheduling.
+        Close-PSMutationWarmRunspacePool
+        $a = Get-PSMutationWarmShell -WorkerId 0
+        $b = Get-PSMutationWarmShell -WorkerId 1
+        [object]::ReferenceEquals($a, $b) | Should-BeFalse
+    }
+
+    It 'keeps a use count per worker rather than one for the pool' {
+        # A shared counter would retire every worker's runspace on the total across all of them,
+        # so an eight-worker run would rebuild eight times as often as it was told to -- and the
+        # only symptom is a run that is quietly slower.
+        Close-PSMutationWarmRunspacePool
+        $null = Get-PSMutationWarmShell -WorkerId 0
+        $null = Get-PSMutationWarmShell -WorkerId 0
+        $null = Get-PSMutationWarmShell -WorkerId 1
+        $script:PSMutationWarmUses[0] | Should-Be 2
+        $script:PSMutationWarmUses[1] | Should-Be 1
+    }
+
+    It 'retires ONE worker without touching the others' {
+        # What a timeout does: Stop() leaves that worker's runspace unusable and it is discarded.
+        # Discarding the pool instead would make every other worker pay a cold start for one
+        # mutant's overrun.
+        Close-PSMutationWarmRunspacePool
+        $keep = Get-PSMutationWarmShell -WorkerId 0
+        $null = Get-PSMutationWarmShell -WorkerId 1
+        Close-PSMutationWarmRunspace -WorkerId 1
+        $script:PSMutationWarmShell.ContainsKey(1) | Should-BeFalse
+        [object]::ReferenceEquals($keep, (Get-PSMutationWarmShell -WorkerId 0)) | Should-BeTrue
+    }
+
+    It 'closes every worker when the run ends' {
+        # The run's exit path. A long-lived host would otherwise keep a Pester-loaded runspace
+        # per worker per completed run, which is now a multiple rather than one.
+        Close-PSMutationWarmRunspacePool
+        $null = Get-PSMutationWarmShell -WorkerId 0
+        $null = Get-PSMutationWarmShell -WorkerId 1
+        $null = Get-PSMutationWarmShell -WorkerId 2
+        Close-PSMutationWarmRunspacePool
+        $script:PSMutationWarmShell.Count | Should-Be 0
+        $script:PSMutationWarmRunspace.Count | Should-Be 0
+        $script:PSMutationWarmUses.Count | Should-Be 0
     }
 
     It 'serves exactly the lifetime, then rebuilds on the next ask' {
@@ -192,9 +239,9 @@ Describe 'the warm mutant runspace' {
         # version of this test that only checked "eventually a new one appears" passes whether the
         # comparison is -lt or -le, and whether the counter starts at 1 or 2 -- the mutation gate
         # said so, with three survivors on these four lines.
-        Close-PSMutationWarmRunspace
+        Close-PSMutationWarmRunspacePool
         $n = $script:PSMutationWarmRunspaceLifetime
-        $shells = @(1..($n + 1) | ForEach-Object { Get-PSMutationWarmShell })
+        $shells = @(1..($n + 1) | ForEach-Object { Get-PSMutationWarmShell -WorkerId 0 })
         # Use 1 and use N are the same runspace: it serves the whole lifetime.
         [object]::ReferenceEquals($shells[0], $shells[$n - 1]) | Should-BeTrue
         # Use N+1 is a different one: the lifetime is a ceiling, not a suggestion.
@@ -214,10 +261,10 @@ Describe 'the warm mutant runspace' {
         # Without this the old runspace is merely unreferenced, and a long run retires one every
         # fifty mutants -- each holding a loaded Pester. Reference-dropping and disposal look
         # identical from the outside, which is why the disposed shell is used directly here.
-        Close-PSMutationWarmRunspace
-        $shell = Get-PSMutationWarmShell
-        $runspace = $script:PSMutationWarmRunspace
-        Close-PSMutationWarmRunspace
+        Close-PSMutationWarmRunspacePool
+        $shell = Get-PSMutationWarmShell -WorkerId 0
+        $runspace = $script:PSMutationWarmRunspace[0]
+        Close-PSMutationWarmRunspace -WorkerId 0
         # The runspace is asserted by STATE and the shell by use, because those are the two
         # separate resources and a test that only tried to use the shell cannot say which of them
         # was released -- an object on a closed runspace throws exactly as a disposed one does.
@@ -225,26 +272,29 @@ Describe 'the warm mutant runspace' {
         { $shell.AddScript('1').Invoke() } | Should-Throw
     }
 
-    It 'resets its use count when it closes' {
-        # The counter is what the lifetime is measured against, so a close that left it set would
-        # retire the NEXT runspace early -- and silently, since the only symptom is a little more
-        # rebuilding.
-        Close-PSMutationWarmRunspace
-        $null = Get-PSMutationWarmShell
-        Close-PSMutationWarmRunspace
-        $script:PSMutationWarmUses | Should-Be 0
+    It 'forgets a worker entirely when it closes, rather than leaving a null behind' {
+        # A key whose value is $null still answers ContainsKey, so the close guard would fire
+        # again and dispose $null -- and the getter would hand back nothing while believing it
+        # had a shell. The counter goes with it: left set, it would retire the NEXT runspace
+        # early, silently, since the only symptom is a little more rebuilding.
+        Close-PSMutationWarmRunspacePool
+        $null = Get-PSMutationWarmShell -WorkerId 0
+        Close-PSMutationWarmRunspace -WorkerId 0
+        $script:PSMutationWarmShell.ContainsKey(0) | Should-BeFalse
+        $script:PSMutationWarmRunspace.ContainsKey(0) | Should-BeFalse
+        $script:PSMutationWarmUses.ContainsKey(0) | Should-BeFalse
     }
 
     It 'is safe to close when nothing is open' {
         # Called from the run's finally, which runs even when the run threw before any mutant.
-        Close-PSMutationWarmRunspace
-        Close-PSMutationWarmRunspace
+        Close-PSMutationWarmRunspace -WorkerId 0
+        Close-PSMutationWarmRunspacePool
         $true | Should-BeTrue
     }
 
     It 'gives a shell that already has Pester in it' {
-        Close-PSMutationWarmRunspace
-        $shell = Get-PSMutationWarmShell
+        Close-PSMutationWarmRunspacePool
+        $shell = Get-PSMutationWarmShell -WorkerId 0
         $shell.Commands.Clear()
         [void]$shell.AddScript('(Get-Module Pester | Select-Object -First 1).Name')
         [string]($shell.Invoke() | Select-Object -Last 1) | Should-Be 'Pester'
@@ -252,11 +302,11 @@ Describe 'the warm mutant runspace' {
 
     It 'refuses to hand back a shell whose Pester import failed' {
         # A shell without Pester would run every covering suite into a command-not-found and
-        # report no verdict -- which Invoke-PSMutant reads as a kill. Same shape as the version
-        # collision: a broken child scoring as a caught fault.
-        Close-PSMutationWarmRunspace
+        # report no verdict -- which the verdict reader treats as a kill. Same shape as the
+        # version collision: a broken child scoring as a caught fault.
+        Close-PSMutationWarmRunspacePool
         Mock Get-PSMutationPesterPath { Join-Path ([System.IO.Path]::GetTempPath()) 'no-such-pester.psd1' }
-        { Get-PSMutationWarmShell } | Should-Throw -ExceptionMessage '*Could not import Pester into the mutant runspace*'
+        { Get-PSMutationWarmShell -WorkerId 0 } | Should-Throw -ExceptionMessage '*Could not import Pester into the mutant runspace*'
     }
 }
 

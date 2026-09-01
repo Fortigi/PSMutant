@@ -102,17 +102,39 @@ function Get-PSMutationRoleColour {
     return [string]$script:PSMutationRoleColour[$Role]
 }
 
+function Test-PSMutationAnnotationFlag {
+    <#
+    .SYNOPSIS
+        Whether the value GitHub Actions publishes means "annotate". Pure.
+    .DESCRIPTION
+        A positive test rather than "not a console": a developer piping output to a file is not a
+        CI, and emitting workflow commands there would put '::warning' noise in front of a human
+        for no reason. It is also not a truthiness check -- Actions sets the literal string
+        'false' in some contexts, and any non-empty string is truthy in PowerShell.
+
+        SPLIT FROM THE READ, and the reason is about the tests rather than about this decision.
+        `$env:` is PROCESS state: every runspace in a process shares one environment, so a suite
+        that WRITES a variable to exercise a branch cannot be run beside itself -- which is
+        exactly what `workers` does to a covering suite, since several mutants of one file run
+        that file's suite at once. Deciding on a value instead means the three cases are pinned
+        with nothing written, and reading a variable races with nobody.
+
+        This was a real failure rather than a precaution: it is why the self-mutation gate could
+        not use this module's own parallel evaluation until it was fixed.
+    #>
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowNull()] [AllowEmptyString()] [string]$Value)
+    return $Value -eq 'true'
+}
+
 function Test-PSMutationAnnotationHost {
     # Whether the host running us renders CI annotations. GitHub Actions sets GITHUB_ACTIONS
-    # to 'true' for every step.
-    #
-    # A positive test rather than "not a console": a developer piping output to a file is not
-    # a CI, and emitting workflow commands there would put '::warning' noise in front of a
-    # human for no reason.
+    # to 'true' for every step. The decision is next door; this is the read.
     [OutputType([bool])]
     [CmdletBinding()]
     param()
-    return $env:GITHUB_ACTIONS -eq 'true'
+    return Test-PSMutationAnnotationFlag -Value $env:GITHUB_ACTIONS
 }
 
 function Get-PSMutationAnnotationLine {

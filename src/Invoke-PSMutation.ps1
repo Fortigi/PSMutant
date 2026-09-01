@@ -136,7 +136,10 @@ function Get-PSMutationRunContext {
     # Derived on BOTH paths from the one duration, rather than a literal in the preview arm. A
     # timeout nothing in a preview reads is unobservable, and every mutant of a hardcoded one
     # survives a test that can only assert the preview did not throw.
-    $timeout = Get-PSMutationTimeout -Cfg $Cfg -BaselineSeconds $baseline.DurationSeconds
+    # Read from the config rather than from the selection, so the budget below is sized on the
+    # concurrency the machine may see rather than on how many mutants this particular run found.
+    $workers = Get-PSMutationWorkerCount -Cfg $Cfg
+    $timeout = Get-PSMutationTimeout -Cfg $Cfg -BaselineSeconds $baseline.DurationSeconds -Workers $workers
     if ($baselineNeeded) {
         Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Good' `
                 -Text ("  Baseline green in {0:N1}s (per-mutant timeout {1}s)" -f $baseline.DurationSeconds, $timeout))
@@ -165,6 +168,9 @@ function Get-PSMutationRunContext {
         # agree there; carrying the config's answer keeps that a fact rather than a coincidence.
         CoveredLinesOnly = $coveredOnly
         TimeoutSeconds   = $timeout
+        # What the config asked for, not how many sandboxes get made. The loop derives its pool
+        # size from the sandboxes it is given; this is the number the two budgets were sized on.
+        Workers          = $workers
         Operators        = $ops
         Selection        = $selection
         # The tally everything HUMAN-facing reads: same numbers, repo-relative paths.
@@ -248,6 +254,11 @@ function Invoke-PSMutationRun {
     # red baseline and on a config path the sandbox never received; created inside, a full tree
     # copy would be left behind on exactly those two failures.
     $sandbox = New-PSMutationSandbox -RepoRoot $root -Subtrees $subtrees
+    # Declared out here so the finally can remove them however the try exits, including before
+    # the line that fills it. A variable a `finally` reads and a `try` may never have assigned
+    # is fine in an ordinary session and throws under StrictMode, which is a consumer's choice
+    # rather than this module's.
+    $workerSandbox = @()
     try {
         $ctx = Get-PSMutationRunContext -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox `
             -Subtrees $subtrees -ListOnly:$ListOnly -Recheck:([bool]$RecheckFrom) `
@@ -263,6 +274,17 @@ function Invoke-PSMutationRun {
         $cands = $ctx.Selection.Candidates
         $exec = $ctx.Exec
         $doc = $ctx.Doc
+        # One extra sandbox per worker past the first, created HERE rather than beside the
+        # primary one. The prelude above throws on a red baseline and on a config path the
+        # sandbox never received, and a pool of full tree copies left behind on those two
+        # failures is exactly the waste the primary sandbox is placed outside this try to avoid.
+        #
+        # Sized on the whole candidate set, which over-provisions a -RecheckFrom run: that path
+        # narrows to the previous survivors after this point, so some of its workers may sit
+        # idle. A spare sandbox is one tree copy; threading the narrowed count back out to here
+        # would put the pool's size in two places.
+        $workerSandbox = New-PSMutationWorkerSandbox -SandboxRoot $sandbox -Subtrees $subtrees `
+            -Count (Get-PSMutationWorkerSandboxCount -Workers $ctx.Workers -CandidateCount $cands.Count)
         # Built HERE, and that is a scoping fact rather than a preference. A PowerShell
         # scriptblock resolves an unbound variable in the scope that INVOKES it, walking the
         # call stack -- not the scope that created it. Measured: a scriptblock built inside a
@@ -276,7 +298,7 @@ function Invoke-PSMutationRun {
         $provArgs = $ctx.ProvenanceArgs
         $provenance = { New-PSMutationProvenance @provArgs -TotalSeconds $runClock.Elapsed.TotalSeconds }
         if ($RecheckFrom) {
-            return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance -MergeIntoBaseline:$MergeIntoBaseline
+            return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance -MergeIntoBaseline:$MergeIntoBaseline -WorkerSandbox $workerSandbox
         }
 
         # Said before the loop, because that is when it can still be acted on -- the cost it
@@ -312,7 +334,7 @@ function Invoke-PSMutationRun {
         $partial = [System.Collections.Generic.List[object]]::new()
         $done = $false
         try {
-            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial -RecordAllKillers:$($ctx.RecordAllKillers) -DeadlineSeconds (Get-PSMutationRunDeadlineBudget -Cfg $cfg -CandidateCount $cands.Count -TimeoutSeconds $ctx.TimeoutSeconds -BaselineSeconds $ctx.Baseline.DurationSeconds)
+            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial -RecordAllKillers:$($ctx.RecordAllKillers) -WorkerSandbox $workerSandbox -DeadlineSeconds (Get-PSMutationRunDeadlineBudget -Cfg $cfg -CandidateCount $cands.Count -TimeoutSeconds $ctx.TimeoutSeconds -BaselineSeconds $ctx.Baseline.DurationSeconds -Workers $ctx.Workers)
             $done = $true
         }
         finally {
@@ -384,10 +406,11 @@ function Invoke-PSMutationRun {
             -ChangedFiles $ctx.ChangedFiles
     }
     finally {
-        # The warm mutant runspace outlives individual mutants by design; it must not outlive the
-        # run, or a long-lived host keeps a Pester-loaded runspace per completed run.
-        Close-PSMutationWarmRunspace
-        Remove-PSMutationSandbox -SandboxRoot $sandbox
+        # The warm mutant runspaces outlive individual mutants by design; they must not outlive
+        # the run, or a long-lived host keeps a Pester-loaded runspace per worker per completed
+        # run -- which is now a multiple rather than one.
+        Close-PSMutationWarmRunspacePool
+        foreach ($dir in (@($sandbox) + @($workerSandbox))) { Remove-PSMutationSandbox -SandboxRoot $dir }
     }
 }
 

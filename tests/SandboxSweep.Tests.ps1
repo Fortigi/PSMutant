@@ -86,16 +86,20 @@ Describe 'Clear-PSMutationStaleSandbox' {
         # A PREDICATE test, not an end-to-end one -- it never calls the sweep. The test
         # below does that, and had to be written because this one's old title claimed to.
         # Our own id stands in for "a live process", since it is by definition running.
-        $live = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-sandbox-$PID"
-        $preExisting = Test-Path $live
-        if (-not $preExisting) { New-Item -ItemType Directory -Path $live -Force | Out-Null }
+        # The random suffix is the shape the runner produces, and here it is load-bearing for a
+        # second reason: several mutants of this file's source run THIS file at once, in separate
+        # runspaces of one process, so a fixture named for $PID alone is a fixture they share --
+        # and the first one's cleanup deletes it out from under the others. The suffix makes it
+        # per-run, which is what the pid used to mean.
+        $live = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-sandbox-$PID-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $live -Force | Out-Null
         'in use' | Set-Content (Join-Path $live 'live.txt')
         try {
             # CurrentProcessId is deliberately something else, so $PID reads as a
             # foreign, live owner rather than as our own reclaimable leftover.
             Test-PSMutationSandboxAbandoned -Directory (Get-Item $live) | Should-BeFalse
         }
-        finally { if (-not $preExisting) { Remove-Item $live -Recurse -Force -ErrorAction SilentlyContinue } }
+        finally { Remove-Item $live -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
 
@@ -119,7 +123,11 @@ Describe 'the sweep reclaims the coverage files older versions left in temp' {
         # The sweep used to take -Directory only, which is why these accumulated. A file left by a
         # process that is gone is reclaimable on exactly the same terms as a sandbox.
         $temp = [System.IO.Path]::GetTempPath()
-        $dead = 999002   # no such process
+        # A dead id CHOSEN rather than fixed, so two runs of this file cannot name the same file.
+        # 999002 was a constant, and a constant is a name every worker writes and every worker's
+        # cleanup deletes.
+        do { $dead = Get-Random -Minimum 100000 -Maximum 999999 }
+        until (-not (Get-Process -Id $dead -ErrorAction SilentlyContinue))
         $orphan = Join-Path $temp "psmut-coverage-$dead.xml"
         '<coverage/>' | Set-Content -LiteralPath $orphan -Encoding utf8
         try {

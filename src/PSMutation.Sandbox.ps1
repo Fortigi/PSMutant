@@ -111,6 +111,82 @@ function New-PSMutationSandbox {
     return $root
 }
 
+function New-PSMutationWorkerSandbox {
+    <#
+    .SYNOPSIS
+        One extra sandbox copy per additional parallel worker.
+    .DESCRIPTION
+        Parallel evaluation needs isolation at the FILE, because a mutant is a file spliced in
+        place: two workers sharing a sandbox would write over each other's mutant and score both
+        against source neither of them chose. A copy per worker is the only isolation that holds,
+        and it is cheap against what it buys -- measured on this repo's sibling, a full subtree
+        copy is 0.09s against a 0.67s mean per mutant, so the whole pool's copies cost less than
+        one mutant.
+
+        Copied from the PRIMARY SANDBOX rather than from tracked source. The primary is what the
+        candidate list, the covered lines and the baseline were all computed against, so cloning
+        it is what makes a worker's copy the same bytes those decisions were made on. Re-copying
+        the repo would re-read files that may have been edited since the run started.
+
+        A count of zero returns nothing, which is the serial case and needs no branch at the
+        call site.
+
+        NO ShouldProcess of its own, deliberately. It wrapped each iteration in one at first, and
+        that was a second gate over the same act: New-PSMutationSandbox below already supports
+        ShouldProcess, and $WhatIfPreference propagates into it from whatever called this. The
+        wrapper changed nothing a caller could observe and cost three mutants nothing could kill --
+        the guard itself, and both halves of the "worker $($i + 1)" message no assertion reads.
+    .OUTPUTS
+        [string[]] the extra sandbox roots, one per additional worker.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'The sandbox it creates supports ShouldProcess and -WhatIf reaches it; a second gate over the same act is unobservable.')]
+    [OutputType([string[]], [object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$SandboxRoot,
+        [Parameter(Mandatory)] [string[]]$Subtrees,
+        [Parameter(Mandatory)] [int]$Count
+    )
+    $out = [System.Collections.Generic.List[string]]::new()
+    for ($i = 0; $i -lt $Count; $i++) {
+        $out.Add((New-PSMutationSandbox -RepoRoot $SandboxRoot -Subtrees $Subtrees))
+    }
+    # Comma-wrapped: an empty result would unroll to $null, and the caller counts it to learn how
+    # many workers it has -- $null.Count is 0, so the count would still read right and the array
+    # it was joined into would carry a $null root that no worker could ever mutate in.
+    return , [string[]]@($out)
+}
+
+function Get-PSMutationWorkerPath {
+    <#
+    .SYNOPSIS
+        A sandbox path as it appears inside one worker's own copy. Pure.
+    .DESCRIPTION
+        Worker 0 mutates the primary sandbox itself, so its answer is the path unchanged. That
+        is an identity rather than a special case: with one worker the whole re-rooting question
+        does not arise, which is what keeps a serial run byte-identical to what it was before
+        workers existed.
+
+        The two arms are NOT interchangeable, which is easy to miss because for a normalised path
+        under a real root they return the same string. [System.IO.Path]::GetRelativePath throws on
+        an empty base, so an empty pair of roots is the input that tells them apart -- and it is
+        what the test pins, since a mutant forcing the guard away survives everything else.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$SandboxRoot,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$WorkerRoot
+    )
+    if ($WorkerRoot -eq $SandboxRoot) { return $Path }
+    # ConvertTo-PSMutationSandboxPath rather than a string replace, so a worker path is refused
+    # for escaping its own sandbox on exactly the terms the primary one is. A string replace
+    # would also match a root that is a prefix of an unrelated directory beside it.
+    return ConvertTo-PSMutationSandboxPath -Path $Path -RepoRoot $SandboxRoot -SandboxRoot $WorkerRoot
+}
+
 function ConvertTo-PSMutationSandboxPath {
     # Map a repo path to its position inside the sandbox (structure is preserved). Pure.
     [OutputType([string])]
