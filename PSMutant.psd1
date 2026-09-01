@@ -40,7 +40,33 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**Configs pipe in, one independent run each.** There was no pipeline binding at all, so a monorepo
+            ReleaseNotes = '**Evaluate mutants in parallel, with `"workers"`.** Wall-clock was `mutants x suite`,
+strictly serial -- which is why mutation testing gets set off and walked away from rather than run
+in an edit loop.
+
+```jsonc
+{ "workers": 0 }   // this machine: ProcessorCount - 1
+{ "workers": 4 }   // exactly four
+```
+
+Each worker gets its own sandbox copy and its own Pester-loaded runspace; nothing is shared but the
+read-only candidate list. Finished mutants are recorded in **candidate order**, not completion
+order, so the answer does not depend on which worker finished first. Measured on a real repo:
+**554 mutants, 266s serial against 100s at `workers: 8`**, reports identical row for row -- same
+order, same verdicts, same killers. A test asserts it by running one fixture both ways.
+
+**Opt-in, default 1.** Your suite runs N times concurrently, and nothing isolates a process-wide
+resource. Two turned up in PSMutant''s own suite: an environment variable a test WRITES (a runspace
+does not get its own environment) and a temp file named after `$PID` (every worker shares one
+process id). Both show as a VERDICT rather than an error -- a flipped value fails an assertion that
+should have passed, which scores as a kill. Both are fixed, and this project''s own gate now runs
+at `workers: 3`: 1120 mutants, identical verdicts, 778s down to 306s.
+
+**The per-mutant timeout is multiplied by `workers`.** The baseline is measured alone; N mutants
+sharing a machine are slower for reasons unrelated to the fault in them, and an overrun scores as a
+**kill** -- so a solo-sized budget turns contention into kills and the score goes **up**.
+
+**Configs pipe in, one independent run each.** There was no pipeline binding at all, so a monorepo
 gating per package meant a `foreach` with the exit codes collected by hand.
 
 ```powershell
@@ -49,14 +75,11 @@ Get-ChildItem ./packages -Directory |
 ```
 
 `-ConfigFile` binds by value and by property name; `-SourceRoot` by property name with `FullName`
-aliased, and `PSPath` deliberately not -- it is provider-qualified. Each config runs **as it
-arrives** with its own sandbox, baseline and report, so twenty packages give the first verdict in
-the time the first run takes. One result object each.
+aliased (`PSPath` deliberately not -- it is provider-qualified). Each config runs **as it arrives**
+with its own sandbox, baseline and report. One result object each.
 
-**`-SourceRoot` must be a directory, and now says so at the source** rather than surfacing later as
-a sandbox error naming a temp directory the reader has never seen. Pipeline binding makes it easy
-to hit: piping FILES binds `-ConfigFile` by value **and** `-SourceRoot` from the same object''s
-`FullName`, pointing the root at the config file.
+**`-SourceRoot` must be a directory, and says so at the source** -- piping FILES binds it from the
+same object''s `FullName`, which used to surface as a sandbox error naming a temp directory.
 
 **Gate a pull request on what it changed, with `-ChangedFile`.**
 
@@ -69,28 +92,23 @@ exit (Invoke-PSMutation -ConfigFile ./c.json -ChangedFile $changed).ExitCode
 question a reviewer has: are the lines this PR introduced tested well enough? A whole-repo score
 cannot answer that, and a whole-repo score is what makes people turn the gate off.
 
-**You compute the diff** -- there is deliberately no `-ChangedSince <ref>`. It needs a base, and
-every way that goes wrong goes wrong in *your* environment: a shallow clone where the ref was never
-fetched, a detached HEAD, a merge base that is not the one the reviewer sees. An **empty list is
-refused**, because `git diff` against an unfetched ref prints nothing and exits 0 -- a green gate
-over zero mutants. A list holding files that are simply not in `mutate` is an ordinary documentation
-change: it passes and says so, even under a break threshold.
+**You compute the diff** -- no `-ChangedSince <ref>`, because every way of resolving a base goes
+wrong in *your* environment. An **empty list is refused**: `git diff` against an unfetched ref
+prints nothing and exits 0, which is a green gate over zero mutants. A list of files simply not in
+`mutate` passes and says so, even under a break threshold.
 
-The score is real but not the project''s, so the report goes to `<report>.changed.json`, `mode` is
-`Changed`, and the schema **requires** `changedFiles` beside the score. It cannot combine with
-`-RecheckFrom`, `-UpdateBaseline` or `-MergeIntoBaseline` -- folding a scoped run''s survivors into a
-whole-project baseline would record "no survivors" for every file it never looked at. `-ListOnly` is
-allowed. Restricting mutants to changed *lines* is not implemented.
+The score is real but not the project''s: the report goes to `<report>.changed.json`, `mode` is
+`Changed`, and the schema **requires** `changedFiles` beside it. It cannot combine with
+`-RecheckFrom`, `-UpdateBaseline` or `-MergeIntoBaseline` -- folding a scoped run''s survivors into
+a whole-project baseline would record "no survivors" for files it never looked at.
 
 **Preview what a config would mutate, with `-ListOnly`.** Per file, per operator, and how many
 candidates survive `coveredLinesOnly`, then it stops -- nothing evaluated, no report written.
 
-It exists for the **vacuous 100%**: a file that produces no candidates is still listed in
-`mutate`, hashed into the report, contributes 0 of 0, and in a blended score is invisible --
-two files in a real repository were in that state. It names them, and separately the files
-whose candidates coverage removed entirely: two faults, two different fixes.
-`FilesWithNoCandidate` and `FilesEmptiedByCoverage` travel on the result so a repository can
-fail its own build on either. `ExitCode` is always 0 -- a preview has no verdict.
+It exists for the **vacuous 100%**: a file producing no candidates is still listed in `mutate`,
+contributes 0 of 0, and in a blended score is invisible -- two files in a real repository were in
+that state. It names those, and separately the files coverage emptied. `FilesWithNoCandidate` and
+`FilesEmptiedByCoverage` travel on the result so a build can fail on either. `ExitCode` is always 0.
 
 **A committed list of accepted survivors, so the gate is adoptable on code already red.** Point
 `survivorBaseline` at a path; its presence enables the gate and `-UpdateBaseline` writes it.
@@ -108,11 +126,10 @@ written argument the gate checks; a baseline entry means *this mutant is not kil
 generated. Without the second, recording debt meant overstating it as equivalence, which corrupts
 the one list whose entries are claims somebody made.
 
-A set of mutants rather than a per-file score: a score is a ratio whose denominator moves with the
-source, and against a file baselined at 90% three of four ordinary edits fail the ratchet. PHPStan
-and Psalm baseline specific findings for the same reason. Entries are keyed by file, function and
-change, so one survives a line moving. `-UpdateBaseline` writes **even on a failing run**, which
-adoption needs; the next run still compares against what was recorded.
+A set of mutants rather than a per-file score: a ratio''s denominator moves with the source, so
+against a file baselined at 90% three of four ordinary edits fail the ratchet. Entries are keyed by
+file, function and change, so one survives a line moving. `-UpdateBaseline` writes **even on a
+failing run**, which adoption needs.
 
 **`-MergeIntoBaseline` folds a recheck''s verdicts back into the report it came from**, instead of a
 full run purely to refresh a baseline the rechecks already made stale. Each re-evaluated mutant
@@ -123,26 +140,22 @@ verdicts under the old number is a self-contradictory document.
 only for additive test changes: adding a test cannot revive a mutant the baseline killed, editing or
 deleting one can, and a recheck never looks at it. Reports record each mapped test file''s size, and
 the merge refuses when one **shrank** or disappeared. Length rather than a hash: hash equality asks
-"unchanged", which would refuse the very loop this serves. Growth **permits** the merge rather than
-certifying it, and the merged report records `mergedFrom` and `carriedOverUnverified`.
+"unchanged", which would refuse the very loop this serves.
 
 **A recheck refuses a report that describes a different run.** The compatibility gate walked the
 files *this* run mutates, so a file the **report** covers and the run does not was invisible --
-measured, a config mutating `a.ps1` accepted a report over `a.ps1` and `b.ps1` with zero reasons,
-then would report "N of M previous survivors now killed" over a set it never had.
+measured, a config mutating `a.ps1` accepted a report over `a.ps1` and `b.ps1` with zero reasons.
 
-**A recheck no longer pays for coverage instrumentation it cannot use.** It evaluates the mutants a
-prior report listed, matched on `(File, Id)`, and ids are assigned over the *unfiltered* candidate
-set -- so an unfiltered selection is a superset whose extra members no report lists, and the
-intersection is identical. Measured interleaved: the baseline is **13.2s without the tracer against
-16.4s with, +24%**. The green-gate baseline stays; a recheck against a red suite would mean nothing.
+**A recheck no longer pays for coverage instrumentation it cannot use.** It matches the mutants a
+prior report listed on `(File, Id)`, and ids come from the *unfiltered* candidate set, so the
+intersection is identical either way. Measured interleaved: the baseline is **13.2s without the
+tracer against 16.4s with, +24%**.
 
 **A run that stops running now stops, instead of looking like a slow one.** Every mutant was bounded
 and the run was not -- observed, a run suspended overnight at 875 minutes of wall clock against 333
-seconds of CPU. Two bounds, checked **between** mutants: a **stalled mutant**, waited on for exactly
-its budget so far past it means the thing that should have stopped it never fired, and a
-**whole-run budget** as backstop. `runTimeoutSeconds` overrides it, **0 disables it**, and both stop
-by throwing so the partial report is still written.
+seconds of CPU. Two bounds, checked **between** mutants: a **stalled mutant**, and a **whole-run
+budget** as backstop. `runTimeoutSeconds` overrides it, **0 disables it**, and both stop by throwing
+so the partial report is still written.
 
 **An interrupted run writes a partial report instead of nothing.** Ctrl-C, a cancelled CI job or a
 killed agent used to discard everything. It is marked `"mode": "Partial"` with `evaluated` and
@@ -150,8 +163,8 @@ killed agent used to discard everything. It is marked `"mode": "Partial"` with `
 whichever files sort earliest, not a sample of anything.
 
 **The report and the console break the score down per file.** A blend is an average, so a strong
-file carries a weak one and the gate passes on a number nobody would accept per file -- observed on
-a real consumer at ~89% blended while files ranged from 39.6% to 100%.
+file carries a weak one -- observed on a real consumer at ~89% blended while files ranged from
+39.6% to 100%.
 
 ```
   2 of 3 file(s) score below 85%:
@@ -163,19 +176,16 @@ a real consumer at ~89% blended while files ranged from 39.6% to 100%.
 below the good band, and nothing when one file was mutated or every file clears it.
 
 **The report says which tests killed each mutant.** Every row carries `KilledBy`, **truncated** by
-default -- a mutant''s suite stops at the first failure, since once one test has noticed the rest
-cannot change the verdict. Truncated is not "exactly one": over 118 killed mutants the default still
-reported several killers for 20. Read `killersComplete`. **`recordAllKillers: true`** records every
-killer at the cost of the early stop (50s becomes 73s for identical verdicts), and adds
+default -- a mutant''s suite stops at the first failure. Truncated is not "exactly one": over 118
+killed mutants the default still reported several killers for 20, so read `killersComplete`.
+**`recordAllKillers: true`** records every killer at the cost of the early stop, and adds
 **`testsWithoutKills`** -- absent by default, because under the early stop a test that would have
 killed but was skipped looks exactly like one that cannot.
 
-**`-Verbose` now tells you something, and progress goes to the stream built for it.** Everything the
-module said went to the run result or the host, so `-Verbose` produced nothing. A run now traces its
-**resolutions**: the sandbox, the subtrees copied, the files that resolved into the mutate set, the
-Pester found, and which covering suite each file mapped to. `-Verbose` and `-Quiet` are
-**independent**, so `-Quiet -Verbose` gives the trace without the per-mutant chatter. Per-mutant
-progress also goes through `Write-Progress`, which no caller collecting output swallows.
+**`-Verbose` now tells you something.** A run traces its **resolutions**: the sandbox, the subtrees
+copied, the files that resolved into the mutate set, the Pester found, and which covering suite each
+file mapped to. `-Verbose` and `-Quiet` are **independent**. Per-mutant progress also goes through
+`Write-Progress`, which no caller collecting output swallows.
 
 **`schemaVersion` is now 2, and the report discloses more of what its score does not cover.**
 

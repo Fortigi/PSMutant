@@ -74,6 +74,14 @@
       },
       "description": "Which directories are copied into the temp sandbox. Default ['src','tests']. A covering suite that reaches outside these finds nothing there, proves nothing, and leaves its file silently unmutated."
     },
+    "workers": {
+      "type": [
+        "integer",
+        "null"
+      ],
+      "minimum": 0,
+      "description": "How many mutants to evaluate at once, each in its own sandbox copy and its own Pester runspace. Omitted means 1: parallel evaluation runs your covering suite N times concurrently, and a suite that binds a fixed port or an absolute temp path is not parallel-safe, so this is opted into rather than assumed. 0 means this machine (ProcessorCount - 1). The per-mutant timeout is multiplied by this, because a budget measured on a solo baseline turns contention into false kills -- which raises the score."
+    },
     "timeoutFactor": {
       "type": [
         "number",

@@ -103,7 +103,7 @@ function Get-PSMutationPesterPath {
         dies on "An incompatible version of the Pester.dll assembly is already loaded".
         A child that dies produces no verdict, and anything-but-Passed reads as a kill --
         so on any machine with two Pesters installed every mutant dies and the run reports
-        a silent, entirely fake 100%. Invoke-PSBoundedPester throws rather than returning
+        a silent, entirely fake 100%. Receive-PSMutationJob throws rather than returning
         nothing for that reason.
 
         Importing by PATH is what makes the module version-agnostic in the way the
@@ -165,8 +165,8 @@ function Get-PSMutationRunspaceError {
     return ($messages -join '; ')
 }
 
-# --- WARM RUNSPACE (prototype) ------------------------------------------------------------
-# One runspace, Pester imported once, reused across mutants.
+# --- WARM RUNSPACE POOL ---------------------------------------------------------------------
+# One runspace PER WORKER, Pester imported into each once, reused across mutants.
 #
 # Measured on PSComplexity as the target: a fresh runspace plus Import-Module Pester costs about
 # 396 ms, paid on EVERY mutant -- 219s of an 801s run, 27%, spent re-importing a module that does
@@ -174,11 +174,18 @@ function Get-PSMutationRunspaceError {
 #
 # Correctness rests on the child re-reading the mutated file each time, which it already does: the
 # covering suite dot-sources the source under test, so nothing about the mutant is cached in the
-# runspace. What COULD leak is state a suite leaves behind, which is why the runspace is recycled
+# runspace. What COULD leak is state a suite leaves behind, which is why a runspace is recycled
 # on a fixed interval and unconditionally after a timeout -- Stop() leaves a runspace unusable.
-$script:PSMutationWarmRunspace = $null
-$script:PSMutationWarmShell = $null
-$script:PSMutationWarmUses = 0
+#
+# KEYED BY WORKER, and that is what parallel evaluation needed from this file. A singleton would
+# hand the same [PowerShell] instance to two workers at once, and a second BeginInvoke on a busy
+# instance throws -- so the failure would not be a subtle wrong answer, but it would be a run that
+# dies at random depending on scheduling. Each worker owns a runspace and nothing else touches it,
+# which is also what makes the per-worker recycle and the post-timeout discard mean the same thing
+# they meant when there was one.
+$script:PSMutationWarmRunspace = @{}
+$script:PSMutationWarmShell = @{}
+$script:PSMutationWarmUses = @{}
 
 # How many mutants one runspace serves before it is rebuilt. Bounds any state a covering suite
 # leaves behind: the saving is already 93% of the floor at this interval, so a larger number buys
@@ -186,37 +193,56 @@ $script:PSMutationWarmUses = 0
 $script:PSMutationWarmRunspaceLifetime = 50
 
 function Close-PSMutationWarmRunspace {
-    # Dispose the warm runspace, if there is one. Safe to call when there is not.
+    # Dispose ONE worker's warm runspace, if it has one. Safe to call when it does not.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Disposes an in-process runspace; there is no system state to confirm.')]
     [OutputType([void])]
     [CmdletBinding()]
-    param()
+    param([Parameter(Mandatory)] [int]$WorkerId)
     # ONE guard for both, because the two are always set together and always cleared together --
     # Get-PSMutationWarmShell assigns them in the same breath and nothing else touches either.
     # Written as two guards they imply a state where one exists without the other, which cannot
     # happen, and the mutation gate proved the cost of pretending otherwise: forcing either guard
     # false left the OTHER object disposed, so a test asking whether the shell still works threw
     # anyway and both mutants survived. One guard is both simpler and observable.
-    if ($script:PSMutationWarmShell) {
-        $script:PSMutationWarmShell.Dispose()
-        $script:PSMutationWarmRunspace.Dispose()
+    if ($script:PSMutationWarmShell.ContainsKey($WorkerId)) {
+        $script:PSMutationWarmShell[$WorkerId].Dispose()
+        $script:PSMutationWarmRunspace[$WorkerId].Dispose()
     }
-    $script:PSMutationWarmShell = $null
-    $script:PSMutationWarmRunspace = $null
-    $script:PSMutationWarmUses = 0
+    # Removed rather than set to $null. A key whose value is $null still answers ContainsKey, so
+    # the guard above would fire on the next close and dispose $null -- and Get-PSMutationWarmShell
+    # would hand back nothing while believing it had a shell.
+    $script:PSMutationWarmShell.Remove($WorkerId)
+    $script:PSMutationWarmRunspace.Remove($WorkerId)
+    $script:PSMutationWarmUses.Remove($WorkerId)
+}
+
+function Close-PSMutationWarmRunspacePool {
+    # Dispose every worker's warm runspace. The run's exit path, so a long-lived host does not
+    # keep a Pester-loaded runspace per completed run -- once per WORKER now, which is the whole
+    # reason this is not just the singleton's close under a new name.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Disposes in-process runspaces; there is no system state to confirm.')]
+    [OutputType([void])]
+    [CmdletBinding()]
+    param()
+    # Snapshotted with @(), because Close-PSMutationWarmRunspace removes the key it is given and
+    # a hashtable being enumerated cannot be modified -- iterating .Keys directly throws on the
+    # second worker, which is a failure that only appears once somebody runs in parallel.
+    foreach ($id in @($script:PSMutationWarmShell.Keys)) { Close-PSMutationWarmRunspace -WorkerId $id }
 }
 
 function Get-PSMutationWarmShell {
-    # A PowerShell instance on a runspace that already has Pester loaded.
+    # A PowerShell instance on a runspace that already has Pester loaded, belonging to one worker.
     [OutputType([powershell])]
     [CmdletBinding()]
-    param()
-    if ($script:PSMutationWarmShell -and $script:PSMutationWarmUses -lt $script:PSMutationWarmRunspaceLifetime) {
-        $script:PSMutationWarmUses++
-        return $script:PSMutationWarmShell
+    param([Parameter(Mandatory)] [int]$WorkerId)
+    if ($script:PSMutationWarmShell.ContainsKey($WorkerId) -and
+        $script:PSMutationWarmUses[$WorkerId] -lt $script:PSMutationWarmRunspaceLifetime) {
+        $script:PSMutationWarmUses[$WorkerId]++
+        return $script:PSMutationWarmShell[$WorkerId]
     }
-    Close-PSMutationWarmRunspace
+    Close-PSMutationWarmRunspace -WorkerId $WorkerId
     $rs = [runspacefactory]::CreateRunspace()
     $rs.Open()
     $shell = [PowerShell]::Create()
@@ -231,7 +257,7 @@ function Get-PSMutationWarmShell {
     #
     # The runspace is disposed before rethrowing so a failed warm-up cannot be handed to the next
     # caller. A shell without Pester would run every covering suite into a command-not-found and
-    # report no verdict, which Invoke-PSMutant reads as a KILL -- the same shape as the version
+    # report no verdict, which the verdict reader treats as a KILL -- the same shape as the version
     # collision this file exists to prevent.
     try { $null = $shell.Invoke() }
     catch {
@@ -239,9 +265,9 @@ function Get-PSMutationWarmShell {
         throw "Could not import Pester into the mutant runspace: $($_.Exception.Message)"
     }
     $shell.Commands.Clear()
-    $script:PSMutationWarmRunspace = $rs
-    $script:PSMutationWarmShell = $shell
-    $script:PSMutationWarmUses = 1
+    $script:PSMutationWarmRunspace[$WorkerId] = $rs
+    $script:PSMutationWarmShell[$WorkerId] = $shell
+    $script:PSMutationWarmUses[$WorkerId] = 1
     return $shell
 }
 

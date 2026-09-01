@@ -443,6 +443,10 @@ function Invoke-PSMutationRecheckRun {
         [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Operators,
         [Parameter(Mandatory)] [int]$TimeoutSeconds,
         [Parameter(Mandatory)] [string]$SandboxRoot,
+        # The pool's extra sandboxes, passed straight through. A recheck evaluates its mutants
+        # through the same loop as a full run, so it gets the same parallelism from the same
+        # config key rather than a second answer about how many workers this run has.
+        [AllowEmptyCollection()] [string[]]$WorkerSandbox = @(),
         [Parameter(Mandatory)] [string]$ReportPath,
         # Needed to skip declared equivalents when choosing what to re-run.
         $Equivalents,
@@ -472,7 +476,7 @@ function Invoke-PSMutationRecheckRun {
     # owning one, so there is nowhere else for the rows to go.
     $rows = [System.Collections.Generic.List[object]]::new()
     $results = Invoke-PSMutationLoop -Candidates $targets -Sink $rows -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
-        -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -Quiet:$Quiet
+        -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox -Quiet:$Quiet
     $recheckPath = Get-PSMutationRecheckReportPath -ReportPath $ReportPath
     # The prior report's own hashes and operator set travel with the new one, so the next
     # round can validate against them. Recomputing here would describe the CURRENT source

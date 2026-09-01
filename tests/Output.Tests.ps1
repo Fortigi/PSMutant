@@ -80,33 +80,59 @@ Describe 'Get-PSMutationKnownRole' {
     }
 }
 
-Describe 'Test-PSMutationAnnotationHost' {
-    # The one place that touches the real variable, because it is the thing under test. The
-    # ORIGINAL value is restored rather than cleared: $env: is process state, this suite runs
-    # inside CI where the variable is genuinely set, and a test that resets it to $null quietly
-    # changes what every later test file sees. That is not hypothetical -- it is why the whole
-    # suite passed locally and the gate failed.
-    BeforeAll { $script:priorActions = $env:GITHUB_ACTIONS }
-    AfterEach { $env:GITHUB_ACTIONS = $script:priorActions }
-    AfterAll { $env:GITHUB_ACTIONS = $script:priorActions }
+Describe 'Test-PSMutationAnnotationFlag and its host' {
+    # NOTHING HERE WRITES $env:. It used to: three tests set GITHUB_ACTIONS to exercise the three
+    # cases and restored it in an AfterEach. That is unsafe the moment this suite runs beside
+    # itself, which is what `workers` does -- several mutants of one file run that file's covering
+    # suite at once, in separate runspaces of ONE process, sharing one environment. Two of them
+    # setting the variable to different values in the same millisecond makes an assertion fail that
+    # should have passed, which is scored as a KILLED mutant: a mutant this suite did not catch,
+    # with the score moving toward the flattering answer and nothing to notice.
+    #
+    # The decision now takes the value as a parameter, so the three cases are pinned with nothing
+    # written and the read is asserted separately by reading.
 
     It 'recognises a GitHub Actions step' {
-        $env:GITHUB_ACTIONS = 'true'
-        Should-BeTrue -Actual (Test-PSMutationAnnotationHost)
+        Should-BeTrue -Actual (Test-PSMutationAnnotationFlag -Value 'true')
     }
 
     It 'does not treat an unset variable as a CI' {
         # The paired half, and the one that matters for a developer: emitting workflow commands
-        # at a human puts '::warning' noise in front of them for no reason.
-        $env:GITHUB_ACTIONS = $null
-        Should-BeFalse -Actual (Test-PSMutationAnnotationHost)
+        # at a human puts '::warning' noise in front of them for no reason. Both spellings of
+        # "unset", because $env: on a missing variable is $null and a [string] parameter takes
+        # that as the empty string.
+        Should-BeFalse -Actual (Test-PSMutationAnnotationFlag -Value $null)
+        Should-BeFalse -Actual (Test-PSMutationAnnotationFlag -Value '')
     }
 
     It 'does not treat the string false as a CI' {
         # Actions sets this to the literal 'false' in some contexts, and any non-empty string is
         # truthy in PowerShell -- so a truthiness check here reads 'false' as yes.
-        $env:GITHUB_ACTIONS = 'false'
+        Should-BeFalse -Actual (Test-PSMutationAnnotationFlag -Value 'false')
+    }
+
+    It 'answers with whatever the flag decision says' {
+        # The wiring, which is the half a pure test cannot reach. A host that ignored the decision
+        # and returned a constant would satisfy every assertion above.
+        Mock Test-PSMutationAnnotationFlag { $true }
+        Should-BeTrue -Actual (Test-PSMutationAnnotationHost)
+        Mock Test-PSMutationAnnotationFlag { $false }
         Should-BeFalse -Actual (Test-PSMutationAnnotationHost)
+    }
+
+    It 'forwards the GITHUB_ACTIONS value, whatever this host has set it to' {
+        # READS the variable, never writes it -- reading races with nobody. Cast to [string] on
+        # both sides because $env: on a missing variable is $null while the parameter is a
+        # [string], and `'' -eq $null` is $false in PowerShell.
+        #
+        # Weaker when the variable is unset, and knowingly so: locally it asserts that '' was
+        # forwarded, which a hardcoded '' would also satisfy. Under Actions, where it is 'true',
+        # it is exact -- and Actions is the only place the answer changes anything.
+        Mock Test-PSMutationAnnotationFlag { $false }
+        $null = Test-PSMutationAnnotationHost
+        Should-Invoke Test-PSMutationAnnotationFlag -Exactly 1 -ParameterFilter {
+            $Value -eq [string]$env:GITHUB_ACTIONS
+        }
     }
 }
 

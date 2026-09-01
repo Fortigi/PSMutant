@@ -3,6 +3,12 @@
 # Also the covering suite for self-mutation (psmutant.self.config.json) - keep it pure.
 
 BeforeAll {
+    # UNIQUE PER RUN, not per process. $PID was unique enough while one process ran one suite;
+    # `workers` runs several mutants of the same file at once, in separate runspaces of ONE
+    # process, each running THIS file -- so a pid-named fixture is a fixture two of them share,
+    # and one's cleanup deletes the other's file mid-test. Measured: it killed a mutant declared
+    # equivalent, which the report then shows as a stale declaration rather than as a race.
+    $script:tag = [System.Guid]::NewGuid().ToString('N')
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     . (Join-Path $src 'PSMutation.Operators.ps1')
 
@@ -15,7 +21,7 @@ BeforeAll {
         return $p
     }
 
-    $script:fixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-ops-$PID.ps1"
+    $script:fixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-ops-$PID-$($script:tag).ps1"
     @'
 function Test-Fixture {
     param($x)
@@ -69,7 +75,7 @@ Describe 'Get-PSMutationCandidate - operator selection' {
         @(Get-PSMutationCandidate -Path $script:fixture -Operators @()).Count | Should-Be 0
     }
     It 'throws on a script with parse errors' {
-        $bad = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-bad-$PID.ps1"
+        $bad = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-bad-$PID-$($script:tag).ps1"
         'function {' | Set-Content $bad
         { Get-PSMutationCandidate -Path $bad } | Should-Throw
         Remove-Item $bad -ErrorAction SilentlyContinue
@@ -78,7 +84,7 @@ Describe 'Get-PSMutationCandidate - operator selection' {
 
 Describe 'Loop guard' {
     It 'never emits a candidate inside a while/for condition' {
-        $loop = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-loop-$PID.ps1"
+        $loop = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-loop-$PID-$($script:tag).ps1"
         "function L { `$i = 0; while (`$i -lt 10) { `$i = `$i + 1 }; for (`$j = 0; `$j -gt 3; `$j++) { } }" | Set-Content $loop
         try {
             $c = Get-PSMutationCandidate -Path $loop -Operators $script:all
@@ -98,7 +104,7 @@ Describe 'Skipped constructs' {
     # skipped, so the assertion says "this is filtered" rather than merely "nothing
     # came back".
     BeforeAll {
-        $script:skipFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-skips-$PID.ps1"
+        $script:skipFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-skips-$PID-$($script:tag).ps1"
         @'
 function Skip-Cases {
     $done = $false
@@ -219,7 +225,7 @@ Describe 'Structural operators (opt-in)' {
     BeforeAll {
         # Decisions that live in STRUCTURE rather than in an expression: a bare variable
         # guard, a reference-fallback chain, a boundary comparison, a returned value.
-        $script:structFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-struct-$PID.ps1"
+        $script:structFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-struct-$PID-$($script:tag).ps1"
         @'
 function Test-Structural {
     param($Ref, $Sync, $i)
@@ -237,7 +243,7 @@ function Test-Structural {
 
         # A whole file whose only decision is a bare guard -- the shape that scores a
         # vacuous 100% today, taken from the two files named in the issue.
-        $script:bareFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-bare-$PID.ps1"
+        $script:bareFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-bare-$PID-$($script:tag).ps1"
         @'
 function Invoke-Phase {
     param($SyncUsers)
@@ -249,7 +255,7 @@ function Invoke-Phase {
         # still decline. `switch` is the idiomatic PowerShell multi-way decision and a ternary
         # compiles to no if-node at all, so a consumer leaning on either saw ConditionForcing
         # report almost nothing.
-        $script:decisionFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-decision-$PID.ps1"
+        $script:decisionFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-decision-$PID-$($script:tag).ps1"
         @'
 function Get-Kind {
     param($x, $mode)
@@ -356,7 +362,7 @@ function Get-Kind {
             # A block comment sitting in the gap can contain the word "default" and defeat an
             # IndexOf. The keyword forced must be the real one -- asserted by its column, since
             # both the comment and the keyword are on the same line.
-            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defcomment-$PID.ps1"
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defcomment-$PID-$($script:tag).ps1"
             # Built rather than written literally: a comment-close sequence inside the here-string
             # of THIS file would end the wrong comment.
             $open = '<' + '#'; $close = '#' + '>'
@@ -376,7 +382,7 @@ function Get-Kind {
         It 'forces a default in a switch that has NO other clauses' {
             # The window has to open after the switch CONDITION when there is no last clause to
             # open it after -- the arm of that branch a switch with clauses never exercises.
-            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defonly-$PID.ps1"
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defonly-$PID-$($script:tag).ps1"
             "function T { param(`$x) switch (`$x) { default { 'only' } } }" | Set-Content $f -Encoding utf8
             try {
                 @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing') |
@@ -387,7 +393,7 @@ function Get-Kind {
         It 'emits only the clause candidates for a switch with no default at all' {
             # The other side of that pair: the walk must skip the default work entirely rather
             # than reach for a keyword that is not there. Two candidates, both from the clause.
-            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-nodef-$PID.ps1"
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-nodef-$PID-$($script:tag).ps1"
             "function T { param(`$x) switch (`$x) { 1 { 'a' } } }" | Set-Content $f -Encoding utf8
             try {
                 $got = @(Get-PSMutationCandidate -Path $f -Operators @('ConditionForcing'))
@@ -402,7 +408,7 @@ function Get-Kind {
             # keyword and its body the nearest token above the body is the COMMENT -- an unfiltered
             # search picks that and forces `<# c #>` instead of `default`. Every other fixture here
             # has the keyword directly above the body, where filtered and unfiltered agree.
-            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defgap-$PID.ps1"
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defgap-$PID-$($script:tag).ps1"
             $open = '<' + '#'; $close = '#' + '>'
             "function T { param(`$x) switch (`$x) { 1 { 'a' } default $open c $close { 'b' } } }" |
                 Set-Content $f -Encoding utf8
@@ -417,7 +423,7 @@ function Get-Kind {
             # `default{ 'a' }` with no space is legal PowerShell, and it closes the gap between the
             # keyword's end offset and the body block's start offset to ZERO. The bound has to be
             # inclusive to see it, so this is the one fixture that tells `-le` from `-lt`.
-            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-deftight-$PID.ps1"
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-deftight-$PID-$($script:tag).ps1"
             "function T { param(`$x) switch (`$x) { 1 { 'a' } default{ 'b' } } }" |
                 Set-Content $f -Encoding utf8
             try {
@@ -430,7 +436,7 @@ function Get-Kind {
             # The window is the gap between a switch's last clause body and its own default block,
             # so an inner default -- which sits inside a clause body -- cannot be picked up by the
             # outer switch. Two defaults in, two distinct extents out.
-            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defnest-$PID.ps1"
+            $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-defnest-$PID-$($script:tag).ps1"
             @'
 function T {
     param($x, $y)
@@ -648,7 +654,7 @@ Describe 'Loop-condition guard across every operator' {
     # Each construct below appears once inside the condition and once in the body, so
     # every assertion says "this one was filtered" rather than "nothing came back".
     BeforeAll {
-        $script:loopFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-loopguard-$PID.ps1"
+        $script:loopFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-loopguard-$PID-$($script:tag).ps1"
         @'
 function Test-LoopGuard {
     param($a, $i)
@@ -729,7 +735,7 @@ Describe 'mutant ids do not depend on the order operators were listed in' {
         # Two operators that interleave in the source, so walk order and source order
         # genuinely differ -- a fixture where one operator's candidates all preceded the
         # other's would pass no matter how ids were assigned.
-        $script:orderFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-order-$PID.ps1"
+        $script:orderFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-order-$PID-$($script:tag).ps1"
         @'
 function Test-Thing {
     param($a, $b)
@@ -785,7 +791,7 @@ function Test-Thing {
 
 Describe 'every description names what was mutated' {
     BeforeAll {
-        $script:descFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-desc-$PID.ps1"
+        $script:descFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-desc-$PID-$($script:tag).ps1"
         @'
 function Test-Desc {
     param($done, $ref)
@@ -815,7 +821,7 @@ function Test-Desc {
     It 'collapses whitespace so a multi-line construct stays one line' {
         # An extent can span lines. A raw multi-line condition would put newlines into a
         # console line and into a config key, where neither survives being pasted back.
-        $multi = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-desc-multi-$PID.ps1"
+        $multi = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-desc-multi-$PID-$($script:tag).ps1"
         try {
             @'
 function Test-Multi {
@@ -840,7 +846,7 @@ function Test-Multi {
         # The boundary, not a comfortable value. A limit of 121, or `-ge` instead of `-gt`,
         # both survive any test that only checks "long things get shortened" -- which is
         # what the first version of this test did, and the self-mutation gate said so.
-        $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-desc-len-$NameLength-$PID.ps1"
+        $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-desc-len-$NameLength-$PID-$($script:tag).ps1"
         try {
             $name = '$' + ('a' * ($NameLength - 1))
             "function Test-Len { return $name }" | Set-Content $f
@@ -875,7 +881,7 @@ function Get-Thing {
         # whenever anything ABOVE it is edited -- a comment, an import, another function --
         # although the mutant it argues about has not changed. It happened on the first run
         # after the feature shipped, and twice more while fixing #28.
-        $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-stable-$PID.ps1"
+        $f = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-stable-$PID-$($script:tag).ps1"
         try {
             $script:stableSrc | Set-Content $f
             $before = @(Get-PSMutationCandidate -Path $f -Operators @('NumberLiteral'))[0]
@@ -903,7 +909,7 @@ function Outer {
 }
 $topLevel = 3
 '@
-        $script:nestedFile = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-nested-$PID.ps1"
+        $script:nestedFile = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-nested-$PID-$($script:tag).ps1"
         $script:nested | Set-Content $script:nestedFile
     }
 

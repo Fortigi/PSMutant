@@ -1154,3 +1154,110 @@ Describe 'Get-Sign' { It 'is pos' { Get-Sign 5 | Should -Be 'pos' } }
         Test-Path (Join-Path $script:modProj 'reports/mod.json') | Should-BeFalse
     }
 }
+
+Describe 'a parallel run answers exactly what a serial one does' {
+    # The requirement #1 states outright: results must be deterministic regardless of scheduling.
+    # It is asserted end to end rather than by reasoning about the scheduler, because the ways
+    # this could go wrong are all about the ENVIRONMENT -- two workers sharing a file, a worker
+    # running the primary sandbox's tests, a row naming the temp directory that happened to run
+    # it -- and none of those are visible from inside the loop.
+    #
+    # Its own fixture, larger than the one above and with a deliberate spread of durations: a
+    # killed mutant stops at the first failing test and a survivor runs the whole suite, so
+    # workers finish OUT OF ORDER, which is the case an in-order report has to survive.
+    BeforeAll {
+        $script:pproj = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-par-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:pproj 'src') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:pproj 'tests') -Force | Out-Null
+        @'
+function Get-Band {
+    param($n)
+    if ($n -gt 100) { return 'high' }
+    if ($n -gt 10) { return 'mid' }
+    return 'low'
+}
+function Get-Step {
+    param($n)
+    if ($n -eq 0) { return 0 }
+    return ($n * 2) + 1
+}
+'@ | Set-Content (Join-Path $script:pproj 'src/band.ps1') -Encoding utf8
+
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'band.ps1') }
+Describe 'Get-Band' {
+    It 'is high above a hundred' { Get-Band 500 | Should -Be 'high' }
+    It 'is mid above ten' { Get-Band 50 | Should -Be 'mid' }
+    It 'is low otherwise' { Get-Band 1 | Should -Be 'low' }
+}
+Describe 'Get-Step' {
+    It 'is zero at zero' { Get-Step 0 | Should -Be 0 }
+    It 'doubles and adds one' { Get-Step 4 | Should -Be 9 }
+}
+'@ | Set-Content (Join-Path $script:pproj 'tests/band.Tests.ps1') -Encoding utf8
+
+        function WriteParallelConfig {
+            param([string]$Name, $Workers)
+            $cfg = [ordered]@{
+                sandboxSubtrees = @('src', 'tests')
+                mutate          = @('src/band.ps1')
+                tests           = @{ 'src/band.ps1' = @('tests/band.Tests.ps1') }
+                operators       = @('BinaryOperator', 'NumberLiteral', 'ConditionalBoundary')
+                reportPath      = "reports/$Name.json"
+            }
+            if ($null -ne $Workers) { $cfg.workers = $Workers }
+            $path = Join-Path $script:pproj "$Name.config.json"
+            $cfg | ConvertTo-Json -Depth 6 | Set-Content $path -Encoding utf8
+            return $path
+        }
+
+        $script:serialResult = Invoke-PSMutation -ConfigFile (WriteParallelConfig -Name 'serial' -Workers $null) `
+            -SourceRoot $script:pproj -Quiet
+        $script:parallelResult = Invoke-PSMutation -ConfigFile (WriteParallelConfig -Name 'parallel' -Workers 4) `
+            -SourceRoot $script:pproj -Quiet
+        $script:serialReport = Get-Content (Join-Path $script:pproj 'reports/serial.json') -Raw | ConvertFrom-Json
+        $script:parallelReport = Get-Content (Join-Path $script:pproj 'reports/parallel.json') -Raw | ConvertFrom-Json
+    }
+
+    AfterAll { Remove-Item $script:pproj -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'reaches the same score over the same mutants' {
+        $script:parallelResult.Total | Should-Be $script:serialResult.Total
+        $script:parallelResult.Killed | Should-Be $script:serialResult.Killed
+        $script:parallelResult.Survived | Should-Be $script:serialResult.Survived
+        $script:parallelResult.Score | Should-Be $script:serialResult.Score
+        # Not vacuous: a fixture that produced no mutants would satisfy every equality above.
+        $script:serialResult.Total | Should-BeGreaterThan 5
+    }
+
+    It 'writes the mutant rows in the SAME ORDER, with the same verdicts' {
+        # The in-order retirement, end to end. Workers finish out of order, so a report that
+        # recorded completion order would differ between two runs of one config -- and a consumer
+        # diffing reports would see churn that means nothing.
+        $serial = @($script:serialReport.mutants | ForEach-Object { "$($_.id)|$($_.file)|$($_.line)|$($_.description)|$($_.status)" })
+        $parallel = @($script:parallelReport.mutants | ForEach-Object { "$($_.id)|$($_.file)|$($_.line)|$($_.description)|$($_.status)" })
+        $parallel | Should-BeCollection $serial
+    }
+
+    It 'names no worker sandbox anywhere in the report' {
+        # Which worker ran a mutant is scheduling. A row carrying a per-worker temp path would be
+        # a field that changes with the machine, and the identity every equivalence declaration
+        # and every baseline entry is keyed on would move with it.
+        $raw = Get-Content (Join-Path $script:pproj 'reports/parallel.json') -Raw
+        $raw | Should-NotMatchString 'psmut-sandbox-'
+    }
+
+    It 'leaves the tracked source byte-identical, from every worker' {
+        # The headline guarantee, restated for a pool: N sandboxes are N more chances to write
+        # somewhere real.
+        Get-Content (Join-Path $script:pproj 'src/band.ps1') -Raw |
+            Should-MatchString ([regex]::Escape('if ($n -gt 100) { return ''high'' }'))
+    }
+
+    It 'removes every worker sandbox it made' {
+        # One leaked temp tree per worker per run, otherwise -- and the stale sweep only reclaims
+        # a sandbox whose owning process is gone, so a long-lived host would keep all of them.
+        @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter "psmut-sandbox-$PID-*" `
+                -ErrorAction SilentlyContinue).Count | Should-Be 0
+    }
+}
