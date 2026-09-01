@@ -267,21 +267,24 @@ away from rather than run in an edit loop. `workers` evaluates several at once:
 `WaitHandle.WaitAny`, and that throws above 64 handles. Clamped rather than refused, because the
 worker count does not change the answer.
 
-**More workers is not monotonically better — measure yours.** Every worker is a runspace in one
-process sharing one GC heap, so contention is real and it is not only about cores. Measured over
-174 mutants on a 24-core machine, interleaved in both orders:
+**More workers is not monotonically better, and the best number depends on your repo — measure
+yours.** Every worker is a runspace in one process sharing one GC heap, so contention is real and
+it is not only about cores. Two consumer repos on the same 24-core machine, each interleaved in
+both orders:
 
-| workers | wall | per-mutant latency |
+| workers | 8 mutate files, 3 covering suites | 112 mutate files, 112 covering suites |
 |---|---|---|
-| 1 | 36.2s | 0.178s |
-| 2 | 18.9s | 0.197s |
-| 4 | **13.9s** | 0.278s |
-| 8 | 14.6s | 0.571s |
-| 16 | 18.4s | 1.471s |
+| 1 | 36.2s | 102.0s |
+| 2 | 18.9s | 57.9s |
+| 4 | **13.9s** | 40.1s |
+| 8 | 14.6s | **33.6s** |
+| 16 | 18.4s | 39.8s |
 
-Wall clock bottoms out around four and is *worse* at sixteen than at four. `0` is a starting point,
-not an optimum: on a large machine a smaller explicit number is usually faster. PSMutant's own gate
-pins `3`.
+Both get *worse* past their own optimum, and the optima differ: four for the first, eight for the
+second. More distinct covering suites means more independent work and less contention on the same
+few files, so the wider repo scales further. `0` is a starting point rather than an answer — on a
+large machine it will usually be past the useful point. Try a few numbers on your own repo and keep
+the one that wins; PSMutant's own gate pins `3`.
 
 Each worker gets **its own sandbox copy and its own Pester-loaded runspace**, so nothing is shared
 but the read-only candidate list. Finished mutants are recorded in candidate order rather than

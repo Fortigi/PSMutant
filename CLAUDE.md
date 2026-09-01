@@ -820,18 +820,38 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   | 8 | 0.571s | 3.20x | 8x | 2.50 | 14.6s |
   | 16 | 1.471s | 8.25x | 16x | 1.94 | 18.4s |
 
-  Two things follow, and the first is the one nobody expected. **Wall clock bottoms out around
-  four workers and gets WORSE past eight** -- 13.9s at four against 18.4s at sixteen -- because
-  every worker is a runspace in ONE process sharing ONE GC heap, so contention is real and it is
-  not only about cores. A pool sized to the core count is past the useful point on this machine.
+  Two things follow, and the first is the one nobody expected. **Wall clock has an optimum and gets
+  WORSE past it**, because every worker is a runspace in ONE process sharing ONE GC heap -- so
+  contention is real and it is not only about cores. A pool sized to the core count is past the
+  useful point.
 
-  Second, the multiplier tracks the contention it exists to absorb: the margin stays between 1.8
-  and 2.6 at every worker count rather than growing. **#217 argued the opposite** -- that the model
-  assumes `1/N` and should scale by oversubscription instead, which would give a factor of 1 while
-  workers <= cores. Against these numbers that would hand a 16-worker run a solo-sized budget for
-  mutants running 8.25x slower, time out most of them, and score them KILLED: a fake 100%, which is
-  exactly the failure #62 exists to prevent. The issue was filed on a throughput reading and closed
-  on a latency one.
+  **Where that optimum sits depends on the repo, and one project is not enough to say.** The same
+  sweep on a second consumer repo -- 112 mutate files against this one's 3 covering suites, 381
+  mutants -- bottoms out at EIGHT, not four:
+
+  | workers | 3 covering suites | 112 covering suites | inflation A | inflation B |
+  |---|---|---|---|---|
+  | 1 | 36.2s | 102.0s | 1.00x | 1.00x |
+  | 2 | 18.9s | 57.9s | 1.10x | 1.10x |
+  | 4 | **13.9s** | 40.1s | 1.56x | 1.44x |
+  | 8 | 14.6s | **33.6s** | 3.20x | 2.31x |
+  | 16 | 18.4s | 39.8s | 8.25x | 5.53x |
+
+  More distinct covering suites means more independent work and less contention on the same few
+  files. So the README says "measure yours" rather than naming a number, and the first draft of it
+  said "bottoms out around four" on one project's evidence -- which was over-fitting, caught by
+  running the sweep again somewhere else.
+
+  Second, the multiplier tracks the contention it exists to absorb, and this is the part that held
+  across both: the margin stays between **1.8 and 3.5** at every worker count on both repos rather
+  than growing. **#217 argued the opposite** -- that the model assumes `1/N` and should scale by
+  oversubscription instead, which would give a factor of 1 while workers <= cores. Against these
+  numbers that would hand a 16-worker run a solo-sized budget for mutants running 5.5x to 8.25x
+  slower, time out most of them, and score them KILLED: a fake 100%, which is exactly the failure
+  #62 exists to prevent. The issue was filed on a throughput reading and closed on a latency one.
+
+  The second repo also carries the strongest determinism evidence there is: 381 mutants, verdicts
+  identical to serial at 2, 4, 8 AND 16 workers, over 112 distinct covering suites.
 
   **The "three day run bound" in that issue was not a parallelism fault either.** Derived serially
   it is 268,830s and at 23 workers 262,830s -- the same number, because the derivation assumes
