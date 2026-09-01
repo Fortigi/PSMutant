@@ -819,6 +819,13 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   revisiting is written in the config beside the number: the runner size changing, or the timeout
   ceasing to scale linearly with the worker count.
 
+  That second condition is **#217**. The `x workers` model assumes each worker gets `1/N` of the
+  machine, which is false while `N <= cores` -- and the throughput figures above are the evidence,
+  since per-mutant latency plainly did not grow 6x between 4 workers and 23. The error is in the
+  safe direction and no run at any worker count has ever produced a timeout, so it is slack rather
+  than a fault; what makes it worth fixing is that at 23 workers the per-mutant bound is 45 minutes
+  and the whole-run backstop is three days, which is a backstop that has stopped backing anything.
+
 - **One execution path, and a serial run is a POOL OF ONE through it.** `workers: 1` does not take a
   simpler route; it builds a one-slot scheduler and dispatches through the same
   `Start-PSMutantEvaluation` / `Complete-PSMutantEvaluation` pair. Two paths would be two places a
