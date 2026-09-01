@@ -807,24 +807,45 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   parent), and `$script:` in a dot-sourced source file belongs to the runspace that sourced it.
   Those are why `Push-Location` in two covering suites is harmless.
 
-- **The worker count is PINNED at 3 rather than set to `0`, and the reason is a bound, not a core
-  count.** `0` means ProcessorCount - 1, and on the ubuntu-latest runner a public repo gets 4 vCPU,
-  so the two are the same number in CI. They differ on a developer's machine, and there `0` is
-  worse: the per-mutant budget is `baseline x factor x workers`, so 23 workers on a 24-core box
-  gave **2699s per mutant** and a derived run bound of about three days -- a bound that has stopped
-  bounding anything.
+- **MORE WORKERS IS NOT MONOTONICALLY BETTER, and the `x workers` budget is well calibrated. Both
+  were measured, and the second retired an issue rather than closing one** (#217). Interleaved in
+  both orders over 174 mutants, per-mutant LATENCY -- not throughput, which is what the earlier
+  numbers here were and what made the wrong inference look right:
 
-  It buys nothing, measured on this suite: **4 workers 306s, 23 workers 290s**, because the gate is
-  dominated by per-file covering suites and a 30s baseline rather than by cores. The condition for
-  revisiting is written in the config beside the number: the runner size changing, or the timeout
-  ceasing to scale linearly with the worker count.
+  | workers | latency | inflation vs solo | budget multiplier | margin | wall |
+  |---|---|---|---|---|---|
+  | 1 | 0.178s | 1.00x | 1x | 1.00 | 36.2s |
+  | 2 | 0.197s | 1.10x | 2x | 1.82 | 18.9s |
+  | 4 | 0.278s | 1.56x | 4x | 2.56 | **13.9s** |
+  | 8 | 0.571s | 3.20x | 8x | 2.50 | 14.6s |
+  | 16 | 1.471s | 8.25x | 16x | 1.94 | 18.4s |
 
-  That second condition is **#217**. The `x workers` model assumes each worker gets `1/N` of the
-  machine, which is false while `N <= cores` -- and the throughput figures above are the evidence,
-  since per-mutant latency plainly did not grow 6x between 4 workers and 23. The error is in the
-  safe direction and no run at any worker count has ever produced a timeout, so it is slack rather
-  than a fault; what makes it worth fixing is that at 23 workers the per-mutant bound is 45 minutes
-  and the whole-run backstop is three days, which is a backstop that has stopped backing anything.
+  Two things follow, and the first is the one nobody expected. **Wall clock bottoms out around
+  four workers and gets WORSE past eight** -- 13.9s at four against 18.4s at sixteen -- because
+  every worker is a runspace in ONE process sharing ONE GC heap, so contention is real and it is
+  not only about cores. A pool sized to the core count is past the useful point on this machine.
+
+  Second, the multiplier tracks the contention it exists to absorb: the margin stays between 1.8
+  and 2.6 at every worker count rather than growing. **#217 argued the opposite** -- that the model
+  assumes `1/N` and should scale by oversubscription instead, which would give a factor of 1 while
+  workers <= cores. Against these numbers that would hand a 16-worker run a solo-sized budget for
+  mutants running 8.25x slower, time out most of them, and score them KILLED: a fake 100%, which is
+  exactly the failure #62 exists to prevent. The issue was filed on a throughput reading and closed
+  on a latency one.
+
+  **The "three day run bound" in that issue was not a parallelism fault either.** Derived serially
+  it is 268,830s and at 23 workers 262,830s -- the same number, because the derivation assumes
+  every mutant takes its full budget. It is loose by design, on the record, to end an overnight
+  hang rather than to trim a slow run.
+
+- **The worker count is PINNED at 3 rather than set to `0`, and the reason is the table above.**
+  `0` means ProcessorCount - 1, so on the ubuntu-latest runner a public repo gets 4 vCPU and the
+  two are the same number in CI. They differ on a developer's machine, and there `0` is worse
+  rather than merely bigger: it resolves to 23 on a 24-core box, which is past the point where
+  more workers stop helping and start costing. Three is what the runner resolves to anyway.
+
+  The condition for revisiting is written in the config beside the number: the runner size
+  changing.
 
 - **One execution path, and a serial run is a POOL OF ONE through it.** `workers: 1` does not take a
   simpler route; it builds a one-slot scheduler and dispatches through the same
