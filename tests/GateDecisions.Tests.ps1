@@ -421,8 +421,55 @@ Describe 'the shipped pins.env is itself a claim, so it is asserted here' {
         $versions = @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PESTER_COMPAT_VERSIONS') -split ' ' |
                 Where-Object { $_ })
         $minors = @($versions | ForEach-Object { $v = [version]$_; "$($v.Major).$($v.Minor)" })
-        foreach ($m in '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8', '5.9', '6.0', '6.1') {
+        foreach ($m in '5.2', '5.3', '5.4', '5.5', '5.6', '5.7', '5.8', '5.9', '6.0', '6.1', '6.2') {
             $minors | Should-ContainCollection $m -Because "no leg covers Pester $m"
+        }
+    }
+
+    It 'states the estate pin the pins file actually names' {
+        # The README writes the estate pin out TWICE -- once in prose, once in a runnable
+        # Import-Module line -- and it is a PACKAGED file, so it goes stale on every bump and
+        # nothing noticed: it said 6.1.0 while pins.env had moved on, telling a contributor to
+        # install a Pester CI does not run. A sentence nobody checks is what this repo replaces
+        # with a test.
+        #
+        # Equality, not membership, and that is the whole point: the version it went stale AT is
+        # still a compatibility leg, so a rule that only asked "is this version pinned somewhere"
+        # would have passed on exactly the wording that was wrong.
+        $readme = Get-Content -LiteralPath (Join-Path $script:repoRoot 'README.md') -Raw
+        $estate = Get-PSMutantPinValue -Line $script:pinLines -Name 'PESTER_VERSION'
+
+        foreach ($pattern in 'written against \*\*Pester (?<v>\d+\.\d+\.\d+)\*\*',
+            'Import-Module Pester -RequiredVersion (?<v>\d+\.\d+\.\d+)') {
+            $found = [regex]::Match($readme, $pattern)
+            # A rewording must FAIL here rather than pass quietly. A claim-checking test that
+            # stops finding its claim has stopped checking anything, which is the same defect as
+            # the stale sentence it was written for.
+            $found.Success | Should-BeTrue -Because "README no longer matches /$pattern/, so nothing checks the estate pin it states"
+            $found.Groups['v'].Value | Should-Be $estate
+        }
+    }
+
+    It 'names no other Pester the pins file does not' {
+        # The backstop under the two exact claims above: every OTHER Pester version the README
+        # hands a contributor must be one the pins name, or the floor the module's own guard
+        # enforces. Membership is right here -- the README legitimately cites the floor as the
+        # promise and one leg as an example, and which number belongs in which sentence is the
+        # README's business rather than this test's.
+        $readme = @(Get-Content -LiteralPath (Join-Path $script:repoRoot 'README.md'))
+        $named = @($readme | Where-Object { $_ -match 'Pester' } |
+                ForEach-Object { [regex]::Matches($_, '\d+\.\d+\.\d+') | ForEach-Object { $_.Value } } |
+                Sort-Object -Unique)
+        # Without this the assertion below passes against a README naming no version at all,
+        # which is the vacuous shape every other list check here is written to avoid.
+        $named.Count | Should-BeGreaterThan 0 -Because 'a README naming no Pester would pass this vacuously'
+
+        $allowed = @(Get-PSMutantPinValue -Line $script:pinLines -Name 'PESTER_VERSION') +
+            @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PESTER_COMPAT_VERSIONS') -split ' ' |
+                Where-Object { $_ }) +
+            @(Get-PSMutantPesterFloor -Line (Get-Content -LiteralPath (Join-Path $script:repoRoot 'src/PSMutation.Pester.ps1')))
+        foreach ($v in $named) {
+            $allowed | Should-ContainCollection $v -Because "the README tells a contributor about Pester $v, which is neither the estate pin, a compatibility leg, nor the floor"
         }
     }
 
