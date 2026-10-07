@@ -40,9 +40,11 @@ jobs:
                   (($faults | ForEach-Object { "- $_" }) -join "`n") +
                   "`n`nA pin is a decision that was correct on the day it was made. Bump it or " +
                   "record why it stays, but do not leave it undecided -- a stale pin never breaks " +
-                  "the build, it just stops protecting you.`n`nNote PESTER_COMPAT_VERSION is " +
-                  "deliberately OLD: the compatibility guard runs under the Pester the suite does " +
-                  "not use. It is checked for being different from the estate pin, not for being newest."
+                  "the build, it just stops protecting you.`n`nNote PS_COMPAT_PESTER is " +
+                  "deliberately OLD -- it is the Pester the PowerShell legs run under, and a test " +
+                  "asserts it stays below 6.0.0 rather than asking whether something newer exists. " +
+                  "PESTER_COMPAT_VERSIONS is the opposite: one leg per minor, so the PATCH and " +
+                  "MINOR findings above are about that list and are not noise."
           "body<<EOF"  >> $env:GITHUB_OUTPUT
           $body        >> $env:GITHUB_OUTPUT
           "EOF"        >> $env:GITHUB_OUTPUT

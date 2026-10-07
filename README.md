@@ -485,12 +485,12 @@ untested log strings make the last stretch noise. Raise `thresholds.break` to lo
 
 ## Development
 
-The test estate is written against **Pester 6.1.0** and CI pins that exact version. That
-is a contributor requirement only -- the module itself still supports Pester 5+, and
+The test estate is written against **Pester 6.2.0** and CI pins that exact version. That
+is a contributor requirement only -- the module itself still supports Pester 5.2+, and
 `tools/Test-PSMutantPesterCompatibility.ps1` proves it on every CI run.
 
 ```powershell
-Import-Module Pester -RequiredVersion 6.1.0 -Force                 # the pinned version
+Import-Module Pester -RequiredVersion 6.2.0 -Force                 # PESTER_VERSION in pins.env
 Invoke-Pester ./tests                                              # unit tests
 ./tools/Measure-PSMutantCoverage.ps1                               # coverage gate (100%)
 Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1   # lint

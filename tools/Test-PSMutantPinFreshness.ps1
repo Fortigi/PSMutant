@@ -26,11 +26,16 @@ if (-not $PinsPath) { $PinsPath = Join-Path $repo '.github/pins.env' }
 if (-not (Test-Path -LiteralPath $PinsPath)) { throw "Cannot check pins: '$PinsPath' does not exist." }
 
 $pins = Get-Content -LiteralPath $PinsPath
-# Gallery name -> pins.env key. BOTH Pester keys are watched and they are different decisions:
-# PESTER_VERSION is the estate pin. PESTER_COMPAT_VERSIONS is deliberately absent from this
-# list: those legs are the versions the suite does NOT use, and "is there a newer one" is the
-# wrong question for pins whose purpose is to be behind. Their invariant -- that the list still
-# reaches below the estate pin, and covers the declared floor -- is checked separately below.
+# Gallery name -> pins.env key. Only ONE of the three Pester keys is asked "is there a newer
+# one", and that is the estate pin: PESTER_COMPAT_VERSIONS promises a RANGE, so it is asked the
+# three sharper questions further down, plus its own internal invariant -- still reaching below
+# the estate pin, still covering the declared floor -- just below this loop.
+#
+# PS_COMPAT_PESTER is absent from all of that and deliberately so: it is the Pester the
+# PowerShell legs run under, and freshness is the wrong question for a pin whose purpose is to
+# be behind. A test asserts it is set and below 6.0.0, which is the invariant it actually has.
+# This comment claimed the same of PESTER_COMPAT_VERSIONS for as long as that key WAS a single
+# old pin; it is a list now, and the issue body repeated the stale half every week.
 $watched = @(
     @{ Name = 'Pester';           Key = 'PESTER_VERSION' }
     @{ Name = 'PSScriptAnalyzer'; Key = 'PSSA_VERSION' }

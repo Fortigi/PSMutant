@@ -8,8 +8,9 @@
 # development happened on 6.1.0, and the two disagreeing is what hid issue #16: the suite
 # passed under a version CI did not run, and failed under the one it did.
 #
-# 5.8.0 is installed ALONGSIDE 6.1.0 on purpose. The module promises Pester >= 5.0.0, and
-# the bug that promise hid only appears when two versions are present -- see the last step.
+# The compatibility legs are installed ALONGSIDE 6.2.0 on purpose. The module promises Pester
+# >= 5.2.0 and the bug that promise hid only appears when two versions are present -- see the
+# last step. PESTER_COMPAT_VERSIONS names one leg per supported minor, not a single version.
 name: CI
 
 on:
@@ -121,7 +122,7 @@ jobs:
             }
             Write-Host "install  $($m.Name) $($m.Version)"
             # -SkipPublisherCheck because Pester's signing certificate is NOT the same across the
-            # range these legs cover: installing 5.2.2 while 6.1.0 is present makes Install-Module
+            # range these legs cover: installing 5.2.2 while 6.2.0 is present makes Install-Module
             # refuse over an authenticode issuer mismatch (DigiCert Assured ID Root CA against
             # DigiCert Trusted Root G4), and the assert below then reports the version as "not
             # available after install" -- naming the symptom rather than the cause. Hit on the

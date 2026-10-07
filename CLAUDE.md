@@ -67,11 +67,12 @@ be withdrawn — and runs, in order:
 
 Two different things. Conflating them is what caused #16.
 
-- **The test estate** is pinned to exactly **6.1.0** — `ci.yml`, `publish.yml`, and local
+- **The test estate** is pinned to exactly **6.2.0** — `ci.yml`, `publish.yml`, and local
   development. Every CI step runs `Import-Module Pester -RequiredVersion` rather than
   letting the name resolve, so CI and your machine cannot end up on different Pesters.
-  Bumping it means changing `.github/pins.env` and this file together -- every workflow
-  loads its versions from that one file.
+  Bumping it means changing `.github/pins.env`, this file and the README together -- every
+  workflow loads its versions from that one file, but the two documents write the number out
+  in prose. The README's copy is checked by a test; this one is not, so check it by hand.
 - **The module** promises `Pester >= 5.0.0` in its manifest and has to drive whatever the
   consuming repo already has. The pin above narrows nothing about that.
 
@@ -304,9 +305,9 @@ Four things about it are easy to undo:
   whole run for a speed optimisation. The comment beside it said 5.5 until the versions were
   actually installed and checked, which is why it now says how it was measured.
 
-  Both arms are pinned by tests against stand-in objects, because CI runs 6.1.0 and the
-  compatibility gate runs 5.8.0 -- no gate here loads a Pester without the property, so the false
-  arm would otherwise never execute.
+  Both arms are pinned by tests against stand-in objects, because every Pester CI installs -- the
+  estate pin and every compatibility leg -- has the property, so the false arm would otherwise
+  never execute.
 
 **`Get-PSMutationRunspaceError` lives in `PSMutation.Pester.ps1`, not `PSMutation.Runner.ps1`.**
 Reading a child runspace's error stream is this file's domain. The first draft of the warm runspace
