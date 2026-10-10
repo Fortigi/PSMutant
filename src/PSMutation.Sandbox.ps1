@@ -297,10 +297,26 @@ function Test-PSMutationSandboxAbandoned {
     $proc = Get-Process -Id $owner -ErrorAction SilentlyContinue
     if (-not $proc) { return $true }
     # The id is live but may have been RECYCLED onto an unrelated process. A process
-    # that started after the sandbox did cannot be the one that created it, so the
+    # that started after the sandbox was last written cannot be the one that wrote it, so the
     # sandbox is abandoned despite the id being in use.
-    return (Get-PSMutationProcessStart -Process $proc) -gt $Directory.CreationTime
+    #
+    # LastWriteTime, not CreationTime. On NTFS a file created under a name deleted in the same
+    # directory moments earlier INHERITS the old file's creation time (tunneling), so a live
+    # owner's freshly written file can carry a stamp from before its owner existed. Tunneling
+    # leaves the write time alone, and an owner always writes after it starts.
+    #
+    # And a slack, because the two clocks are not the same clock. A file stamp is the system time
+    # as of the last timer tick, a process start time is precise, so a file written within the
+    # first tick of its owner's life reads as OLDER than that owner -- and the live run's file is
+    # swept. Real recycling
+    # leaves a gap of far more than the slack, so the only cost is that a leftover written in the
+    # last moments before its id was reused waits for a later sweep.
+    return (Get-PSMutationProcessStart -Process $proc) -gt $Directory.LastWriteTime.Add($script:PSMutationClockSlack)
 }
+
+# How far a process start may follow a file's write time and still be taken for its owner. Two
+# seconds is several orders above a timer tick and several below any real reuse of an id.
+$script:PSMutationClockSlack = [timespan]::FromSeconds(2)
 
 function Get-PSMutationProcessStart {
     # StartTime is not readable for every process -- protected/system ones fail. That
@@ -327,7 +343,7 @@ function Clear-PSMutationStaleSandbox {
         # Directories AND files. The coverage XML older versions left in temp is a file, and a
         # sweep restricted to directories is what let 67 of them pile up on the machine this was
         # found on. Both shapes are named after the process that made them, so one ownership test
-        # answers for both -- Test-PSMutationSandboxAbandoned reads Name and CreationTime, which a
+        # answers for both -- Test-PSMutationSandboxAbandoned reads Name and LastWriteTime, which a
         # FileInfo carries exactly as a DirectoryInfo does.
         @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter 'psmut-sandbox-*' -ErrorAction SilentlyContinue) +
         @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -File -Filter 'psmut-coverage-*.xml' -ErrorAction SilentlyContinue) |

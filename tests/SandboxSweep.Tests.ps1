@@ -147,6 +147,10 @@ Describe 'the sweep reclaims the coverage files older versions left in temp' {
         # file abandoned, deleted it, and the assertion failed on the Windows leg only. Exactly the
         # platform-assumption failure this repo's guidance warns about, and it cost a red CI run.
         $proc = Start-Process -FilePath 'pwsh' -ArgumentList '-NoProfile', '-Command', 'Start-Sleep -Seconds 30' -PassThru
+        # Let the owner age past a timer tick before its file is written. Written at once, the
+        # file's stamp and the process's start time are within one tick of each other and the
+        # test measures the clock rather than the sweep -- which is how it flaked on Windows.
+        Start-Sleep -Milliseconds 1100
         $temp = [System.IO.Path]::GetTempPath()
         $live = Join-Path $temp "psmut-coverage-$($proc.Id).xml"
         try {
