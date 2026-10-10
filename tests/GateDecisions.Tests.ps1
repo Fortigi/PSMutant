@@ -514,6 +514,18 @@ Describe 'the shipped pins.env is itself a claim, so it is asserted here' {
         }
     }
 
+    It 'exempts from the PowerShell legs only the PowerShell this runner ships' -Skip:($env:GITHUB_ACTIONS -ne 'true') {
+        # The exemption's REASON is that the ordinary suite already runs under that minor -- true
+        # only on the runner, so only checked there. Every CI leg runs this suite, so the first PR
+        # after the runner image moves fails here, naming the cause, instead of the old minor
+        # losing all coverage while the weekly watcher stays quiet. Reading the variable is safe
+        # beside parallel workers; only WRITING process state races.
+        $exempt = @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PS_COMPAT_EXEMPT_MINORS') -split ' ' |
+                Where-Object { $_ })
+        $faults = @(Get-PSMutantExemptHostFault -ExemptMinor $exempt -HostVersion $PSVersionTable.PSVersion)
+        $faults -join [Environment]::NewLine | Should-Be '' -Because "this host runs PowerShell $($PSVersionTable.PSVersion)"
+    }
+
     It 'starts the legs at the floor the module actually enforces' {
         # The two must agree, and #161 is what happens when they do not: the promise said 5.0.0,
         # the code needed 5.2.0, and nothing compared them. Read from the guard rather than
@@ -596,6 +608,37 @@ Describe 'the declared PowerShell floor and the legs that execute it' {
         $pinned = Get-PSMutantPinValue -Line (Get-Content (Join-Path $root '.github/pins.env')) -Name 'PS_COMPAT_PESTER'
         $pinned | Should-NotBeNull -Because 'PS_COMPAT_PESTER must name the Pester the PowerShell legs run under'
         [version]$pinned | Should-BeLessThan ([version]'6.0.0')
+    }
+}
+
+Describe 'Get-PSMutantExemptHostFault' {
+    It 'accepts an exemption that names the host minor, whatever its patch' {
+        # Patch is deliberately ignored: the runner image takes 7.6.1 without anyone deciding it,
+        # and a check that failed on that would be muted within a week.
+        @(Get-PSMutantExemptHostFault -ExemptMinor @('7.6') -HostVersion '7.6.1').Count | Should-Be 0
+    }
+
+    It 'reports an exemption the host has moved past, naming both minors and the fix' {
+        # The failure #230 is about: the runner moves to 7.7, and 7.6 keeps its exemption while
+        # nothing runs it any more.
+        $f = @(Get-PSMutantExemptHostFault -ExemptMinor @('7.6') -HostVersion '7.7.0')
+        $f.Count | Should-Be 1
+        $f[0] | Should-BeLikeString 'EXEMPTION: PowerShell 7.6 is exempted*this host runs 7.7.0.*'
+        $f[0] | Should-BeLikeString '*Move 7.6 into PS_COMPAT_VERSIONS as a downloaded leg, and exempt 7.7 instead.'
+    }
+
+    It 'compares the minor, not the major alone' {
+        # 7.6 against a 7.60 host would pass a major-only or a prefix comparison.
+        @(Get-PSMutantExemptHostFault -ExemptMinor @('7.6') -HostVersion '7.60.0').Count | Should-Be 1
+    }
+
+    It 'judges each exemption on its own' {
+        $f = @(Get-PSMutantExemptHostFault -ExemptMinor @('7.5', '7.6', '7.4') -HostVersion '7.6.0')
+        ($f | ForEach-Object { $_.Split(' ')[2] }) -join ',' | Should-Be '7.5,7.4'
+    }
+
+    It 'has nothing to say about an empty exemption list' {
+        @(Get-PSMutantExemptHostFault -ExemptMinor @() -HostVersion '7.6.0').Count | Should-Be 0
     }
 }
 
