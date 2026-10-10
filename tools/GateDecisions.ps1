@@ -860,3 +860,100 @@ function Get-PSMutantManifestNotesFault {
         "CHANGELOG.md. The changelog is the source; run ./tools/Test-PSMutantRelease.ps1 -Apply " +
         "to regenerate the manifest field from it.")
 }
+
+# Paths NO expensive gate reads. A pull request made only of these cannot move a self-mutation
+# verdict or a compatibility leg, so those gates can be skipped for it.
+#
+# An ALLOWLIST of what is safe, never a list of each gate's inputs. A forgotten input would then
+# skip a gate that should have run -- a green build over something nothing checked -- where a
+# forgotten safe path only costs a run nobody needed. Unknown means "runs".
+$script:PSMutantSkipSafePattern = @(
+    '\.md$'
+    '^examples/'
+    '^LICENSE$'
+    '^\.gitignore$'
+    '^\.github/dependabot\.yml$'
+    '^\.github/workflows/(code-scanning|pin-freshness|publish)\.yml$'
+)
+
+function Test-PSMutantSkipSafePath {
+    <#
+    .SYNOPSIS
+        Whether a changed path is one the named expensive gate cannot be affected by.
+    .DESCRIPTION
+        SelfMutation runs the module from its manifest against the covering suites the self config
+        maps, so tools/ and every OTHER test file are outside what it reads. Compatibility runs the
+        two compatibility scripts, which build their fixtures inline and dot-source the decisions
+        file, so tests/ is outside it and only those three files under tools/ are inside.
+
+        Neither list mentions src/, schemas/, the manifest, the root module, pins.env or ci.yml,
+        which is the point: those are not safe for either gate, so they run it.
+    #>
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [ValidateSet('SelfMutation', 'Compatibility')] [string]$Gate,
+        [AllowEmptyCollection()] [string[]]$CoveringSuite = @()
+    )
+    # Forward slashes, because git reports them on both platforms and a covering suite in the
+    # config is written that way; a backslash from a Windows caller would otherwise match nothing.
+    $p = $Path -replace '\\', '/'
+    foreach ($re in $script:PSMutantSkipSafePattern) { if ($p -match $re) { return $true } }
+    if ($Gate -eq 'SelfMutation') {
+        if ($p -match '^tools/') { return $true }
+        return ($p -match '^tests/') -and ($p -notin $CoveringSuite)
+    }
+    if ($p -match '^tests/') { return $true }
+    return ($p -match '^tools/') -and ($p -notmatch '^tools/(Test-PSMutant(PowerShell|Pester)Compatibility|GateDecisions)\.ps1$')
+}
+
+function Get-PSMutantGatePlan {
+    <#
+    .SYNOPSIS
+        Which expensive gates a change can affect, and why -- so a pull request touching only
+        documentation does not pay a quarter of an hour for a self-mutation run it cannot move.
+    .DESCRIPTION
+        Only a PULL REQUEST is ever planned. A push to main, a tag and a manual run get every gate,
+        so what main is green at stays fully proven and publish.yml's "CI passed for this commit"
+        still means everything ran.
+
+        No change list means everything runs. `git diff` that fails prints nothing and exits 0, and
+        read as "nothing changed" that would skip every gate on exactly the run where the tooling
+        broke.
+
+        Cheap gates are not planned at all: the unit tests read the README and the pins, coverage
+        reads every test file, and both cost a minute. Only what costs many minutes is worth a
+        decision that can be wrong.
+    .OUTPUTS
+        SelfMutation and Compatibility booleans, and Reason: one line per gate, for the log.
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$EventName,
+        [AllowNull()] [AllowEmptyCollection()] [string[]]$ChangedPath,
+        [AllowEmptyCollection()] [string[]]$CoveringSuite = @()
+    )
+    $gates = 'SelfMutation', 'Compatibility'
+    $paths = @($ChangedPath | Where-Object { $_ })
+    $plan = [ordered]@{}
+    $reason = [System.Collections.Generic.List[string]]::new()
+    if ($EventName -ne 'pull_request' -or $paths.Count -eq 0) {
+        $why = $EventName -ne 'pull_request' ? "a $EventName run checks everything" : 'no changed files could be read'
+        foreach ($g in $gates) { $plan[$g] = $true; $reason.Add("${g}: runs -- $why.") }
+        return [pscustomobject]@{ SelfMutation = $true; Compatibility = $true; Reason = $reason.ToArray() }
+    }
+    foreach ($g in $gates) {
+        $reads = @($paths | Where-Object { -not (Test-PSMutantSkipSafePath -Path $_ -Gate $g -CoveringSuite $CoveringSuite) })
+        $plan[$g] = $reads.Count -gt 0
+        if ($plan[$g]) {
+            $more = $reads.Count -gt 3 ? " and $($reads.Count - 3) more" : ''
+            $reason.Add("${g}: runs -- it reads $(@($reads | Select-Object -First 3) -join ', ')$more.")
+        }
+        else {
+            $reason.Add("${g}: skipped -- none of the $($paths.Count) changed file(s) is something it reads.")
+        }
+    }
+    return [pscustomobject]@{ SelfMutation = $plan.SelfMutation; Compatibility = $plan.Compatibility; Reason = $reason.ToArray() }
+}

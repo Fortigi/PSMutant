@@ -665,3 +665,96 @@ Describe 'Get-PSMutantVersionListFault' {
             Should-BeLikeString '*MINOR: X 6.2*'
     }
 }
+
+Describe 'Get-PSMutantGatePlan' {
+    BeforeAll {
+        $script:covering = @('tests/Runner.Tests.ps1', 'tests/Config.Tests.ps1')
+        function script:Plan {
+            param([string[]]$Path, [string]$EventName = 'pull_request')
+            Get-PSMutantGatePlan -EventName $EventName -ChangedPath $Path -CoveringSuite $script:covering
+        }
+    }
+
+    It 'skips both expensive gates for documentation alone' {
+        # The case this exists for: a README or CLAUDE.md edit paying a quarter of an hour.
+        $p = Plan @('README.md', 'CLAUDE.md', 'docs/notes.md', 'examples/psmutant.config.json')
+        Should-BeFalse -Actual $p.SelfMutation
+        Should-BeFalse -Actual $p.Compatibility
+        ($p.Reason -join ' ') | Should-BeLikeString '*skipped -- none of the 4 changed file(s)*'
+    }
+
+    It 'runs both for a change to the module' {
+        foreach ($f in 'src/PSMutation.Runner.ps1', 'schemas/v1/config.schema.json', 'PSMutant.psd1', 'PSMutant.psm1') {
+            $p = Plan @('README.md', $f)
+            Should-BeTrue -Actual $p.SelfMutation -Because "$f is module code"
+            Should-BeTrue -Actual $p.Compatibility -Because "$f is module code"
+        }
+    }
+
+    It 'runs both for a change to the pins or to ci.yml itself' {
+        # A workflow change has to run the workflow: the run is the only proof it still works.
+        foreach ($f in '.github/pins.env', '.github/workflows/ci.yml') {
+            $p = Plan @($f)
+            Should-BeTrue -Actual $p.SelfMutation -Because $f
+            Should-BeTrue -Actual $p.Compatibility -Because $f
+        }
+    }
+
+    It 'skips self-mutation, and only it, for a test file that covers nothing' {
+        # The two gates read different things, so one plan answers each separately.
+        $p = Plan @('tests/GateDecisions.Tests.ps1', 'tools/Get-PSMutantGatePlan.ps1')
+        Should-BeFalse -Actual $p.SelfMutation
+        Should-BeFalse -Actual $p.Compatibility
+        $p = Plan @('tests/Runner.Tests.ps1')
+        Should-BeTrue -Actual $p.SelfMutation
+        Should-BeFalse -Actual $p.Compatibility
+    }
+
+    It 'runs compatibility, and only it, for the scripts the compatibility legs execute' {
+        foreach ($f in 'tools/Test-PSMutantPesterCompatibility.ps1', 'tools/Test-PSMutantPowerShellCompatibility.ps1', 'tools/GateDecisions.ps1') {
+            $p = Plan @($f)
+            Should-BeFalse -Actual $p.SelfMutation -Because "$f is not run by self-mutation"
+            Should-BeTrue -Actual $p.Compatibility -Because "$f is run by the compatibility legs"
+        }
+    }
+
+    It 'runs a gate for a path nobody listed' {
+        # The allowlist is of SAFE paths. A new file nothing knows about must cost minutes, never a
+        # gate -- the failure that matters is a green build over something that was not checked.
+        $p = Plan @('build/something-new.ps1')
+        Should-BeTrue -Actual $p.SelfMutation
+        Should-BeTrue -Actual $p.Compatibility
+    }
+
+    It 'treats a Windows-style path like the one git reports' {
+        Should-BeFalse -Actual (Plan @('docs\notes.md')).SelfMutation
+        Should-BeTrue -Actual (Plan @('src\PSMutation.Runner.ps1')).SelfMutation
+    }
+
+    It 'runs everything outside a pull request, whatever changed' {
+        # What main is green at stays fully proven, and publish.yml's check means everything ran.
+        foreach ($e in 'push', 'workflow_dispatch', '') {
+            $p = Plan @('README.md') -EventName $e
+            Should-BeTrue -Actual $p.SelfMutation -Because "event '$e'"
+            Should-BeTrue -Actual $p.Compatibility -Because "event '$e'"
+        }
+        ((Plan @('README.md') -EventName 'push').Reason -join ' ') | Should-BeLikeString '*a push run checks everything*'
+    }
+
+    It 'runs everything when the change list is empty or missing' {
+        # A failed git diff prints nothing and exits 0. Read as "nothing changed" it would skip
+        # every gate on exactly the run where the tooling broke.
+        foreach ($paths in @(, @()), @(, $null), @(, @('', ''))) {
+            $p = Get-PSMutantGatePlan -EventName 'pull_request' -ChangedPath $paths[0] -CoveringSuite $script:covering
+            Should-BeTrue -Actual $p.SelfMutation
+            Should-BeTrue -Actual $p.Compatibility
+        }
+        ((Plan @() ).Reason -join ' ') | Should-BeLikeString '*no changed files could be read*'
+    }
+
+    It 'names what a gate reads, and says how many more it did not name' {
+        $p = Plan @('src/a.ps1', 'src/b.ps1', 'src/c.ps1', 'src/d.ps1', 'src/e.ps1')
+        $p.Reason[0] | Should-Be 'SelfMutation: runs -- it reads src/a.ps1, src/b.ps1, src/c.ps1 and 2 more.'
+        (Plan @('src/a.ps1')).Reason[0] | Should-Be 'SelfMutation: runs -- it reads src/a.ps1.'
+    }
+}

@@ -1917,6 +1917,31 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   here". A `param()` default stays uncovered by design: no command spans it, so nothing Pester
   instruments can say whether it ran.
 
+- **A pull request pays only for the expensive gates its change can reach.** `Get-PSMutantGatePlan`
+  in `GateDecisions.ps1` decides, from the files a PR changed, whether self-mutation and the
+  compatibility legs run; `tools/Get-PSMutantGatePlan.ps1` gathers the inputs and prints the
+  reason for each gate, so a skip is never silent. Documentation alone used to cost a full
+  quarter-hour chain.
+
+  Four choices in it are easy to undo and each guards a specific failure:
+
+  - **An allowlist of SAFE paths, never a list of each gate's inputs.** A forgotten input would skip
+    a gate that should have run -- a green build over something unchecked -- where a forgotten safe
+    path only costs minutes. A path nobody listed runs everything.
+  - **Only a pull request is planned.** A push to main, a tag and a manual run get every gate, so
+    what main is green at stays fully proven and `publish.yml`'s "CI passed for this commit" still
+    means everything ran.
+  - **An empty change list runs everything.** A `git diff` that fails prints nothing and exits 0.
+  - **Skipped by `if:` inside the job, never by a workflow-level `paths:` filter.** A required check
+    that never starts holds the PR pending forever. The shared parity rules now refuse both a path
+    filter on `ci.yml` and a `ci.yml` whose expensive steps do not read the plan, so the sibling
+    cannot drift back.
+
+  The cheap gates are not planned at all. The unit tests read the README and the pins, coverage
+  reads every test file, and both cost about a minute -- not worth a decision that can be wrong.
+  A change to `ci.yml` or `pins.env` runs everything, because the run is the only proof a workflow
+  change still works.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
