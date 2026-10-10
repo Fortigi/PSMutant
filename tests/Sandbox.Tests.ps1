@@ -173,6 +173,11 @@ Describe 'New/Remove-PSMutationSandbox' {
             { Assert-PSMutationSandboxReal -Path $file } | Should-Throw -ExceptionMessage '*not a directory this run created*'
             # And it says which of the two it found, because the answers send you to different places.
             { Assert-PSMutationSandboxReal -Path $file } | Should-Throw -ExceptionMessage '*is a file*'
+            # Anchored at the first word. The message is joined with `+`, and string minus string
+            # fails with an error that QUOTES the text so far -- so an unanchored fragment matches
+            # the conversion error and a `+ -> -` mutant survives it.
+            { Assert-PSMutationSandboxReal -Path $file } |
+                Should-Throw -ExceptionMessage "Refusing to use the mutation sandbox '*': it is a file, not a directory this run created. Writes would land outside the sandbox*"
             # The other arm of that same ternary: a link is named by its TYPE and its target, so
             # the message says where the writes would have gone. Asserting only 'not a directory
             # this run created' passes just as well when the link is described as a plain file,

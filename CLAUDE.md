@@ -1891,6 +1891,32 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   `PSPath` is not aliased, for the reason the sibling records: it is provider-qualified, and every
   config path resolves against `-SourceRoot`.
 
+- **A line is covered when the INNERMOST command spanning it ran** (#231). Pester attributes a
+  command to the line it starts on, so with that alone every later line of a multi-line statement
+  read as uncovered although the statement ran, and `coveredLinesOnly` dropped its mutants in
+  silence. Measured on this repo before the fix: 24 skipped as uncovered, 23 of them on the
+  continuation of a message built with `+`, while the coverage gate -- which counts commands --
+  said 100%. After it: 6, every one a `param()` default.
+
+  "Any command spanning it" would be the wrong fix, and the tempting one. A pipeline that ran spans
+  the script block it hands to `ForEach-Object`, so that rule covers a body that never executed and
+  hands its mutants to the loop to SURVIVE -- false survivors, which is worse than false skips
+  because it sends someone to write a test for code that cannot be reached. The innermost command
+  is the one whose verdict belongs to the line, which is why `Get-PSMutationCoveredLine` reads the
+  MISSED commands as well as the executed ones. One pass with a stack, because extents from one
+  parse nest or are disjoint: after popping what ended above a line, the top is its innermost
+  command.
+
+  The rule is proven against a REAL Pester coverage run in `EndToEnd.Tests.ps1`, not only against
+  hand-built records in the covering suite -- the records are what make the covering suite cheap,
+  and also what make it a claim about data Pester never produced. Confirmed it discriminates:
+  restore the old collector and two of its four tests fail.
+
+  **It surfaced four survivors the old rule had hidden**, all `+ -> -` on a continuation line of a
+  thrown message, and all surviving for the same reason -- see the first trap under "Writing tests
+  here". A `param()` default stays uncovered by design: no command spans it, so nothing Pester
+  instruments can say whether it ran.
+
 ## Practices to adopt
 
 Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
@@ -1956,6 +1982,12 @@ confirm it fails.
 
 Traps that have bitten in this repo specifically:
 
+- **A `*fragment*` pattern on a message built with `+` cannot kill a `+ -> -` mutant.** String
+  minus string throws `Cannot convert value "<the text joined so far>" to type System.Int32` -- it
+  QUOTES the message, so `Should-Throw -ExceptionMessage '*resolves outside*'` matches the
+  conversion error and the mutant survives. Anchor the pattern at the message's first word, and
+  at its last where the tail matters. Four survivors had exactly this shape, invisible until #231
+  made their lines count as covered.
 - `Should -BeLike '*[3/10]*'` — in a wildcard, `[3/10]` is a **character class**. Use
   `Should -Match ([regex]::Escape(...))`.
 - A property getter that throws yields `$null` in PowerShell rather than raising, so a

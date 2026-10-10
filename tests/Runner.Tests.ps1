@@ -438,6 +438,104 @@ Describe 'Invoke-PSMutationLoop' {
     }
 }
 
+Describe 'Get-PSMutationCoveredLine' {
+    BeforeAll {
+        # One Pester command record. Line is what Pester reports as StartLine, kept so the
+        # fixture has the real shape rather than only the fields read today.
+        function script:Cmd {
+            param([int]$Start, [int]$End = $Start, [int]$Column = 1, [string]$File = $script:fixture)
+            [pscustomobject]@{ File = $File; Line = $Start; StartLine = $Start; StartColumn = $Column; EndLine = $End }
+        }
+        function script:LinesOf {
+            param($Covered)
+            @($Covered[[System.IO.Path]::GetFullPath($script:fixture)] | Sort-Object) -join ','
+        }
+    }
+
+    It 'covers every continuation line of a statement that ran, through its last' {
+        # The shape that was dropped: `return "..." +` with three more lines of string. Pester
+        # reports one command on line 10 spanning to 13; lines 11-13 start nothing. Line 13 is the
+        # LAST line, so a stack that popped a command on its own last line would lose it.
+        LinesOf (Get-PSMutationCoveredLine -Executed @((Cmd 10 13))) | Should-Be '10,11,12,13'
+    }
+
+    It 'leaves the continuation lines of a statement that did NOT run uncovered' {
+        LinesOf (Get-PSMutationCoveredLine -Executed @((Cmd 1)) -Missed @((Cmd 10 13))) | Should-Be '1'
+    }
+
+    It 'does not let a command that ran speak for the script block inside it that did not' {
+        # `Get-X | ForEach-Object {` on line 1, closing on line 5: the pipeline ran, its body never
+        # did. Line 3 is a continuation of a body statement (2-3), line 4 a body statement alone.
+        # Read as "any command spanning it", lines 2-4 would all be covered and their mutants come
+        # back as survivors nothing could have killed.
+        $r = Get-PSMutationCoveredLine -Executed @((Cmd 1 5)) -Missed @((Cmd 2 3 -Column 5), (Cmd 4 -Column 5))
+        LinesOf $r | Should-Be '1,5'
+    }
+
+    It 'covers a body that ran inside a command that ran, continuation included' {
+        $r = Get-PSMutationCoveredLine -Executed @((Cmd 1 5), (Cmd 2 3 -Column 5), (Cmd 4 -Column 5))
+        LinesOf $r | Should-Be '1,2,3,4,5'
+    }
+
+    It 'covers a start line when ANY command starting on it ran, and not when none did' {
+        # `$a = 1; $b = 2` style: two commands on line 2, one ran. Line 3 has two commands and
+        # neither ran -- the half that fails a rule which covers every start line.
+        $r = Get-PSMutationCoveredLine -Executed @((Cmd 2 -Column 1)) -Missed @((Cmd 2 -Column 9), (Cmd 3 -Column 1), (Cmd 3 -Column 9))
+        LinesOf $r | Should-Be '2'
+    }
+
+    It 'returns to the outer command once an inner one has ended' {
+        # Outer 1-6 ran; inner 2-3 did not. Line 4 starts nothing and sits inside the outer only, so
+        # the outer decides it -- which needs the inner popped first.
+        $r = Get-PSMutationCoveredLine -Executed @((Cmd 1 6)) -Missed @((Cmd 2 3 -Column 5))
+        LinesOf $r | Should-Be '1,4,5,6'
+    }
+
+    It 'leaves a gap between two commands uncovered' {
+        # A line no command spans -- a blank line, a param() default -- has nothing that can say
+        # whether it ran. The first command is the FIRST record, so skipping it shows up here too.
+        $r = Get-PSMutationCoveredLine -Executed @((Cmd 1), (Cmd 4))
+        LinesOf $r | Should-Be '1,4'
+    }
+
+    It 'reads commands in document order whatever order Pester lists them in' {
+        # Executed and missed arrive as two lists, so the inner missed command comes AFTER the outer
+        # one in the input and BEFORE it in nothing. Unsorted, the outer would be pushed last and
+        # speak for line 3.
+        $r = Get-PSMutationCoveredLine -Executed @((Cmd 4), (Cmd 1 5)) -Missed @((Cmd 2 3 -Column 5))
+        LinesOf $r | Should-Be '1,4,5'
+    }
+
+    It 'keys each file by its full path and keeps files apart' {
+        $other = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-cov-$([guid]::NewGuid().ToString('N')).ps1"
+        $r = Get-PSMutationCoveredLine -Executed @((Cmd 1 2), (Cmd 7 -File $other)) -Missed @((Cmd 9 -File $other))
+        LinesOf $r | Should-Be '1,2'
+        @($r[[System.IO.Path]::GetFullPath($other)] | Sort-Object) -join ',' | Should-Be '7'
+    }
+
+    It 'runs under StrictMode, which a consumer may well have on' {
+        # Strict mode turns an out-of-range index into an error. Without it, reading one past the
+        # last command quietly yields $null and every boundary on the command index looks fine.
+        $r = & {
+            Set-StrictMode -Version Latest
+            Get-PSMutationCoveredLine -Executed @((Cmd 1 2), (Cmd 3)) -Missed @((Cmd 5))
+        }
+        LinesOf $r | Should-Be '1,2,3'
+    }
+
+    It 'covers nothing when Pester measured nothing' {
+        # The tracer off: both lists null. An empty map, not an exception.
+        $r = Get-PSMutationCoveredLine -Executed $null -Missed $null
+        $r.Count | Should-Be 0
+    }
+
+    It 'knows a file whose every command was missed, and covers none of it' {
+        $r = Get-PSMutationCoveredLine -Executed @() -Missed @((Cmd 1 3))
+        $r.ContainsKey([System.IO.Path]::GetFullPath($script:fixture)) | Should-BeTrue
+        LinesOf $r | Should-Be ''
+    }
+}
+
 Describe 'Invoke-PSMutationBaseline' {
     # The baseline run is what decides (a) whether mutation may proceed at all and
     # (b) which lines are covered, i.e. which mutants are even worth evaluating. It
@@ -448,12 +546,16 @@ Describe 'Invoke-PSMutationBaseline' {
             [pscustomobject]@{
                 Result       = 'Passed'
                 CodeCoverage = [pscustomobject]@{
+                    # The shape Pester reports: Line is StartLine, and the extent travels with it.
                     CommandsExecuted = @(
-                        [pscustomobject]@{ File = $script:fixture; Line = 3 }
-                        [pscustomobject]@{ File = $script:fixture; Line = 7 }
+                        [pscustomobject]@{ File = $script:fixture; Line = 3; StartLine = 3; StartColumn = 5; EndLine = 3 }
+                        [pscustomobject]@{ File = $script:fixture; Line = 7; StartLine = 7; StartColumn = 5; EndLine = 7 }
                         # Same line reported twice -- one command per statement means
                         # this is normal, and the line must not be counted twice.
-                        [pscustomobject]@{ File = $script:fixture; Line = 3 }
+                        [pscustomobject]@{ File = $script:fixture; Line = 3; StartLine = 3; StartColumn = 20; EndLine = 3 }
+                    )
+                    CommandsMissed   = @(
+                        [pscustomobject]@{ File = $script:fixture; Line = 5; StartLine = 5; StartColumn = 5; EndLine = 5 }
                     )
                 }
             }
@@ -466,6 +568,8 @@ Describe 'Invoke-PSMutationBaseline' {
         $r.CoveredLines[$key].Count     | Should-Be 2
         $r.CoveredLines[$key].Contains(3) | Should-BeTrue
         $r.CoveredLines[$key].Contains(7) | Should-BeTrue
+        # The missed command reaches the collector too, and leaves its line uncovered.
+        $r.CoveredLines[$key].Contains(5) | Should-BeFalse
         $r.DurationSeconds | Should-BeGreaterThanOrEqual 0
     }
 
@@ -511,7 +615,7 @@ Describe 'Invoke-PSMutationBaseline' {
             Mock Invoke-Pester {
                 [pscustomobject]@{
                     Result       = 'Passed'
-                    CodeCoverage = [pscustomobject]@{ CommandsExecuted = @([pscustomobject]@{ File = $leaf; Line = 1 }) }
+                    CodeCoverage = [pscustomobject]@{ CommandsExecuted = @([pscustomobject]@{ File = $leaf; Line = 1; StartLine = 1; StartColumn = 1; EndLine = 1 }) }
                 }
             }
             $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir

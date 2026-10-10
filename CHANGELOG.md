@@ -1,3 +1,27 @@
+## [0.5.1] - 2026-10-10
+
+### For consumers
+
+**Mutants on the later lines of a multi-line statement are evaluated now, and your score may go
+down.** `coveredLinesOnly` keeps a mutant only on a line the baseline executed, and a line used to
+count as executed only when a command STARTED on it. So the second line of a condition split over
+two lines, a continued argument list or a message built from several strings was never covered,
+although the statement ran, and every mutant there was dropped from the score in silence while
+the coverage gate reported 100% over the same code.
+
+A line is now covered when the innermost command spanning it ran. That is narrower than "any
+command spanning it": a pipeline that ran does not cover the body of a script block that never
+executed, so those mutants are still skipped rather than handed to the loop to survive. Checked
+against a real Pester coverage run, not only against hand-built records.
+
+**What to expect.** `skippedAsUncovered` falls, and the mutants it used to hide are evaluated.
+Any that survive are real gaps: a comparison on the second line of a condition, say, that no test
+pins. The same tests can therefore score lower than before, so a `thresholds.break` gate can go
+red on upgrade. That is the gate measuring code it used to skip, not the code getting worse.
+
+A `param()` default is still never covered: no command spans it, so nothing Pester instruments
+can say whether it ran.
+
 ## [0.5.0] - 2026-09-01
 
 ### For consumers

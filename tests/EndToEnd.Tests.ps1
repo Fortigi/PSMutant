@@ -1458,3 +1458,68 @@ Describe 'Get-Band' {
             Should-Throw -ExceptionMessage "*not 'Partial'*"
     }
 }
+
+Describe 'covered lines against a REAL Pester coverage run' {
+    # The covering suite for the rule (Runner.Tests.ps1) feeds it hand-built command records, which
+    # is what makes it cheap enough to pay for once per mutant -- and also what makes it a claim
+    # about records Pester never produced. This runs Pester's own tracer over a file holding each
+    # shape the rule distinguishes, so the extents it reasons about are the ones Pester reports.
+    #
+    # Here rather than in a covering suite: a nested Pester run per mutant of the runner would put
+    # minutes on the self-mutation gate for a fact that does not change between mutants.
+    BeforeAll {
+        $srcDir = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'src'
+        . (Join-Path -Path $srcDir -ChildPath 'PSMutation.Runner.ps1')
+        $script:covDir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
+        New-Item -ItemType Directory -Path $script:covDir | Out-Null
+        $script:covSrc = Join-Path $script:covDir 'Msg.ps1'
+        # Line numbers are the assertions below, so this text is positional: do not reflow it.
+        Set-Content -LiteralPath $script:covSrc -Encoding utf8 -Value @'
+function Get-Msg {
+    param([bool]$Flag = $true)
+    if ($Flag) {
+        $m = 'a' +
+            'b' +
+            'c'
+    }
+    $hits = @(1, 7) | ForEach-Object {
+        $_ -gt
+            5
+    }
+    $none = @() | ForEach-Object {
+        $_ -gt
+            5
+    }
+    return $m
+}
+'@
+        $tests = Join-Path $script:covDir 'Msg.Tests.ps1'
+        Set-Content -LiteralPath $tests -Encoding utf8 -Value @'
+BeforeAll { . (Join-Path $PSScriptRoot 'Msg.ps1') }
+Describe 'Get-Msg' { It 'joins' { Get-Msg | Should -Be 'abc' } }
+'@
+        $b = Invoke-PSMutationBaseline -TestPath $tests -MutateFiles $script:covSrc -SandboxRoot $script:covDir -Coverage
+        $script:lines = $b.CoveredLines[[System.IO.Path]::GetFullPath($script:covSrc)]
+    }
+
+    It 'covers the continuation lines of a statement that ran' {
+        # Lines 5 and 6 are where `'b' +` and `'c'` sit. By start line alone they were uncovered.
+        foreach ($l in 4, 5, 6) { $script:lines.Contains($l) | Should-BeTrue -Because "line $l ran" }
+    }
+
+    It 'covers the continuation of a statement inside a block that ran' {
+        $script:lines.Contains(10) | Should-BeTrue
+    }
+
+    It 'leaves a block that never ran uncovered, though the pipeline holding it ran' {
+        # Line 12 ran -- it is the pipeline -- and its body did not. Covering 13 and 14 would hand
+        # their mutants to the loop to survive.
+        $script:lines.Contains(12) | Should-BeTrue
+        $script:lines.Contains(13) | Should-BeFalse
+        $script:lines.Contains(14) | Should-BeFalse
+    }
+
+    It 'leaves a param() default uncovered, because no command spans it' {
+        $script:lines.Contains(2) | Should-BeFalse
+    }
+}
