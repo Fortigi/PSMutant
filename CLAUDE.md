@@ -671,6 +671,24 @@ lets the self-mutation gate stay in the single digits of minutes.
 - **Version**: bump `ModuleVersion` in `PSMutant.psd1` in the PR. `publish.yml` refuses
   to publish when the git tag and `ModuleVersion` disagree. Bugfix → patch, new surface
   → minor.
+- **Unless the change ships nothing, in which case it takes neither a bump nor a CHANGELOG
+  entry.** `publish.yml` stages `PSMutant.psd1`, `PSMutant.psm1`, `src`, `schemas`, `LICENSE`
+  and `README.md`. A branch touching only `.github/`, `tools/`, `tests/`, a config or this file
+  leaves the repo at version N building a module byte-identical to the gallery's N, so there is
+  nothing for a consumer to observe. The release gate refuses entries under `[Unreleased]` above
+  a published `ModuleVersion` and is right to -- that is two people installing "N" and getting
+  different code -- but its advice to bump applies when something SHIPPED changed. Otherwise
+  drop the entry rather than claim a release. A pin bump is the usual case.
+
+  This rule was learned here, on the 0.5.0 parallel-workers branch, as a commit that dropped a
+  changelog entry for a change that shipped nothing; the reasoning reached the sibling's
+  CLAUDE.md before it reached this one.
+
+  **A change to `README.md` alone takes no bump either**, although `README.md` is staged. Nothing a
+  consumer runs is different, and a version that moves for a sentence tells every consumer to
+  upgrade for nothing. The packaged README catches up at the next release that ships code. This is
+  decided the same way in both Fortigi modules, which gate each other; a rule one states and the
+  other contradicts is the drift the parity rules exist to stop for workflows.
 - `CHANGELOG.md` is maintained by hand here (unlike some projects, where automation owns
   it).
 - **ASCII only** in `src/`, `tests/` and `tools/`. Non-ASCII without a BOM trips
