@@ -346,6 +346,36 @@ function Get-PSMutantVersionListFault {
     return $faults.ToArray()
 }
 
+function Get-PSMutantExemptHostFault {
+    <#
+    .SYNOPSIS
+        The faults, if any, when an exempted PowerShell minor is not the one this host runs.
+    .DESCRIPTION
+        PS_COMPAT_EXEMPT_MINORS gives a minor no downloaded compatibility leg, on the argument
+        that it is the runners' own PowerShell and the ordinary suite already runs under it. The
+        freshness watcher checks that an exemption was released and is not also a leg; neither
+        check sees the runner image move on. When it does, the new minor is reported as uncovered
+        -- and the OLD one silently loses all coverage, with its exemption keeping everything quiet.
+
+        So the reason itself is checked, against the host the suite is running on. A pure function
+        of the two values so both arms are pinned by tests; the live comparison is one call.
+    #>
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$ExemptMinor,
+        [Parameter(Mandatory)] [version]$HostVersion
+    )
+    $hostMinor = "$($HostVersion.Major).$($HostVersion.Minor)"
+    $faults = [System.Collections.Generic.List[string]]::new()
+    foreach ($ex in $ExemptMinor) {
+        if ($ex -eq $hostMinor) { continue }
+        $faults.Add("EXEMPTION: PowerShell $ex is exempted as the runner's own PowerShell, but this host runs $HostVersion. " +
+            "Move $ex into PS_COMPAT_VERSIONS as a downloaded leg, and exempt $hostMinor instead.")
+    }
+    return $faults.ToArray()
+}
+
 function Get-PSMutantStalePinFault {
     <#
     .SYNOPSIS

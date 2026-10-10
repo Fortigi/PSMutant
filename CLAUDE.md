@@ -1392,6 +1392,14 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   which is the failure `pin-freshness.yml` already names in its own comments. So the watcher also
   fails an exemption that was never released, or one a leg now covers.
 
+  **The exemption's REASON is checked too, and not by the watcher.** "The runners' own PowerShell"
+  stops being true when GitHub moves the image, on GitHub's schedule: the new minor is then reported
+  as uncovered, and the old one silently loses all coverage while its exemption keeps everything
+  quiet. `Get-PSMutantExemptHostFault` compares each exempted minor with `$PSVersionTable` of the
+  host running the suite, and the suite asserts it on every CI leg -- so the first pull request
+  after the image moves fails naming both minors, rather than a Monday issue doing so a week later.
+  Skipped off CI, because a developer's PowerShell says nothing about the runner's.
+
   Three ways to be silently blind, each found by planting a stale leg and checking the watcher
   noticed -- never by reading the code:
 
