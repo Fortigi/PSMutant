@@ -40,6 +40,9 @@ jobs:
         run: |
           $cfg = New-PesterConfiguration
           $cfg.Should.DisableV5 = $true
+      - name: Self-mutation
+        if: steps.plan.outputs.selfmutation == 'true'
+        run: ./gate.ps1
 '@
         return @($t -split "`r?`n")
     }
@@ -230,6 +233,26 @@ Describe 'the rules that depend on which workflow it is' {
     It 'catches a single-platform matrix' {
         (Faults -Ci (Broken -Line (GoodCi) -Find 'os: [ubuntu-latest, windows-latest]' -Replace 'os: [ubuntu-latest]')) -join ' ' |
             Should-BeLikeString '*windows-latest*'
+    }
+
+    It 'catches a ci workflow filtered by path' {
+        # Inserted under the trigger the fixture does not have, so the rule reads the KEY wherever
+        # it is indented rather than one exact layout.
+        # Re-split, because the replacement adds LINES and the rules read one line per element.
+        $ci = @((Broken -Line (GoodCi) -Find 'name: CI' -Replace "name: CI`n  pull_request:`n    paths-ignore:") -join "`n" -split "`n")
+        (Faults -Ci $ci) -join ' ' |
+            Should-BeLikeString '*filters its triggers by path*'
+    }
+
+    It 'catches a ci workflow whose expensive gates ignore the plan' {
+        (Faults -Ci (Broken -Line (GoodCi) -Find "if: steps.plan.outputs.selfmutation == 'true'" -Replace "if: matrix.os == 'ubuntu-latest'")) -join ' ' |
+            Should-BeLikeString '*read a gate plan*'
+    }
+
+    It 'does not count a plan named only in a comment' {
+        # The comment-stripped text is what the rule reads, so prose about a plan is not a plan.
+        (Faults -Ci (Broken -Line (GoodCi) -Find "if: steps.plan.outputs.selfmutation == 'true'" -Replace "# steps.plan.outputs.selfmutation")) -join ' ' |
+            Should-BeLikeString '*read a gate plan*'
     }
 
     It 'catches fail-fast left on' {

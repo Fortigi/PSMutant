@@ -83,6 +83,11 @@ function Get-PSMutantWorkflowFact {
         DisableV5Count      = @($code | Where-Object { $_ -match 'Should\.DisableV5' }).Count
         MatrixOs            = $os
         FailFast            = $failFast
+        # A workflow-level path filter. On a pull request it stops the run from starting at all,
+        # and a REQUIRED check that never starts is a pull request that waits forever.
+        PathFilter          = @($code | Where-Object { $_ -match '^\s+paths(-ignore)?:' }).Count -gt 0
+        # The expensive gates read the plan rather than running unconditionally on every PR.
+        ReadsGatePlan       = @($code | Where-Object { $_ -match 'steps\.plan\.outputs\.' }).Count -gt 0
     }
 }
 
@@ -188,6 +193,12 @@ function Get-PSMutantParityFault {
             $seen = if ($ci[0].MatrixOs) { $ci[0].MatrixOs -join ', ' } else { 'no os matrix at all' }
             $faults.Add("$CiName does not run a matrix leg on ${os}: it has $seen. A guarantee about paths proven on one operating system is proven on one operating system.")
         }
+    }
+    if ($ci[0].PathFilter) {
+        $faults.Add("$CiName filters its triggers by path. A required check that never starts holds a pull request pending forever; skip the expensive steps inside the job, from a plan the job prints, instead.")
+    }
+    if (-not $ci[0].ReadsGatePlan) {
+        $faults.Add("$CiName runs every expensive gate on every pull request. A change to documentation then pays for a full self-mutation run it cannot affect; read a gate plan (steps.plan.outputs) and skip only what the plan says the change cannot reach.")
     }
     if ($ci[0].FailFast -ne 'false') {
         $faults.Add("$CiName does not set fail-fast: false. With it on, the first leg to fail cancels the other, so a run that could have named two problems names one and hides whether the second platform is affected at all.")

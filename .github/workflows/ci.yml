@@ -59,6 +59,21 @@ jobs:
     timeout-minutes: 40
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          # Two commits, so the gate plan below can diff a pull request's merge commit against its
+          # first parent -- the base branch -- without fetching history it does not need.
+          fetch-depth: 2
+
+      # Which EXPENSIVE gates this change can affect: self-mutation and the compatibility legs,
+      # which are most of this job's wall clock. Only a pull request is ever planned -- a push to
+      # main, a tag or a manual run gets everything -- and an unreadable change list also gets
+      # everything. The steps it skips are skipped by `if:`, never by a workflow-level `paths:`
+      # filter: a required check that never starts is a PR that waits forever. The decision is a
+      # tested function in tools/GateDecisions.ps1, and the step prints why it chose what it did.
+      - name: Gate plan (which expensive gates this change can affect)
+        id: plan
+        shell: pwsh
+        run: ./tools/Get-PSMutantGatePlan.ps1
 
       # Every pinned version comes from one committed file, so the gates cannot drift apart.
       # Parsed and validated before it is exported: a missing key would otherwise become an
@@ -248,7 +263,7 @@ jobs:
       # below, which runs a real end-to-end mutation. This step is the long pole of the
       # chain, so doubling it buys the least of anything here.
       - name: Mutation test PSMutant against itself (gated)
-        if: matrix.os == 'ubuntu-latest'
+        if: matrix.os == 'ubuntu-latest' && steps.plan.outputs.selfmutation == 'true'
         shell: pwsh
         run: |
           Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
@@ -280,14 +295,14 @@ jobs:
       # self-contained. It is one leg because "does this PowerShell version run the module" is not
       # an OS question, and the matrix already answers the path half on the runners' own PowerShell.
       - name: Cache downloaded PowerShell runtimes
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest' && steps.plan.outputs.compatibility == 'true'
         uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
         with:
           path: ~/.psmut-pwsh
           key: pwsh-runtimes-${{ runner.os }}-${{ hashFiles('.github/pins.env') }}
 
       - name: PowerShell compatibility (every supported PowerShell, one leg per minor)
-        if: matrix.os == 'windows-latest'
+        if: matrix.os == 'windows-latest' && steps.plan.outputs.compatibility == 'true'
         shell: pwsh
         # No argument: the script reads PS_COMPAT_VERSIONS and PS_COMPAT_PESTER from the
         # environment or pins.env, and refuses an empty list rather than reporting a pass over
@@ -299,6 +314,7 @@ jobs:
       # every supported Pester, each in its own process, with a fixture that must leave survivors.
       # Before issue #16 this reported a silent, perfect, entirely fake 100%.
       - name: Pester compatibility guard (runs under the version the suite does not use)
+        if: steps.plan.outputs.compatibility == 'true'
         shell: pwsh
         # No argument: the script reads PESTER_COMPAT_VERSIONS from the environment or straight
         # from pins.env, so running it by hand is the same run. It refuses an empty list rather
