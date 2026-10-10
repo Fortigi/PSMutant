@@ -278,8 +278,11 @@ Describe 'Get-PSMutationSandboxOwnerId' {
 
 Describe 'Test-PSMutationSandboxAbandoned' {
     BeforeAll {
-        function script:NewDir([string]$Name, [datetime]$Created = (Get-Date)) {
-            [pscustomobject]@{ Name = $Name; CreationTime = $Created }
+        # LastWriteTime is what the predicate reads. CreationTime is set to the distant past on
+        # purpose: it is what NTFS tunneling hands a recreated name, and a predicate that went back
+        # to reading it would reclaim every live sandbox below.
+        function script:NewDir([string]$Name, [datetime]$Written = (Get-Date)) {
+            [pscustomobject]@{ Name = $Name; LastWriteTime = $Written; CreationTime = [datetime]::MinValue }
         }
     }
 
@@ -350,6 +353,25 @@ Describe 'Test-PSMutationSandboxAbandoned' {
         Mock Get-Process { [pscustomobject]@{ StartTime = $dirCreated } }
         Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $dirCreated) |
             Should-BeFalse
+    }
+
+    It 'SPARES a live owner whose start reads a little LATER than its own file' {
+        # The clock-granularity case: a file stamped at the last timer tick, written within the
+        # first tick of its owner's life, reads as older than the owner that wrote it.
+        $written = Get-Date
+        Mock Get-Process { [pscustomobject]@{ StartTime = $written.AddMilliseconds(15) } }
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $written) |
+            Should-BeFalse
+    }
+
+    It 'spares an owner that started exactly the slack after the last write, and reclaims one a tick later' {
+        # Both sides of the boundary in one place, so neither the comparison nor the size of the
+        # slack can move without this failing.
+        $written = Get-Date
+        Mock Get-Process { [pscustomobject]@{ StartTime = $written.AddSeconds(2) } }
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $written) | Should-BeFalse
+        Mock Get-Process { [pscustomobject]@{ StartTime = $written.AddSeconds(2).AddTicks(1) } }
+        Test-PSMutationSandboxAbandoned -Directory (NewDir 'psmut-sandbox-4242' $written) | Should-BeTrue
     }
 
     It 'spares a sandbox when the owner start time cannot be read' {

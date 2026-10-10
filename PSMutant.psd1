@@ -83,6 +83,15 @@ upload-sarif, `Category:` on `AdvancedSecurity-Publish@1`).
 Checked with the SARIF validator''s GitHub Advanced Security and Azure DevOps rule sets: it passes
 both, apart from the category, which is left to the pipeline on purpose.
 
+**The stale-sandbox sweep no longer deletes a live run''s files on Windows.** At startup a run
+reclaims sandboxes and coverage files whose owning process is gone, and treats an id that has been
+reused as gone too: an owner that started after the file was made cannot have made it. That test
+read the file''s CREATION time, and two things on Windows can make a live owner''s fresh file look
+older than its owner -- a file stamp is only as fine as the timer tick, and NTFS hands a name that
+was deleted and recreated moments later its old creation time. The sweep now reads the last WRITE
+time, with two seconds of slack, so a concurrent run''s working files are left alone. Real id reuse
+leaves a far larger gap, so leftovers are still reclaimed.
+
 **Survivors are annotated under Azure Pipelines too.** Under GitHub Actions a survivor has always
 been printed as a `::warning` workflow command. Under Azure Pipelines (`TF_BUILD=True`) it is now
 a `##vso[task.logissue type=warning;...]` command, which lists it in the build summary linked to the
