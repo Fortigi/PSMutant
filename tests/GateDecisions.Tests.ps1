@@ -405,8 +405,8 @@ Describe 'the shipped pins.env is itself a claim, so it is asserted here' {
     It 'declares every key the workflows require' {
         # The workflows assert this at run time; asserting it here means a missing pin fails in
         # the suite rather than five minutes into a job.
-        foreach ($k in 'PESTER_VERSION', 'PESTER_COMPAT_VERSIONS', 'PS_COMPAT_VERSIONS',
-            'PS_COMPAT_EXEMPT_MINORS', 'PS_COMPAT_PESTER', 'PSSA_VERSION',
+        foreach ($k in 'PESTER_VERSION', 'PESTER_COMPAT_VERSIONS', 'PESTER_COMPAT_EXEMPT_MINORS',
+            'PS_COMPAT_VERSIONS', 'PS_COMPAT_EXEMPT_MINORS', 'PS_COMPAT_PESTER', 'PSSA_VERSION',
             'PSCOMPLEXITY_VERSION', 'CONVERTTOSARIF_VERSION', 'PSSA_PATHS') {
             Get-PSMutantPinValue -Line $script:pinLines -Name $k |
                 Should-NotBeNull -Because "pins.env must define $k"
@@ -495,17 +495,22 @@ Describe 'the shipped pins.env is itself a claim, so it is asserted here' {
         }
     }
 
-    It 'exempts only minors that are neither covered nor imaginary' {
+    It 'exempts only minors that are neither covered nor imaginary, in <ExemptKey>' -ForEach @(
+        @{ ExemptKey = 'PESTER_COMPAT_EXEMPT_MINORS'; ListKey = 'PESTER_COMPAT_VERSIONS' }
+        @{ ExemptKey = 'PS_COMPAT_EXEMPT_MINORS'; ListKey = 'PS_COMPAT_VERSIONS' }
+    ) {
         # An exemption is a claim, and the watcher fails a claim that stopped describing
         # anything. Asserting the shape here means a typo fails in the suite rather than as a
-        # weekly issue nobody reads.
-        $exempt = @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PS_COMPAT_EXEMPT_MINORS') -split ' ' |
+        # weekly issue nobody reads. Both lists, because the watcher reads both: a rule asserted
+        # for one of them is how the two came to differ without anybody deciding they should.
+        $exempt = @((Get-PSMutantPinValue -Line $script:pinLines -Name $ExemptKey) -split ' ' |
                 Where-Object { $_ })
-        $minors = @((Get-PSMutantPinValue -Line $script:pinLines -Name 'PS_COMPAT_VERSIONS') -split ' ' |
+        $minors = @((Get-PSMutantPinValue -Line $script:pinLines -Name $ListKey) -split ' ' |
                 Where-Object { $_ } | ForEach-Object { $v = [version]$_; "$($v.Major).$($v.Minor)" })
+        $minors.Count | Should-BeGreaterThan 0 -Because "$ListKey must hold legs, or there is nothing to compare an exemption with"
         foreach ($e in $exempt) {
             $e | Should-MatchString '^\d+\.\d+$' -Because 'an exemption names a minor, not a full version'
-            $minors | Should-NotContainCollection $e -Because "PowerShell $e is exempted and also covered by a leg; one of the two is wrong"
+            $minors | Should-NotContainCollection $e -Because "$e is exempted and also covered by a leg; one of the two is wrong"
         }
     }
 
