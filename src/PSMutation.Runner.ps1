@@ -89,8 +89,21 @@ function Invoke-PSMutationBaseline {
     $covered = Get-PSMutationCoveredLine -Executed $result.CodeCoverage.CommandsExecuted `
         -Missed $result.CodeCoverage.CommandsMissed
 
+    # The reason each failure gave, decided ONCE. The names the guard prints and the count it reads
+    # to decide whether to add a hint are two views of this list; computed apart they could disagree
+    # about what "no reason" means, and the hint would fire beside a name that carried one.
+    # A foreach STATEMENT, because Failed is null on a green run and a pipeline over it would run
+    # once with $null and report a phantom failure.
+    $failures = [System.Collections.Generic.List[object]]::new()
+    foreach ($t in $result.Failed) {
+        $failures.Add([pscustomobject]@{ Name = [string]$t.ExpandedPath; Why = (Get-PSMutationFailedTestReason -Test $t) })
+    }
+
     return @{
         Passed          = ($result.Result -eq 'Passed')
+        # Read by the guard only when EVERY failure is unexplained: then the names alone point at
+        # nothing, and the reader needs to know where else to look.
+        Unexplained     = @($failures | Where-Object { -not $_.Why }).Count
         DurationSeconds = $sw.Elapsed.TotalSeconds
         CoveredLines    = $covered
         # Carried so the guard can NAME what broke, and say why. A red baseline is reported by
@@ -98,49 +111,48 @@ function Invoke-PSMutationBaseline {
         # even a bare test name, sends the reader to reproduce a failure that by definition is
         # not happening on the machine they are standing on.
         #
-        # The FIRST line only. A Pester message is an expectation, then the actual, then a
-        # stack; the first line is the one that says what went wrong, and any later line reads
-        # as a fact about nothing once separated from it.
-        #
-        # Split on \r?\n rather than on "`n": a CRLF message otherwise keeps a trailing
-        # carriage return, which travels into an exception message and prints as a stray line
-        # break in the middle of the gate's one line of output.
-        FailedTest      = @($result.Failed | ForEach-Object {
-                # ErrorRecord is a COLLECTION, not one record -- a test can fail for more than
-                # one reason, and Pester hands back a List. Reading `.Exception.Message` off the
-                # list itself works only by PowerShell's member enumeration, which yields the
-                # inner value for a ONE-element list and NOTHING for a longer one. So the reason
-                # came back '' exactly when a test had several errors, and the gate printed
-                # "Failed: Some.Test -- ."
-                #
-                # That is the bare test name this whole field exists to improve on: a run reported
-                # by a -Quiet gate prints one line, and a name with no reason sends the reader to
-                # reproduce a failure that by definition is not happening on their machine.
-                #
-                # It reproduces under ErrorActionPreference = Stop, which is what CI sets and a
-                # developer machine usually does not -- so it was invisible locally and red on
-                # both legs. Taking [0] is the FIRST reason, matching the first-line rule below:
-                # later errors are usually cascade from it.
-                $record = @($_.ErrorRecord)[0]
-                # And the first NON-EMPTY line of that record. A Pester message is an expectation,
-                # then the actual, then a stack; index 1 would report "at <ScriptBlock>" as the
-                # reason, which is a fact about nothing, and a leading blank line would report ''.
-                $lines = @($record.Exception.Message -split "\r?\n" |
-                        Where-Object { -not [string]::IsNullOrWhiteSpace($_) })
-                $why = ''
-                if ($lines.Count -gt 0) { $why = $lines[0].Trim() }
-                # NO dangling separator when there is nothing to say. A test can carry no error
-                # record at all -- when a BeforeAll dies under ErrorActionPreference = Stop, Pester
-                # marks every test in the block Failed and attaches the error to the CONTAINER, not
-                # to the test. The name alone is then the honest answer; "Some.Test -- ." reads as
-                # a reason that was lost rather than one that never existed.
-                #
-                # The container-level record is deliberately NOT reached for. In that case it holds
-                # Pester's own break/continue guard text, which says nothing about the consumer's
-                # failure -- the same "fact about nothing" the first-line rule above avoids.
-                $why ? "$($_.ExpandedPath) -- $why" : [string]$_.ExpandedPath
-            })
+        # NO dangling separator when there is nothing to say: "Some.Test -- ." reads as a reason
+        # that was lost rather than one that never existed. What counts as a reason is decided in
+        # Get-PSMutationFailedTestReason.
+        FailedTest      = @(foreach ($f in $failures) { $f.Why ? "$($f.Name) -- $($f.Why)" : $f.Name })
     }
+}
+
+function Get-PSMutationFailedTestReason {
+    <#
+    .SYNOPSIS
+        The one line a failed Pester test gives as its reason, or '' when it gives none.
+    .DESCRIPTION
+        ErrorRecord is a COLLECTION, not one record -- a test can fail for more than one reason, and
+        Pester hands back a List. Reading `.Exception.Message` off the list itself works only by
+        member enumeration, which yields the inner value for a ONE-element list and NOTHING for a
+        longer one, so the reason came back '' exactly when a test had several errors. The FIRST
+        record is the reason: later ones are usually cascade from it.
+
+        Of that record, the first NON-EMPTY line. A Pester message is an expectation, then the
+        actual, then a stack; the second line would report "at <ScriptBlock>", which is a fact
+        about nothing, and a leading blank line would report ''. Split on \r?\n rather than on a bare
+        newline: a CRLF message otherwise keeps a trailing carriage return, which prints as a stray
+        line break in the middle of the gate's one line of output.
+
+        A test can carry no record at all: when a BeforeAll dies under ErrorActionPreference = Stop,
+        Pester marks every test in the block Failed and attaches the error to the CONTAINER. The
+        container's record is deliberately NOT reached for -- it holds Pester's own break/continue
+        guard text, which says nothing about the consumer's failure. '' is the honest answer.
+
+        Walked with foreach rather than indexed: the empty case is precisely the one this has to
+        answer, and indexing an empty collection is an error wherever StrictMode is on.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Test)
+    foreach ($record in @($Test.ErrorRecord)) {
+        foreach ($line in ([string]$record.Exception.Message -split "\r?\n")) {
+            if (-not [string]::IsNullOrWhiteSpace($line)) { return $line.Trim() }
+        }
+        return ''
+    }
+    return ''
 }
 
 function Assert-PSMutationBaselineGreen {
@@ -161,6 +173,13 @@ function Assert-PSMutationBaselineGreen {
         $more = ''
         if ($named.Count -gt $shown.Count) { $more = " (and $($named.Count - $shown.Count) more)" }
         $detail = " Failed: $($shown -join '; ')$more."
+    }
+    # Every failure without a reason is a different situation from a failing assertion, and the
+    # names alone send the reader to the tests. Two causes produce it, and neither is in the tests'
+    # own lines: a BeforeAll that died, whose error Pester attaches to the FILE, and a damaged
+    # Pester install, which fails even a test with no assertion in it. Both have been seen.
+    if ($named.Count -gt 0 -and $Baseline.Unexplained -eq $named.Count) {
+        $detail += ' None of them carried an error. A BeforeAll that failed attaches its error to the test file rather than to the tests, so run that file alone to see it. If even a test with no assertions fails this way, the Pester installation itself may be damaged: reinstall it with Install-Module Pester -RequiredVersion <the version in use> -Force.'
     }
     throw "Baseline suite is not green - fix the tests before mutating.$detail"
 }

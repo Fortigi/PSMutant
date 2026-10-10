@@ -42,7 +42,6 @@ BeforeAll {
         # beside the one that DID come back null -- .CodeCoverage with the tracer off -- which is
         # why neither is assumed.
         'PSMutation.Pester.ps1 -> $r.Failed'
-        'PSMutation.Runner.ps1 -> $result.Failed'
     )
 
     function Get-PropertyPipeline {
