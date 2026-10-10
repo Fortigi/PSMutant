@@ -758,3 +758,43 @@ Describe 'Get-PSMutantGatePlan' {
         (Plan @('src/a.ps1')).Reason[0] | Should-Be 'SelfMutation: runs -- it reads src/a.ps1.'
     }
 }
+
+Describe 'the README tells a contributor to run the gates CI runs' {
+    BeforeAll {
+        $script:repoRoot = Split-Path -Parent $PSScriptRoot
+        $readme = Get-Content -LiteralPath (Join-Path $script:repoRoot 'README.md') -Raw
+        $script:development = $readme.Substring($readme.IndexOf('## Development'))
+        # Every gate script a workflow RUNS. Comment lines are dropped, because a workflow may
+        # mention a script in prose without running it, and a dot-sourced decision library is not
+        # a gate anybody runs by hand.
+        $text = @(Get-ChildItem -LiteralPath (Join-Path $script:repoRoot '.github/workflows') -Filter '*.yml' |
+                ForEach-Object { Get-Content -LiteralPath $_.FullName } | Where-Object { $_ -notmatch '^\s*#' }) -join "`n"
+        $script:runByWorkflows = @([regex]::Matches($text, '(?<!\. )\./tools/(?<s>[\w-]+\.ps1)') |
+                ForEach-Object { $_.Groups['s'].Value } | Sort-Object -Unique)
+    }
+
+    It 'finds the gate scripts at all' {
+        # Two empty lists agree: a pattern broken by a reworded workflow would satisfy the test
+        # below while checking nothing.
+        $script:runByWorkflows.Count | Should-BeGreaterThan 5
+        $script:development | Should-BeLikeString '## Development*'
+    }
+
+    It 'names every gate script a workflow runs, by name' {
+        # The README used to hand contributors an inline Invoke-ScriptAnalyzer over ./src that
+        # exited 0 whatever it found, and named four of the eleven gates. A contributor following it
+        # landed work the real gates then failed, and could not have known.
+        #
+        # The gate plan is the one deliberate omission: it decides which gates CI may skip, and a
+        # contributor running them by hand runs them all.
+        $missing = @($script:runByWorkflows | Where-Object { $_ -ne 'Get-PSMutantGatePlan.ps1' } |
+                Where-Object { $script:development -notmatch [regex]::Escape("./tools/$_") })
+        $missing -join ', ' | Should-Be '' -Because 'the README Development section must name every gate script CI runs'
+    }
+
+    It 'spells no lint out inline' {
+        # The committed analyzer script IS the lint gate; an inline call is the narrower shape it
+        # replaced, and the one a contributor would copy.
+        $script:development | Should-NotBeLikeString '*Invoke-ScriptAnalyzer*'
+    }
+}

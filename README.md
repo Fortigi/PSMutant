@@ -573,28 +573,45 @@ The test estate is written against **Pester 6.2.0** and CI pins that exact versi
 is a contributor requirement only -- the module itself still supports Pester 5.2+, and
 `tools/Test-PSMutantPesterCompatibility.ps1` proves it on every CI run.
 
+Every gate is a committed script, and running it is passing it: each one throws on a fault, so
+what you run by hand is what CI runs. In the order CI runs them:
+
 ```powershell
 Import-Module Pester -RequiredVersion 6.2.0 -Force                 # PESTER_VERSION in pins.env
+./tools/Test-PSMutantCiParity.ps1                                  # workflow rules shared with PSComplexity
+./tools/Test-PSMutantRelease.ps1                                   # manifest, CHANGELOG and release notes agree
+./tools/Invoke-PSMutantAnalyzer.ps1                                # lint: PSSA_PATHS, every severity
 Invoke-Pester ./tests                                              # unit tests
+./tools/Test-PSMutantOrderIndependence.ps1                         # the suite reversed, plus an environment check
+./tools/Test-PSMutantBlockIsolation.ps1                            # every Describe and Context run alone
 ./tools/Measure-PSMutantCoverage.ps1                               # coverage gate (100%)
-Invoke-ScriptAnalyzer -Path ./src -Recurse -Settings ./PSScriptAnalyzerSettings.psd1   # lint
 Test-PSComplexity ./src -Recurse                                   # complexity gate (needs PSComplexity)
 Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot .   # dogfood: PSMutant on itself
-./tools/Test-PSMutantPesterCompatibility.ps1 -PesterVersion 5.8.0  # needs 5.8.0 installed too
+./tools/Test-PSMutantPowerShellCompatibility.ps1                   # every supported PowerShell (downloads them)
+./tools/Test-PSMutantPesterCompatibility.ps1                       # every supported Pester (needs them installed)
 ```
+
+Two more run outside the merge gate: `./tools/Test-PSMutantPackage.ps1 -Path <staged package>` when
+publishing, and `./tools/Test-PSMutantPinFreshness.ps1` weekly, which needs network access.
+
+While developing, `./tools/New-PSMutantScopedConfig.ps1 -Since HEAD -Run` mutates only the files you
+changed -- seconds instead of minutes, and never a substitute for the full run before a PR.
 
 ### Quality gates (all required on `main`)
 
 Every one of these runs in the CI `test` job and blocks the merge on failure:
 
-- **Unit tests** — the suites under `tests/`.
+- **Unit tests** — the suites under `tests/`, in their usual order and again reversed.
 - **Coverage** — 100% of `src/`, measured by `tools/Measure-PSMutantCoverage.ps1`.
-- **PSScriptAnalyzer** — zero Error/Warning findings (`Write-Host` is the one allowed rule).
+- **PSScriptAnalyzer** — zero findings at every severity over `PSSA_PATHS`; rules are excluded
+  by name, with a reason, in `PSScriptAnalyzerSettings.psd1`.
 - **Complexity** — every unit must stay at or under **15 cyclomatic** and **15 cognitive**,
   measured by [**PSComplexity**](https://github.com/Fortigi/PSComplexity)
   (`Test-PSComplexity`) — a faithful cognitive metric, not a bundled approximation.
 - **Self-mutation** — PSMutant mutation-tests itself; the score must stay above the
   `thresholds.break` floor in `psmutant.self.config.json`.
+- **Compatibility** — a real mutation run under every supported Pester and every supported
+  PowerShell.
 
 The two Fortigi modules dogfood each other: PSMutant gates its complexity with PSComplexity,
 and PSComplexity gates its test quality with PSMutant. Separately, `code-scanning.yml`
