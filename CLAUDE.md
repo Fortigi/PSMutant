@@ -237,6 +237,7 @@ self-mutating on their own terms. Keep new decisions there rather than in the bo
 |---|---|---|
 | `PSMutation.Operators.ps1` | 100% | yes |
 | `PSMutation.Report.ps1` | 100% | yes |
+| `PSMutation.Sarif.ps1` | 100% | yes |
 | `PSMutation.Recheck.ps1` | 100% | yes |
 | `PSMutation.Pester.ps1` | 100% | yes |
 | `PSMutation.Config.ps1` | 100% | yes |
@@ -370,7 +371,10 @@ the gate scripts in `tools/` print for a living.
 
 A line carries a **role**, never a colour: `Banner`, `Good`, `Warn`, `Bad`, `Detail`,
 `Muted`, `Rule`, `Annotation`. The console renderer maps role to colour; the second renderer
-predicted here now exists, and maps the same lines to GitHub workflow commands. An unknown role
+predicted here now exists, and maps the same lines to CI workflow commands -- GitHub's `::warning`
+under `GITHUB_ACTIONS`, Azure Pipelines' `##vso[task.logissue]` under `TF_BUILD`. Which one is
+decided once, by `Get-PSMutationAnnotationHost`, and passed to the renderer as `-Format`; the renderer
+never reads the environment, for the reason `Test-PSMutationAnnotationFlag` documents. An unknown role
 **throws** -- a silently uncoloured line reads as a styling slip, when what it signals is a
 renderer that will not know what to do with the line at all.
 
@@ -611,6 +615,9 @@ src/PSMutation.Config.ps1      config resolution: subtrees, timeout, the sandbox
 src/PSMutation.Output.ps1      the console seam: what a line is, and the ONE Write-Host.
 src/PSMutation.Report.ps1      scoring, thresholds, equivalents, the report document, the
                                summary lines, run result. Pure except for writing the JSON.
+src/PSMutation.Sarif.ps1       the SARIF log: survivors as code-scanning results, one rule per
+                               operator, fingerprinted by the equivalence key. Pure except for
+                               writing the file.
 src/PSMutation.Recheck.ps1     -RecheckFrom, whole: compatibility, selection, the run.
 src/PSMutation.Runner.ps1      baseline + its green guard, per-mutant execution, the loop.
 src/Invoke-PSMutation.ps1      public entry point. Wiring, and nothing else.
@@ -726,12 +733,17 @@ the reason behind it had no name.
   *It stops being right when a run is large enough that the rows do not fit*, which is #194's
   sidecar -- and that issue is the place to change it, not the loop.
 
-- **3. Only the REPORT leaves temp.** Everything a run writes goes to the sandbox root except the
-  document named by `reportPath`, which must survive the sandbox's deletion because it is the
-  output. Deliberate and correct.
+- **3. Only the REPORT and the SARIF LOG leave temp.** Everything a run writes goes to the sandbox
+  root except the documents named by `reportPath` and, when set, `sarifPath`, which must survive the
+  sandbox's deletion because they are the output. Deliberate and correct.
 
-  *It stops being right the moment a second artefact needs to outlive the run* -- and the rule in
-  the next paragraph is what such an artefact has to be measured against.
+  The condition this clause used to record -- *it stops being right the moment a second artefact
+  needs to outlive the run* -- is what the SARIF log met, and it was measured against the rule in
+  the next paragraph: it is written to a path the caller named, not to temp, so it needs no
+  lifecycle of its own. It is also written only by a run that SCORED. A recheck and an interrupted
+  run write none, because a code-scanning service reads a missing result as a fixed one and would
+  close every alert they did not re-examine; a `-ChangedFile` run writes the `.changed` sibling for
+  the same reason.
 
 - **4. Ownership and liveness are both keyed on `$PID`, and that is the one clause nobody decided.**
   It is #53. Half of it is now closed: the sweep used to treat any directory holding our OWN process

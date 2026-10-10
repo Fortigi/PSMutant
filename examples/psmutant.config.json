@@ -22,5 +22,8 @@
   "timeoutFloorSeconds": 15,
 
   "thresholds": { "high": 85, "low": 70, "break": null },
-  "reportPath": "reports/ps-mutation.json"
+  "reportPath": "reports/ps-mutation.json",
+
+  "_sarifPath": "Optional. A SARIF 2.1.0 log of the survivors, for GitHub code scanning (upload-sarif) or Azure DevOps Advanced Security (AdvancedSecurity-Publish). Remove the key to write none. Give the upload step a category; the log deliberately carries none of its own.",
+  "sarifPath": "reports/ps-mutation.sarif"
 }

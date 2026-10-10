@@ -105,12 +105,13 @@ function Get-PSMutationRoleColour {
 function Test-PSMutationAnnotationFlag {
     <#
     .SYNOPSIS
-        Whether the value GitHub Actions publishes means "annotate". Pure.
+        Whether the value a CI publishes means "annotate". Pure.
     .DESCRIPTION
         A positive test rather than "not a console": a developer piping output to a file is not a
         CI, and emitting workflow commands there would put '::warning' noise in front of a human
         for no reason. It is also not a truthiness check -- Actions sets the literal string
-        'false' in some contexts, and any non-empty string is truthy in PowerShell.
+        'false' in some contexts, and any non-empty string is truthy in PowerShell. Compared
+        case-insensitively, which is what lets Azure Pipelines' 'True' answer the same question.
 
         SPLIT FROM THE READ, and the reason is about the tests rather than about this decision.
         `$env:` is PROCESS state: every runspace in a process shares one environment, so a suite
@@ -128,18 +129,31 @@ function Test-PSMutationAnnotationFlag {
     return $Value -eq 'true'
 }
 
-function Test-PSMutationAnnotationHost {
-    # Whether the host running us renders CI annotations. GitHub Actions sets GITHUB_ACTIONS
-    # to 'true' for every step. The decision is next door; this is the read.
-    [OutputType([bool])]
+function Get-PSMutationAnnotationHost {
+    <#
+    .SYNOPSIS
+        Which CI is running us, if it renders annotations: 'GitHub', 'AzureDevOps' or $null.
+    .DESCRIPTION
+        GitHub Actions sets GITHUB_ACTIONS to 'true' for every step; Azure Pipelines sets TF_BUILD
+        to 'True'. The flag test is case-insensitive, so one decision answers both. The decision is
+        next door; this is the read.
+
+        GitHub first, though the order only matters on a machine that sets both -- a self-hosted
+        agent serving two systems. Either answer is then defensible; asking in a fixed order keeps
+        it the same answer every run.
+    #>
+    [OutputType([string])]
     [CmdletBinding()]
     param()
-    return Test-PSMutationAnnotationFlag -Value $env:GITHUB_ACTIONS
+    if (Test-PSMutationAnnotationFlag -Value $env:GITHUB_ACTIONS) { return 'GitHub' }
+    if (Test-PSMutationAnnotationFlag -Value $env:TF_BUILD) { return 'AzureDevOps' }
+    return $null
 }
 
 function Get-PSMutationAnnotationLine {
-    # Survivor lines rendered as GitHub workflow commands, so a finding lands on the diff the
-    # reviewer is already looking at instead of in job-log scrollback.
+    # Survivor lines rendered as CI workflow commands, so a finding lands where the reviewer is
+    # already looking instead of in job-log scrollback: on the diff under GitHub Actions, and in
+    # the build summary's issue list, linked to the line, under Azure Pipelines.
     #
     # Built from -Data, never from Text. The mutant row carries the file and the line as
     # VALUES; recovering them by parsing a formatted string back apart is the coupling the Data
@@ -150,16 +164,24 @@ function Get-PSMutationAnnotationLine {
     # file itself -- pointing the reviewer at YAML that has nothing to do with the finding.
     [OutputType([pscustomobject])]
     [CmdletBinding()]
-    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Lines)
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Lines,
+        # Which CI's command syntax. GitHub is the default because it was the only one, and every
+        # existing caller meant it.
+        [ValidateSet('GitHub', 'AzureDevOps')] [string]$Format = 'GitHub'
+    )
+    # Both syntaxes end their property list at a fixed delimiter -- '::' for GitHub, ']' for
+    # Azure DevOps -- and read everything after it as the message, so commas, colons, semicolons
+    # and brackets in a DESCRIPTION are safe in either. Newlines are the other terminator, and a
+    # description is already whitespace-collapsed when the candidate is built.
+    $template = $Format -eq 'AzureDevOps' ?
+        '##vso[task.logissue type=warning;sourcepath={0};linenumber={1}]{2}' : '::warning file={0},line={1}::{2}'
     foreach ($line in $Lines) {
         if (-not $line.Data) { continue }
         if (-not $line.Data.File) { continue }
-        # Commas and colons in the description would otherwise end the property list early;
-        # GitHub reads the message only after the '::'. Newlines are the other terminator, and
-        # a description is already whitespace-collapsed when the candidate is built.
         $message = "Mutant survived: $($line.Data.Description)"
         New-PSMutationLine -Role 'Annotation' -Data $line.Data `
-            -Text ("::warning file={0},line={1}::{2}" -f $line.Data.File, $line.Data.Line, $message)
+            -Text ($template -f $line.Data.File, $line.Data.Line, $message)
     }
 }
 

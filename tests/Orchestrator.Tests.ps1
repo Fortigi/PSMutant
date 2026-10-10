@@ -24,13 +24,13 @@ BeforeAll {
     # this file's clear and Output.Tests.ps1's writes would reach into each other -- and the
     # symptom is a failing assertion, which is scored as a KILLED mutant rather than as an error.
     #
-    # Every Describe below mocks Test-PSMutationAnnotationHost to $false instead. That is the
+    # Every Describe below mocks Get-PSMutationAnnotationHost to $null instead. That is the
     # thing this file actually wanted -- do not annotate -- said as a mock rather than as a
     # write to a variable somebody else is reading.
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
         'PSMutation.Config.ps1', 'PSMutation.Output.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
-        'PSMutation.Recheck.ps1', 'Invoke-PSMutation.ps1') {
+        'PSMutation.Sarif.ps1', 'PSMutation.Recheck.ps1', 'Invoke-PSMutation.ps1') {
         . (Join-Path $src $f)
     }
 }
@@ -41,7 +41,7 @@ Describe 'Invoke-PSMutation' {
         # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
         # runspace in the process shares -- see this file's header. An It that wants the annotation
         # path mocks it back to $true and overrides this one.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         $script:configFile = Join-Path $script:root 'psmutant.json'
@@ -122,6 +122,60 @@ Describe 'Invoke-PSMutation' {
     It 'writes the report where the config asked for it' {
         Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
         Test-Path (Join-Path $script:root 'reports/run.json') | Should-BeTrue
+    }
+
+    It 'writes a SARIF log of the survivors when sarifPath is set' {
+        # The fixture loop has one killed and one survived mutant; the log carries the survivor
+        # alone, at its own line, which is the projection this file wires up.
+        $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName sarifPath -NotePropertyValue 'reports/run.sarif'
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        $sarif = Get-Content (Join-Path $script:root 'reports/run.sarif') -Raw | ConvertFrom-Json
+        @($sarif.runs[0].results).Count | Should-Be 1
+        $sarif.runs[0].results[0].locations[0].physicalLocation.region.startLine | Should-Be 2
+        # The run's own numbers beside the findings, from the same summary the report uses.
+        $sarif.runs[0].properties.mutationScore | Should-Be 50
+        # The operators the RUN applied, which is what decides the rules.
+        @($sarif.runs[0].tool.driver.rules).id | Should-BeCollection @('PSMutant/BinaryOperator')
+    }
+
+    It 'says where the SARIF log went, unless quiet' {
+        $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName sarifPath -NotePropertyValue 'reports/run.sarif'
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root } 6>&1 | Out-String
+        $out | Should-BeLikeString '*SARIF: *run.sarif (1 finding(s))*'
+        $quiet = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String
+        $quiet | Should-NotBeLikeString '*SARIF:*'
+    }
+
+    It 'writes no SARIF log when the config does not ask for one' {
+        # Opt-in. A file nobody asked for is one nobody uploads and somebody commits.
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        @(Get-ChildItem $script:root -Recurse -Filter '*.sarif').Count | Should-Be 0
+    }
+
+    It 'writes no SARIF log for a recheck, which would close alerts it never re-examined' {
+        Mock Invoke-PSMutationRecheckRun { [pscustomobject]@{ Mode = 'Recheck'; Rechecked = 2 } }
+        $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName sarifPath -NotePropertyValue 'reports/run.sarif'
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -RecheckFrom 'prior.json' -Quiet | Out-Null
+        @(Get-ChildItem $script:root -Recurse -Filter '*.sarif').Count | Should-Be 0
+    }
+
+    It 'writes no SARIF log for an interrupted run' {
+        # A partial log uploaded would read every unevaluated mutant's alert as fixed.
+        Mock Invoke-PSMutationLoop {
+            $Sink.Add([pscustomobject]@{ Id = 'm2'; Status = 'Survived'; File = 'src/a.ps1'; Line = 2 })
+            throw 'interrupted'
+        }
+        $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName sarifPath -NotePropertyValue 'reports/run.sarif'
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should-Throw
+        @(Get-ChildItem $script:root -Recurse -Filter '*.sarif').Count | Should-Be 0
     }
 
     It 'removes the sandbox even when the run blows up half way through' {
@@ -327,7 +381,7 @@ Describe 'Invoke-PSMutation' {
         #
         # The file and line come from the mutant row, so this also proves the annotation is
         # built from Data rather than from the console text.
-        Mock Test-PSMutationAnnotationHost { $true }
+        Mock Get-PSMutationAnnotationHost { 'GitHub' }
         $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String
         $out | Should-BeLikeString '*::warning file=src/a.ps1,line=2::*'
         # And only the survivor. The killed mutant has a file and a line too, so a renderer
@@ -335,10 +389,20 @@ Describe 'Invoke-PSMutation' {
         $out | Should-NotBeLikeString '*line=1*'
     }
 
+    It 'annotates in Azure DevOps syntax under Azure Pipelines' {
+        # The format travels from the host check to the renderer. Without this, a call site that
+        # dropped -Format would annotate in GitHub syntax everywhere, and Azure Pipelines prints
+        # '::warning' as an ordinary log line nobody sees.
+        Mock Get-PSMutationAnnotationHost { 'AzureDevOps' }
+        $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String
+        $out | Should-BeLikeString '*##vso`[task.logissue type=warning;sourcepath=src/a.ps1;linenumber=2`]*'
+        $out | Should-NotBeLikeString '*::warning*'
+    }
+
     It 'annotates nothing when it is not running under a CI' {
         # The paired half. Without it the test above passes against a run that annotates
         # unconditionally, putting workflow-command noise in front of every developer.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root } 6>&1 | Out-String
         $out | Should-NotBeLikeString '*::warning*'
     }
@@ -346,7 +410,7 @@ Describe 'Invoke-PSMutation' {
     It 'prints nothing at all with -Quiet' {
         # CI-neutral: this asserts silence, and under a real CI the annotation path speaks by
         # design. Mocked rather than cleared from $env:, which is shared with every other file.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         # Every one of the four guards is named, not just the banner and the summary:
         # a guard that stopped honouring -Quiet would otherwise ship unnoticed.
         $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String
@@ -428,7 +492,7 @@ Describe 'Invoke-PSMutation -ListOnly' {
         # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
         # runspace in the process shares -- see this file's header. An It that wants the annotation
         # path mocks it back to $true and overrides this one.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         $script:configFile = Join-Path $script:root 'psmutant.json'
@@ -570,7 +634,7 @@ Describe 'Invoke-PSMutation pipeline binding' {
         # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
         # runspace in the process shares -- see this file's header. An It that wants the annotation
         # path mocks it back to $true and overrides this one.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         foreach ($n in 'one', 'two') {
@@ -656,7 +720,7 @@ Describe 'Invoke-PSMutation -ChangedFile' {
         # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
         # runspace in the process shares -- see this file's header. An It that wants the annotation
         # path mocks it back to $true and overrides this one.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         $script:configFile = Join-Path $script:root 'psmutant.json'
@@ -726,6 +790,18 @@ Describe 'Invoke-PSMutation -ChangedFile' {
             -ChangedFile @('src/a.ps1') -Quiet | Out-Null
         Test-Path (Join-Path $script:root 'reports/run.changed.json') | Should-BeTrue
         Test-Path (Join-Path $script:root 'reports/run.json') | Should-BeFalse
+    }
+
+    It 'writes a scoped SARIF log beside the project one, never over it' {
+        # Uploaded under the project's name, a log of two files' survivors closes every alert in
+        # every other file.
+        $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName sarifPath -NotePropertyValue 'reports/run.sarif'
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('src/a.ps1') -Quiet | Out-Null
+        Test-Path (Join-Path $script:root 'reports/run.changed.sarif') | Should-BeTrue
+        Test-Path (Join-Path $script:root 'reports/run.sarif') | Should-BeFalse
     }
 
     It 'refuses an empty list, and does not refuse an omitted one' {
@@ -818,7 +894,7 @@ Describe 'Get-PSMutationRunContext' {
         # Do not annotate. Said as a mock rather than by clearing $env:GITHUB_ACTIONS, which every
         # runspace in the process shares -- see this file's header. An It that wants the annotation
         # path mocks it back to $true and overrides this one.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         $script:root = Join-Path $TestDrive ([System.Guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:root -Force | Out-Null
         $script:configFile = Join-Path $script:root 'psmutant.json'

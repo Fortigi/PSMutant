@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.5.1'
+    ModuleVersion     = '0.6.0'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -58,7 +58,41 @@ pins. The same tests can therefore score lower than before, so a `thresholds.bre
 red on upgrade. That is the gate measuring code it used to skip, not the code getting worse.
 
 A `param()` default is still never covered: no command spans it, so nothing Pester instruments
-can say whether it ran.'
+can say whether it ran.
+
+**A SARIF log of the survivors, with `"sarifPath"`.** Set it and a run also writes a SARIF 2.1.0
+log, which GitHub code scanning and Azure DevOps Advanced Security turn into alerts that open,
+persist and close across runs:
+
+```json
+{ "reportPath": "reports/ps-mutation.json", "sarifPath": "reports/ps-mutation.sarif" }
+```
+
+One rule per operator the run applied, `warning` level, and no alert for a declared equivalent.
+Each alert is fingerprinted by `file:function:description` -- the address an equivalence declaration
+uses -- never by mutant id or line, so an unrelated edit above a survivor does not close and reopen
+it. A run with no survivors writes a log with no results, which is what closes old alerts.
+
+Only a run that scored writes one. A `-ChangedFile` run writes `<name>.changed.sarif` beside the
+configured file, never over it, and a `-RecheckFrom` run, a `-ListOnly` preview and an interrupted
+run write none: a code-scanning service reads a missing result as a fixed one, so a partial log
+would close every alert it did not re-examine. The log names no category of its own -- on GitHub a
+category in the file overrides the upload step''s -- so give one in the pipeline (`category:` on
+upload-sarif, `Category:` on `AdvancedSecurity-Publish@1`).
+
+Checked with the SARIF validator''s GitHub Advanced Security and Azure DevOps rule sets: it passes
+both, apart from the category, which is left to the pipeline on purpose.
+
+**Survivors are annotated under Azure Pipelines too.** Under GitHub Actions a survivor has always
+been printed as a `::warning` workflow command. Under Azure Pipelines (`TF_BUILD=True`) it is now
+a `##vso[task.logissue type=warning;...]` command, which lists it in the build summary linked to the
+line. As before, `-Quiet` does not silence it, and nothing is printed outside a CI.
+
+New in the README: how to get survivors onto a pull request, on both platforms, and
+`examples/azure-pipelines.yml`, a complete Azure pipeline -- a full run on `main`, a `-ChangedFile`
+run on pull requests, and both ways of publishing the log.
+
+No score moves and no existing output changes. The config gains one optional key.'
         }
     }
 }

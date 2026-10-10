@@ -32,6 +32,7 @@ BeforeAll {
         'Invoke-PSMutation.ps1 -> PSMutation.Report.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Runner.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Sandbox.ps1'
+        'Invoke-PSMutation.ps1 -> PSMutation.Sarif.ps1'
 
         # Config resolves the sandbox plan and the operator list, so it reads both
         # vocabularies. It decides; neither of them decides anything about config.
@@ -55,6 +56,10 @@ BeforeAll {
         'PSMutation.Runner.ps1 -> PSMutation.Operators.ps1'
         'PSMutation.Runner.ps1 -> PSMutation.Pester.ps1'
         'PSMutation.Runner.ps1 -> PSMutation.Sandbox.ps1'
+        # The SARIF log is a projection of the report's rows: it addresses a mutant with the
+        # report's equivalence key, so an alert and the declaration that retires it agree.
+        'PSMutation.Sarif.ps1 -> PSMutation.Output.ps1'
+        'PSMutation.Sarif.ps1 -> PSMutation.Report.ps1'
     )
 
     function Get-SrcAst {

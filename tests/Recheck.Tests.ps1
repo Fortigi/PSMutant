@@ -394,7 +394,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
                         { "Id": 2, "File": "src/a.ps1", "Function": "F", "Description": "e", "Status": "Survived", "Line": 2, "Operator": "X" } ] }' |
             Set-Content $script:reportFile -Encoding utf8
         $script:plan = @{ TestsByFile = @{}; AllTests = @('tests/a.Tests.ps1') }
-        # Deliberately NOT mocking Test-PSMutationAnnotationHost here. Every test below that
+        # Deliberately NOT mocking Get-PSMutationAnnotationHost here. Every test below that
         # reaches the render path states its own answer, because a mock in BeforeEach plus a
         # different one in the It is a bet on which wins -- and that bet paid differently on
         # the runner (pwsh 7.4) than it did locally (7.6). A test whose result depends on mock
@@ -417,7 +417,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
         # The recheck's whole point is that it does NOT touch the baseline, so the one path that
         # does needs driving end to end -- the merged document is asserted on its own above, and
         # this covers the run choosing to write it and reporting what it did.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { , @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1') }
@@ -445,7 +445,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
     It 'refuses the merge, and writes nothing, when the tests may have changed' {
         # Refused rather than warned about: a merged report carries a score, and everything
         # downstream reads it as a measurement.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { , @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1') }
@@ -464,7 +464,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
 
     It 'evaluates only the prior survivors and returns the recheck summary' {
         # Not a CI: this counts render calls, and the annotation path adds one.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
@@ -509,7 +509,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
         }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
-        Mock Test-PSMutationAnnotationHost { $true }
+        Mock Get-PSMutationAnnotationHost { 'GitHub' }
         Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
             -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
@@ -539,7 +539,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
         Mock Invoke-PSMutationLoop { @([pscustomobject]@{ Status = 'Killed' }) }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 1; StillSurviving = 0 } }
-        Mock Test-PSMutationAnnotationHost { $true }
+        Mock Get-PSMutationAnnotationHost { 'GitHub' }
         $s = Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
             -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet
@@ -561,7 +561,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
         }
         Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
         Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 1 } }
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
             -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet | Out-Null
@@ -573,7 +573,7 @@ Describe 'Invoke-PSMutationRecheckRun' {
 
     It 'reports progress and a summary when not quiet' {
         # Not a CI: annotations would add a render call this test does not expect.
-        Mock Test-PSMutationAnnotationHost { $false }
+        Mock Get-PSMutationAnnotationHost { $null }
         Mock Write-PSMutationOutput { }
         Mock Test-PSMutationRecheckCompatible { @() }
         Mock Select-PSMutationRecheckCandidate { @('cand-1', 'cand-2') }
