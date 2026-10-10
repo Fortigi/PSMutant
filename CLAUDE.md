@@ -16,9 +16,8 @@ survive, has no standing to fail anyone else's build. The gate is not "high", it
 **100**, and `psmutant.self.config.json` sets `thresholds.break` to exactly that.
 
 That cuts both ways: when a file genuinely cannot be measured, say so **in one place,
-with the reason**, rather than letting the number quietly sag. Coverage now has no such
-exception. Self-mutation has exactly one, and it is a structural impossibility rather
-than a shortfall — see below.
+with the reason**, rather than letting the number quietly sag. Neither gate has such an
+exception any more: every file in `src/` is measured for coverage and mutated by the self gate.
 
 Every exclusion in `psmutant.self.config.json` carries a written reason. If you add
 one, write why — and re-read the existing reasons before trusting them, because two of
@@ -246,15 +245,14 @@ self-mutating on their own terms. Keep new decisions there rather than in the bo
 | `PSMutation.Output.ps1` | 100% | yes |
 | `PSMutation.Runner.ps1` | 100% | yes |
 | `Invoke-PSMutation.ps1` | 100% | yes |
-| `PSMutation.Sandbox.ps1` | 100% | **no** — see below |
+| `PSMutation.Sandbox.ps1` | 100% | yes |
 
-`PSMutation.Sandbox.ps1` is the one file that cannot be self-mutated, and the reason is
-structural rather than a gap in effort. Its covering suite, `tests/Sandbox.Tests.ps1`,
-calls `Clear-PSMutationStaleSandbox` for real. A self-mutation baseline runs **in-process**,
-so it shares `$PID` with the sandbox that run is executing from — and the sweep treats its
-own process id as reclaimable. Listing that suite anywhere in the config therefore deletes
-the live run's sandbox mid-baseline and turns the run red before a single mutant is tried.
-Its behaviour is pinned by the normal suite at 100% coverage instead.
+`PSMutation.Sandbox.ps1` was for a long time the one file that could not be self-mutated, and this
+table said so. Its covering suite calls `Clear-PSMutationStaleSandbox` for real, a self-mutation
+baseline runs in-process and shares `$PID` with the sandbox it runs from, and the sweep used to
+treat a directory holding its own process id as reclaimable -- so naming that suite deleted the live
+run's sandbox mid-baseline. The carve-out is gone, a live sandbox survives its own sweep, and
+`tests/Sandbox.Tests.ps1` and `tests/SandboxSweep.Tests.ps1` are its covering suites like any other.
 
 ---
 
@@ -481,13 +479,10 @@ Walk to the ROOT before tokenising. Only a root extent's offsets are file offset
 subtree's text yields offsets relative to that fragment, which splices at the wrong place and
 **still parses**, so nothing downstream would catch it.
 
-The same shape at a much larger scale is #174: each operator calls `FindAll` with its own
-scriptblock predicate, so the default set walks every file **six times** -- 1.55M predicate
-invocations over 259k nodes -- where one indexing pass would serve all of them.
-
-The same shape at a much larger scale is #174: each operator calls `FindAll` with its own
-scriptblock predicate, so the default set walks every file **six times** -- 1.55M predicate
-invocations over 259k nodes -- where one indexing pass would serve all of them.
+The same shape at a much larger scale was #174: each operator used to call `FindAll` with its
+own scriptblock predicate, so the default set walked every file **six times** -- 1.55M predicate
+invocations over 259k nodes. One indexing pass now visits every node once and the operators read
+from it; a new operator should do the same rather than walking the tree again.
 
 **Measure reach on a consumer, not on this repo.** Neither this module's source nor the one it gates
 contains a single ternary, and between them they hold exactly one `switch` -- so neither is any use
@@ -1082,8 +1077,10 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   proven by running for real in CI.
 
   *This bullet lived under "Practices to adopt" citing #27 after #27 had been closed, which
-  made a finished mechanism read as owed work. Two of that section's four entries were done;
-  when you close an issue whose rule is written there, move the rule here in the same PR.*
+  made a finished mechanism read as owed work. The same thing happened to the whole section: by
+  the time it was removed, every one of the 28 issues it cited had closed. A gap worth a rule now
+  goes in an issue, and the rule comes here in the PR that closes it -- not into a list of rules
+  that are owed.*
 - **A workflow gets a concurrency group and a `timeout-minutes`.** All three have both. A
   superseded run that keeps going is waste, and a wedged runner holds a **required** check
   pending for the six-hour default, which blocks every merge behind it.
@@ -1334,10 +1331,10 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   planted symlink does not redirect it; a hard kill leaves tracked source byte-identical **by
   construction** rather than by cleanup, since the real files are never opened for write; no
   config value reaches an eval sink; zero mutants scores 0% and exits 1, not a vacuous 100%; two
-  concurrent runs never sweep each other's live sandbox. The full list is in `ROADMAP.md` on
-  the long-lived `docs/sequencing` branch, deliberately **not** on `main`: the roadmap is a
-  working artefact rather than a description of the repo, and two copies of a plan drift.
-  Confirming a negative belongs there whether or not it is convenient to reach.
+  concurrent runs never sweep each other's live sandbox; a name match in the sweep is anchored;
+  and scoring is linear, not quadratic. That is the whole list -- it used to live in `ROADMAP.md`
+  on a `docs/sequencing` branch, which was retired once every issue it sequenced had closed, so
+  a newly confirmed negative is recorded here.
 
   The vacuity check is the part that is easy to skip. "I changed X and nothing broke" means
   nothing until you have also confirmed that a change which *should* break it does -- a fixture
@@ -1963,60 +1960,6 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   reads every test file, and both cost about a minute -- not worth a decision that can be wrong.
   A change to `ci.yml` or `pins.env` runs everything, because the run is the only proof a workflow
   change still works.
-
-## Practices to adopt
-
-Gaps in how the repo is maintained, as rules rather than as a backlog. Each has a tracked
-issue; the rule is what stops the next instance, and it moves up to "Practices to preserve"
-in the PR that closes its issue.
-
-- **A config path gets a resolver, exactly like every other config value** (#100, #103, #104,
-  #109, #110). This is one missing concept, not five bugs. Every other config value got a
-  resolver with a documented default; paths did not, so `..` copies outside the sandbox and is
-  never cleaned up, a `[` fails with a message naming neither the file nor the cause,
-  `reportPath` is documented optional and is in practice mandatory, and a path that does not
-  survive into the sandbox is diagnosed as a red baseline. Fixing them separately produces five
-  guards in five places.
-
-- **A number in the report answers for what it excluded** (#96, #7, #59). The coverage filter can
-  remove a whole `mutate` file from the score with nothing recording that it did, and a
-  timed-out mutant is counted as Killed. Both make the score go **up**. Anything that drops a
-  mutant, or classifies one without observing a test fail, has to be visible in the report next
-  to the number it changed.
-
-- **A failure that leaves the run green is worse than one that fails** (#98, #55). The report
-  write fails non-terminatingly and the run still returns `Score=100, ExitCode=0`; nothing
-  asserts that Pester's result is two-valued, though the mutant classifier depends on it. Every
-  fake-perfect-score bug in this project's history is this shape.
-
-- **The unit of isolation is the run, not the process** (#53, #22, #95, #105). Fusing ownership
-  and liveness into `$PID` is why the sandbox file cannot be self-mutated, why a planted symlink
-  at a predictable path is reachable at all, and why `psmut-coverage-$PID.xml` accumulates in
-  temp forever with a sweep that structurally cannot match it. Four issues, one identity.
-
-- **A guarantee proven on one OS is proven on one OS** (#32, #35). CI runs Linux only, and the
-  path layer carries the headline guarantee. Every fixture is also PSMutant's own flat
-  `src/`+`tests/`, so the consumer-shaped layout the module promises to support is never
-  executed.
-
-- **Assert the exact answer when the fixture has one** (#36, #43). End-to-end counts are asserted
-  as open inequalities over a fixture whose answer is exact, which passes against a run that
-  produced twice what it should. Test files sharing `$script:` state across blocks means a
-  filtered run fails on tests that are fine -- and a suite that cannot be run in part cannot be
-  bisected.
-
-- **A per-mutant cost is paid once per mutant** (#101, #102, #107, #108, #62). Each mutant reads
-  and writes the whole file twice, re-imports Pester into a fresh runspace, and -- with no
-  `tests` entry -- runs the entire suite. None of it is wrong; all of it multiplies. Measure
-  before choosing a mechanism, and note that the timeout is derived from a *serial* baseline, so
-  parallel evaluation (#1) would manufacture false kills on top of whatever it saved.
-
-- **A run needs a context object before it needs another mode** (#63, #54, #56). Each mode
-  currently adds another long parameter list threaded through the orchestrator; the run result
-  carries a verdict without its reason and has no field common to both modes; and
-  `Get-PSMutationScore` validates the whole config while scoring a subset, so per-file scores
-  (#6) cannot reuse it. Three of the queued features push through this seam, and it is cheaper
-  to widen once than three times.
 
 ## Writing tests here
 
