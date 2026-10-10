@@ -763,6 +763,35 @@ function Test-PSMutationPathOutsideRoot {
         $back.StartsWith('..' + [System.IO.Path]::DirectorySeparatorChar)
 }
 
+function Resolve-PSMutationOutputPath {
+    <#
+    .SYNOPSIS
+        An output path from the config, made absolute: rooted as given, otherwise under the source root.
+    .DESCRIPTION
+        Shared by every file a run writes for someone else to read -- the report and the SARIF
+        log -- so the two cannot come to disagree about what `../shared/x` or `/var/x` means.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Raw, [Parameter(Mandatory)] [string]$SourceRoot)
+    # No escape check: an output is not a mutation target, and writing one to a shared
+    # artifacts directory above the source root is a reasonable thing to ask for.
+    #
+    # An ABSOLUTE path is honoured as given. PowerShell's Join-Path CONCATENATES rather than
+    # letting a rooted right-hand side win, so `/var/artifacts/r.json` used to come back as
+    # `<SourceRoot>/var/artifacts/r.json` -- the report written somewhere the caller did not ask
+    # for, with no error, and INSIDE the tree this module otherwise takes care never to write to.
+    # Observed for real: a run created a directory chain under the repo being mutated, which came
+    # within one `git add -A` of being committed.
+    #
+    # `../shared/r.json` already worked and still does; it was only the rooted form that was
+    # silently rewritten. The same guard, and the same reason, that any path-mapping layer needs
+    # module -- which carries a comment about GetFullPath quietly using the working directory when
+    # nobody checks.
+    if ([System.IO.Path]::IsPathRooted($Raw)) { return [System.IO.Path]::GetFullPath($Raw) }
+    return [System.IO.Path]::GetFullPath((Join-Path $SourceRoot $Raw))
+}
+
 function Get-PSMutationReportPath {
     <#
     .SYNOPSIS
@@ -778,22 +807,39 @@ function Get-PSMutationReportPath {
     if ([string]::IsNullOrWhiteSpace($raw)) { $raw = $script:PSMutationDefaultReportPath }
     $fault = Get-PSMutationPathFault -Value $raw -Key 'reportPath'
     if ($fault) { throw $fault }
-    # No escape check: a report is an OUTPUT, not a mutation target, and writing one to a
-    # shared artifacts directory above the source root is a reasonable thing to ask for.
-    #
-    # An ABSOLUTE path is honoured as given. PowerShell's Join-Path CONCATENATES rather than
-    # letting a rooted right-hand side win, so `/var/artifacts/r.json` used to come back as
-    # `<SourceRoot>/var/artifacts/r.json` -- the report written somewhere the caller did not ask
-    # for, with no error, and INSIDE the tree this module otherwise takes care never to write to.
-    # Observed for real: a run created a directory chain under the repo being mutated, which came
-    # within one `git add -A` of being committed.
-    #
-    # `../shared/r.json` already worked and still does; it was only the rooted form that was
-    # silently rewritten. The same guard, and the same reason, that any path-mapping layer needs
-    # module -- which carries a comment about GetFullPath quietly using the working directory when
-    # nobody checks.
-    if ([System.IO.Path]::IsPathRooted($raw)) { return [System.IO.Path]::GetFullPath($raw) }
-    return [System.IO.Path]::GetFullPath((Join-Path $SourceRoot $raw))
+    return Resolve-PSMutationOutputPath -Raw $raw -SourceRoot $SourceRoot
+}
+
+function Get-PSMutationSarifPath {
+    <#
+    .SYNOPSIS
+        Where the SARIF log is written, or $null when the config asks for none.
+    .DESCRIPTION
+        Opt-in, unlike the report: absent means no SARIF. A SARIF file is something a pipeline
+        UPLOADS, and one appearing unasked would be uploaded by nobody and committed by accident.
+
+        A -ChangedFile run writes the `.changed` sibling, for the reason the report does and one
+        more. Its survivors are those of a few files; uploaded as the project's log, every alert
+        in every other file would read as FIXED, because a code-scanning service closes what a
+        new analysis no longer reports. A scoped log under the configured name is the upload
+        step quietly closing every finding it did not look at.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Cfg,
+        [Parameter(Mandatory)] [string]$SourceRoot,
+        [bool]$Scoped
+    )
+    # The key's PRESENCE is the switch, so an explicit null or empty string is "off" exactly as
+    # an omitted key is. A blank that went on to the fault check would refuse a config the
+    # schema accepts.
+    $raw = [string]$Cfg.sarifPath
+    if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
+    $fault = Get-PSMutationPathFault -Value $raw -Key 'sarifPath'
+    if ($fault) { throw $fault }
+    $path = Resolve-PSMutationOutputPath -Raw $raw -SourceRoot $SourceRoot
+    return $Scoped ? (Get-PSMutationScopedReportPath -ReportPath $path) : $path
 }
 
 function Get-PSMutationMissingSandboxPath {

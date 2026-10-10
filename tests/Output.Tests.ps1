@@ -80,7 +80,7 @@ Describe 'Get-PSMutationKnownRole' {
     }
 }
 
-Describe 'Test-PSMutationAnnotationFlag and its host' {
+Describe 'Test-PSMutationAnnotationFlag and Get-PSMutationAnnotationHost' {
     # NOTHING HERE WRITES $env:. It used to: three tests set GITHUB_ACTIONS to exercise the three
     # cases and restored it in an AfterEach. That is unsafe the moment this suite runs beside
     # itself, which is what `workers` does -- several mutants of one file run that file's covering
@@ -111,28 +111,50 @@ Describe 'Test-PSMutationAnnotationFlag and its host' {
         Should-BeFalse -Actual (Test-PSMutationAnnotationFlag -Value 'false')
     }
 
-    It 'answers with whatever the flag decision says' {
-        # The wiring, which is the half a pure test cannot reach. A host that ignored the decision
-        # and returned a constant would satisfy every assertion above.
-        Mock Test-PSMutationAnnotationFlag { $true }
-        Should-BeTrue -Actual (Test-PSMutationAnnotationHost)
-        Mock Test-PSMutationAnnotationFlag { $false }
-        Should-BeFalse -Actual (Test-PSMutationAnnotationHost)
+    It 'recognises an Azure Pipelines step, which spells it True' {
+        # TF_BUILD is 'True' with a capital T. The comparison is case-insensitive, and this pins
+        # it: a case-sensitive one would leave every Azure DevOps run unannotated, silently.
+        Should-BeTrue -Actual (Test-PSMutationAnnotationFlag -Value 'True')
     }
 
-    It 'forwards the GITHUB_ACTIONS value, whatever this host has set it to' {
-        # READS the variable, never writes it -- reading races with nobody. Cast to [string] on
-        # both sides because $env: on a missing variable is $null while the parameter is a
+    It 'answers GitHub when the GitHub flag is set, whatever the Azure one says' {
+        # The wiring, which is the half a pure test cannot reach. A host that ignored the
+        # decision and returned a constant would satisfy every assertion above. GitHub is asked
+        # FIRST, so a machine setting both gets one stable answer.
+        Mock Test-PSMutationAnnotationFlag { $true }
+        Get-PSMutationAnnotationHost | Should-Be 'GitHub'
+    }
+
+    It 'answers AzureDevOps when only the Azure flag is set' {
+        # Told apart by the value each call is handed, read from this host's own environment
+        # rather than written into it. Two calls, so the mock answers by ORDER: the first ask is
+        # GitHub's and says no, the second is Azure's and says yes.
+        $script:asked = 0
+        Mock Test-PSMutationAnnotationFlag { $script:asked++; $script:asked -eq 2 }
+        Get-PSMutationAnnotationHost | Should-Be 'AzureDevOps'
+    }
+
+    It 'answers nothing when neither flag is set' {
+        # The paired half for a developer's machine: no CI, no workflow commands.
+        Mock Test-PSMutationAnnotationFlag { $false }
+        Should-BeNull -Actual (Get-PSMutationAnnotationHost)
+    }
+
+    It 'forwards the GITHUB_ACTIONS and TF_BUILD values, whatever this host has set them to' {
+        # READS the variables, never writes them -- reading races with nobody. Cast to [string]
+        # on both sides because $env: on a missing variable is $null while the parameter is a
         # [string], and `'' -eq $null` is $false in PowerShell.
         #
-        # Weaker when the variable is unset, and knowingly so: locally it asserts that '' was
-        # forwarded, which a hardcoded '' would also satisfy. Under Actions, where it is 'true',
-        # it is exact -- and Actions is the only place the answer changes anything.
-        Mock Test-PSMutationAnnotationFlag { $false }
-        $null = Test-PSMutationAnnotationHost
-        Should-Invoke Test-PSMutationAnnotationFlag -Exactly 1 -ParameterFilter {
-            $Value -eq [string]$env:GITHUB_ACTIONS
-        }
+        # Weaker when a variable is unset, and knowingly so: locally it asserts that '' was
+        # forwarded, which a hardcoded '' would also satisfy. Under a CI, where one is set, it is
+        # exact -- and a CI is the only place the answer changes anything.
+        #
+        # Recorded IN ORDER rather than filtered: with both variables unset the two values are
+        # equal, so a filter on either one matches both calls and cannot tell them apart.
+        $script:forwarded = @()
+        Mock Test-PSMutationAnnotationFlag { $script:forwarded += [string]$Value; $false }
+        $null = Get-PSMutationAnnotationHost
+        $script:forwarded | Should-BeCollection @([string]$env:GITHUB_ACTIONS, [string]$env:TF_BUILD)
     }
 }
 
@@ -201,6 +223,25 @@ Describe 'Get-PSMutationAnnotationLine' {
     It 'carries the row through, so a later renderer need not re-derive it' {
         $line = New-PSMutationLine -Role 'Warn' -Data $script:row -Text 'x'
         (Get-PSMutationAnnotationLine -Lines @($line)).Data.File | Should-Be 'src/Thing.ps1'
+    }
+
+    It 'writes an Azure DevOps logging command when asked for that format' {
+        # The whole line, so the property names Azure reads -- sourcepath and linenumber, not
+        # file and line -- and the closing bracket before the message are all pinned.
+        $line = New-PSMutationLine -Role 'Warn' -Data $script:row -Text '    wrong.ps1:999  something else'
+        (Get-PSMutationAnnotationLine -Lines @($line) -Format 'AzureDevOps').Text |
+            Should-Be '##vso[task.logissue type=warning;sourcepath=src/Thing.ps1;linenumber=42]Mutant survived: -and -> -or'
+    }
+
+    It 'keeps GitHub syntax as the default, which is what every existing caller meant' {
+        $line = New-PSMutationLine -Role 'Warn' -Data $script:row -Text 'x'
+        (Get-PSMutationAnnotationLine -Lines @($line) -Format 'GitHub').Text |
+            Should-Be (Get-PSMutationAnnotationLine -Lines @($line)).Text
+    }
+
+    It 'refuses a format it does not know rather than guessing one' {
+        $line = New-PSMutationLine -Role 'Warn' -Data $script:row -Text 'x'
+        { Get-PSMutationAnnotationLine -Lines @($line) -Format 'Jenkins' } | Should-Throw
     }
 }
 

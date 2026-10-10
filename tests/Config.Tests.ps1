@@ -304,7 +304,7 @@ Describe 'Assert-PSMutationConfig' {
         # set, a validator that rejected a legitimate key would still look correct.
         $all = '{ "mutate": ["a"], "tests": { "a": ["t"] }, "operators": ["BinaryOperator"],
                   "coveredLinesOnly": true, "sandboxSubtrees": ["src"], "timeoutFactor": 4,
-                  "timeoutFloorSeconds": 15, "equivalents": {}, "reportPath": "r.json", "workers": 4,
+                  "timeoutFloorSeconds": 15, "equivalents": {}, "reportPath": "r.json", "sarifPath": "r.sarif", "workers": 4,
                   "thresholds": { "high": 85, "low": 70, "break": 100 } }'
         Assert-PSMutationConfig -Cfg ($all | ConvertFrom-Json)
     }
@@ -782,6 +782,36 @@ Describe 'a config path answers for itself before anything uses it' {
         # the caller ignores what it returns -- the caller is one line that deletes clean.
         { Get-PSMutationReportPath -Cfg ([pscustomobject]@{ reportPath = 'out/m[1].json' }) -SourceRoot $script:tempRoot } |
             Should-Throw -ExceptionMessage '*wildcards*'
+    }
+
+    It 'writes no SARIF when sarifPath is absent, null or blank' {
+        # Opt-in, so all three spellings of "not set" mean off -- and none of them is refused,
+        # because the schema accepts each one.
+        Should-BeNull -Actual (Get-PSMutationSarifPath -Cfg ([pscustomobject]@{}) -SourceRoot $script:tempRoot)
+        Should-BeNull -Actual (Get-PSMutationSarifPath -Cfg ([pscustomobject]@{ sarifPath = $null }) -SourceRoot $script:tempRoot)
+        Should-BeNull -Actual (Get-PSMutationSarifPath -Cfg ([pscustomobject]@{ sarifPath = '  ' }) -SourceRoot $script:tempRoot)
+    }
+
+    It 'resolves sarifPath against the source root, or as given when rooted' {
+        # The same resolver as reportPath, so the two cannot come to disagree about a path.
+        Get-PSMutationSarifPath -Cfg ([pscustomobject]@{ sarifPath = 'out/m.sarif' }) -SourceRoot $script:tempRoot |
+            Should-Be ([System.IO.Path]::GetFullPath((Join-Path $script:tempRoot 'out/m.sarif')))
+        $absolute = Join-Path ([System.IO.Path]::GetTempPath()) 'psmut-abs.sarif'
+        Get-PSMutationSarifPath -Cfg ([pscustomobject]@{ sarifPath = $absolute }) -SourceRoot $script:tempRoot |
+            Should-Be ([System.IO.Path]::GetFullPath($absolute))
+    }
+
+    It 'puts a scoped run''s SARIF beside the project one, and leaves a whole-tree run alone' {
+        # Both arms in one test, so a resolver that always or never scoped fails here.
+        Get-PSMutationSarifPath -Cfg ([pscustomobject]@{ sarifPath = 'out/m.sarif' }) -SourceRoot $script:tempRoot -Scoped $true |
+            Should-Be ([System.IO.Path]::GetFullPath((Join-Path $script:tempRoot 'out/m.changed.sarif')))
+        Get-PSMutationSarifPath -Cfg ([pscustomobject]@{ sarifPath = 'out/m.sarif' }) -SourceRoot $script:tempRoot -Scoped $false |
+            Should-Be ([System.IO.Path]::GetFullPath((Join-Path $script:tempRoot 'out/m.sarif')))
+    }
+
+    It 'throws through the sarifPath resolver, naming the key' {
+        { Get-PSMutationSarifPath -Cfg ([pscustomobject]@{ sarifPath = 'out/m[1].sarif' }) -SourceRoot $script:tempRoot } |
+            Should-Throw -ExceptionMessage "*'sarifPath'*wildcards*"
     }
 
     It 'throws through the subtree resolver for a bracketed subtree' {

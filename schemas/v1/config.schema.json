@@ -147,6 +147,13 @@
       ],
       "description": "Where the JSON report is written, relative to the source root. A -RecheckFrom run writes a sibling and never overwrites this file."
     },
+    "sarifPath": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Where a SARIF 2.1.0 log of the surviving mutants is written, relative to the source root unless rooted -- for GitHub code scanning or Azure DevOps Advanced Security. Absent, null or empty means no SARIF. A -ChangedFile run writes a '.changed' sibling; a -RecheckFrom run, a -ListOnly preview and an interrupted run write none."
+    },
     "recordAllKillers": {
       "type": "boolean",
       "description": "Record every test that kills a mutant rather than only the first. Default false. Setting it forfeits Pester's early stop on failure, which costs roughly 63% more wall clock."

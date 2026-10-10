@@ -645,7 +645,8 @@ function Invoke-PSMutationRecheckRun {
     Write-PSMutationOutput -Quiet:$Quiet -Lines $recheckLines
     # Same reasoning as the full run: the switch silences the log, not the findings. A recheck
     # that still leaves survivors is the one result somebody has to act on.
-    if (Test-PSMutationAnnotationHost) {
+    $annotationHost = Get-PSMutationAnnotationHost
+    if ($annotationHost) {
         # @() because a run with NOTHING to annotate yields no lines at all, and -Lines
         # accepts an empty collection but not $null. Without it a clean run under Actions
         # throws on binding -- so the green path would be the one that crashed.
@@ -658,7 +659,7 @@ function Invoke-PSMutationRecheckRun {
         #
         # It also says the thing out loud at the call site: annotations are deliberately
         # NOT suppressed, because -Quiet silences the log and a finding is not log.
-        Write-PSMutationOutput -Quiet:$false -Lines @(Get-PSMutationAnnotationLine -Lines $recheckLines)
+        Write-PSMutationOutput -Quiet:$false -Lines @(Get-PSMutationAnnotationLine -Lines $recheckLines -Format $annotationHost)
     }
     return $summary
 }

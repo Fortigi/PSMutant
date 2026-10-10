@@ -125,6 +125,84 @@ use either has.
 Restricting mutants to changed **lines** is not implemented. It needs hunk offsets, which have the
 same problem `-ChangedSince` has and no agreed shape yet.
 
+### In CI: survivors on the pull request
+
+Two ways to put a survivor in front of a reviewer instead of in job-log scrollback. Both list
+**survivors only**, never killed mutants, and both are worth having: annotations need no setup,
+and the SARIF log keeps a history.
+
+**Annotations, automatically.** Under GitHub Actions (`GITHUB_ACTIONS=true`) each survivor is
+also printed as a `::warning file=...,line=...::` workflow command, which GitHub shows on the
+diff. Under Azure Pipelines (`TF_BUILD=True`) it is a
+`##vso[task.logissue type=warning;sourcepath=...;linenumber=...]` command, which appears in the
+build summary linked to the line. Neither is printed anywhere else, so a developer's console stays
+clean. `-Quiet` does **not** silence them: it exists to keep a CI log short, and CI is where a
+survivor most needs to be seen.
+
+**A SARIF log, when you ask for one.** Set `sarifPath` and the run also writes a SARIF 2.1.0 log of
+its survivors, which code-scanning services turn into alerts that open, persist and close across
+runs:
+
+```json
+{ "reportPath": "reports/ps-mutation.json", "sarifPath": "reports/ps-mutation.sarif" }
+```
+
+- One rule per operator the run applied (`PSMutant/BinaryOperator`, ...), so a team can suppress
+  one operator's findings without the others.
+- `warning` level: a survivor is a gap in the tests rather than a defect in the code.
+- A declared equivalent produces no alert. The config already argued it, and the report still
+  lists it.
+- Each alert is fingerprinted by `file:function:description`, the same address an equivalence
+  declaration uses, and **never** by mutant id or line. Ids renumber and lines move whenever
+  anything above them changes, and an alert keyed on either would close and reopen on unrelated
+  edits. Identical mutations in one function are numbered `#1`, `#2` so neither swallows the other.
+- `run.properties` carries the score, killed, survived and total, so the log can be read on its own.
+- A run with no survivors writes a log with no results. That is what closes the alerts it used to
+  have.
+
+**Which runs write one.** A full run writes `sarifPath`. A `-ChangedFile` run writes
+`<name>.changed.sarif` beside it, never over it: uploaded as the project's log, a few files'
+survivors would close every alert in every other file, because a code-scanning service reads a
+missing result as a fixed one. A `-RecheckFrom` run, a `-ListOnly` preview and an interrupted run
+write **none**, for the same reason.
+
+**The log carries no category (`automationDetails`), deliberately.** On GitHub a category in the
+file overrides the one the upload step names, so a fixed one would make two PSMutant uploads in one
+repository replace each other. Name it in the pipeline:
+
+```yaml
+# GitHub Actions
+- uses: github/codeql-action/upload-sarif@v3
+  if: always()
+  with:
+    sarif_file: reports/ps-mutation.sarif
+    category: mutation
+```
+
+```yaml
+# Azure Pipelines, with GitHub Advanced Security for Azure DevOps
+- task: AdvancedSecurity-Publish@1
+  condition: succeededOrFailed()
+  inputs:
+    SarifsInputDirectory: '$(Build.SourcesDirectory)/reports'
+    Category: 'mutation'
+```
+
+Without Advanced Security, install the *SARIF SAST Scans Tab* extension and publish the directory
+holding the log as a pipeline artifact named exactly `CodeAnalysisLogs`. Each run then gets a
+*Scans* tab. That view is per run: there is no alert history, and nothing closes when a survivor
+is killed.
+
+Either way the upload step needs `if: always()` / `condition: succeededOrFailed()`. A run that
+fails its `break` threshold is exactly the run with findings, and a step that runs only on success
+uploads them on every build except the ones that have any.
+
+[`examples/azure-pipelines.yml`](examples/azure-pipelines.yml) is a complete Azure pipeline. It
+covers a full run on `main`, a `-ChangedFile` run on pull requests (which needs `fetchDepth: 0`,
+because Azure Pipelines checks out shallow and detached by default), and both ways of publishing
+the log. It uploads to Advanced Security from full runs only: a pull request's log covers the
+files it changed, and its findings already reach the PR as build-summary warnings.
+
 ### Seeing what a config would mutate, before it costs you minutes
 
 ```powershell
@@ -424,6 +502,7 @@ schema cannot give.
 | `thresholds.high` / `thresholds.low` | Colour bands for the console score: green at or above `high`, yellow at or above `low`, red below (defaults 85 / 70). They affect the printed colour only, never the exit code. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |
 | `reportPath` | Where the JSON report is written (relative to `-SourceRoot`). A `-RecheckFrom` run writes `<name>.recheck.json` beside it and never touches this file. |
+| `sarifPath` | Where a SARIF 2.1.0 log of the survivors is written, for GitHub code scanning or Azure DevOps Advanced Security (relative to `-SourceRoot` unless rooted). Absent means none. A `-ChangedFile` run writes `<name>.changed.sarif`; recheck, preview and interrupted runs write none. See [In CI](#in-ci-survivors-on-the-pull-request). |
 
 **Unrecognised keys are an error, not a warning.** A misspelling used to resolve to `null`
 and quietly weaken the run: `thresholds.brake` left the break gate unable to fail, and a

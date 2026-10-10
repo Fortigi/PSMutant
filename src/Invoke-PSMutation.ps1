@@ -180,6 +180,9 @@ function Get-PSMutationRunContext {
         Exclusion        = Get-PSMutationCoverageExclusion -PerFile $perFile
         SourceHashes     = $hashes
         ReportPath       = $reportPath
+        # $null when the config asks for no SARIF. Scoped beside the report, for the reason
+        # Get-PSMutationSarifPath gives: a partial log uploaded as the project's closes alerts.
+        SarifPath        = Get-PSMutationSarifPath -Cfg $Cfg -SourceRoot $SourceRoot -Scoped ($null -ne $ChangedFile)
         # $null on a whole-tree run, which is what the report writer keys its `mode` marker off
         # and what tells a reader the score covered everything in `mutate`.
         ChangedFiles     = $ChangedFile
@@ -378,6 +381,13 @@ function Invoke-PSMutationRun {
         $summary = Write-PSMutationReport @doc -Resumed:$resume.IsResume -CarriedOverUnverified @($resume.PriorRows).Count -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $ctx.Exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $ctx.RecordAllKillers -MappedTests $t.AllTests `
             -TestFileLength (Get-PSMutationTestFileLength -Path $t.AllTests -SandboxRoot $sandbox) `
             -ChangedFiles $ctx.ChangedFiles -InScopeFile $ctx.InScopeFile
+        # Right after the report and from the same rows, so the two files describe one run. Only
+        # here, on the path that scored: a recheck returned above and an interrupted run never
+        # reaches this line, and neither may write a log that would close alerts it did not
+        # re-examine.
+        Write-PSMutationOutput -Quiet:$Quiet -Lines @(Export-PSMutationSarif -Path $ctx.SarifPath -Results $results `
+                -Operators $ctx.Operators -Equivalents $cfg.equivalents -Summary $summary `
+                -ModuleVersion "$($ctx.ProvenanceArgs.ModuleVersion)")
         $band = Get-PSMutationScoreBand -Cfg $cfg
         $summaryLines = Get-PSMutationSummaryLine -Summary $summary -Results $results `
             -High $band.High -Low $band.Low -ReportPath $ctx.ReportPath -Equivalents $cfg.equivalents -Exclusion $ctx.Exclusion -PerFile (Get-PSMutationPerFileScore -Results $results -Equivalents $cfg.equivalents)
@@ -387,7 +397,8 @@ function Invoke-PSMutationRun {
         # exactly where a survivor most needs to be visible: suppressing both leaves a failed
         # gate printing a score and nothing else, which is a backstop that cannot say what
         # failed. The switch silences the LOG; a finding is not log.
-        if (Test-PSMutationAnnotationHost) {
+        $annotationHost = Get-PSMutationAnnotationHost
+        if ($annotationHost) {
             # @() because a run with NOTHING to annotate yields no lines at all, and -Lines
             # accepts an empty collection but not $null. Without it a clean run under Actions
             # throws on binding -- so the green path would be the one that crashed.
@@ -400,7 +411,7 @@ function Invoke-PSMutationRun {
             #
             # It also says the thing out loud at the call site: annotations are deliberately
             # NOT suppressed, because -Quiet silences the log and a finding is not log.
-            Write-PSMutationOutput -Quiet:$false -Lines @(Get-PSMutationAnnotationLine -Lines $summaryLines)
+            Write-PSMutationOutput -Quiet:$false -Lines @(Get-PSMutationAnnotationLine -Lines $summaryLines -Format $annotationHost)
         }
 
         # The reason first, and the exit code derived from it, so the two cannot disagree about

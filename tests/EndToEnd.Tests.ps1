@@ -13,10 +13,13 @@ BeforeAll {
     # state, this suite runs inside CI where the variable is genuinely set, and a file that
     # resets it silently decides what every later file sees.
     #
-    # The annotation path itself is tested by MOCKING Test-PSMutationAnnotationHost, which is
+    # The annotation path itself is tested by MOCKING Get-PSMutationAnnotationHost, which is
     # hermetic and does not care which file ran first.
     $script:priorActions = $env:GITHUB_ACTIONS
     $env:GITHUB_ACTIONS = $null
+    # TF_BUILD for the same reason: under Azure Pipelines it is the variable that annotates.
+    $script:priorTfBuild = $env:TF_BUILD
+    $env:TF_BUILD = $null
 
     $module = Join-Path (Split-Path -Parent $PSScriptRoot) 'PSMutant.psd1'
     Import-Module $module -Force
@@ -65,6 +68,7 @@ Describe 'Test-Flag' {
 AfterAll {
     Remove-Item $script:proj -Recurse -Force -ErrorAction SilentlyContinue
     $env:GITHUB_ACTIONS = $script:priorActions
+    $env:TF_BUILD = $script:priorTfBuild
 }
 
 Describe 'Invoke-PSMutation end-to-end' {

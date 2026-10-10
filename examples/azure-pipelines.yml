@@ -1,0 +1,94 @@
+# Example: PSMutant in Azure Pipelines.
+#
+# Copy into your repository as azure-pipelines.yml, or add the steps to an existing pipeline.
+# Assumes the config at ./psmutant.config.json sets
+#
+#   "reportPath": "reports/ps-mutation.json",
+#   "sarifPath":  "reports/ps-mutation.sarif"
+#
+# and that the pipeline runs from the repository root, so the paths in both files are
+# repo-relative -- which is what Azure DevOps matches findings against.
+#
+# On main: a full run, gated on thresholds.break.
+# On a pull request: only the files the PR changed. The report and the SARIF log then go to
+# <name>.changed.json / <name>.changed.sarif, never over the project's files.
+#
+# Survivors appear three ways:
+#   1. in the build summary, as warnings linked to the line -- automatic under Azure Pipelines
+#      (TF_BUILD=True), even with -Quiet;
+#   2. as Advanced Security alerts, if your organisation has GitHub Advanced Security for Azure
+#      DevOps. Delete that step if it does not;
+#   3. in the published `mutation` artifact, as the JSON report and the SARIF log.
+
+trigger:
+  - main
+
+pr:
+  - main
+
+pool:
+  vmImage: ubuntu-latest
+
+variables:
+  # Pin both. A gate decides whether a build passes, and the agent's newest Pester is not a
+  # decision anybody made. PSMutant needs Pester 5.2 or later and does not install it for you.
+  PSMutantVersion: '0.6.0'
+  PesterVersion: '5.7.1'
+
+steps:
+  # Full history, not the default depth of 1: the pull-request run diffs against the target
+  # branch, and a shallow clone does not have it.
+  - checkout: self
+    fetchDepth: 0
+
+  - pwsh: |
+      Install-Module Pester   -RequiredVersion $(PesterVersion)   -Force -Scope CurrentUser -SkipPublisherCheck
+      Install-Module PSMutant -RequiredVersion $(PSMutantVersion) -Force -Scope CurrentUser
+      Import-Module Pester -RequiredVersion $(PesterVersion)
+      Import-Module PSMutant -RequiredVersion $(PSMutantVersion)
+
+      $run = @{ ConfigFile = './psmutant.config.json'; Quiet = $true }
+
+      # On a pull request, judge what the PR changed rather than the whole tree. An empty diff
+      # (a git command that failed prints nothing) is refused by the module, not read as a pass.
+      if ('$(Build.Reason)' -eq 'PullRequest') {
+          $target = '$(System.PullRequest.TargetBranch)' -replace '^refs/heads/', ''
+          $run.ChangedFile = @(git diff --name-only "origin/$target...HEAD")
+      }
+
+      $result = Invoke-PSMutation @run
+      Write-Host "Mutation score: $($result.Score)% ($($result.Killed)/$($result.Total))"
+      if ($result.ExitCode -ne 0) {
+          Write-Host "##vso[task.logissue type=error]Mutation gate failed: $($result.FailureReason)"
+          exit 1
+      }
+    displayName: Mutation testing
+
+  # succeededOrFailed(): a run below its threshold is exactly the run with findings, and a step
+  # that only runs on success would publish them on every build except the ones that need them.
+  - publish: '$(Build.SourcesDirectory)/reports'
+    artifact: mutation
+    displayName: Publish mutation report
+    condition: succeededOrFailed()
+
+  # GitHub Advanced Security for Azure DevOps only. Category is REQUIRED here: PSMutant writes no
+  # category into the SARIF, deliberately, so this is where it comes from -- and it keeps mutation
+  # findings apart from security alerts.
+  #
+  # Full runs only. A pull request's log covers the files it changed, and a code-scanning service
+  # reads every missing result as a fixed one; on a PR the build-summary warnings carry the
+  # findings instead.
+  - task: AdvancedSecurity-Publish@1
+    displayName: Publish survivors to Advanced Security
+    condition: and(succeededOrFailed(), ne(variables['Build.Reason'], 'PullRequest'))
+    inputs:
+      SarifsInputDirectory: '$(Build.SourcesDirectory)/reports'
+      Category: 'mutation'
+
+  # Without Advanced Security: install the "SARIF SAST Scans Tab" extension from the Marketplace
+  # and publish the folder as an artifact with exactly this name instead. Each run then shows a
+  # Scans tab listing the survivors.
+  #
+  # - publish: '$(Build.SourcesDirectory)/reports'
+  #   artifact: CodeAnalysisLogs
+  #   condition: succeededOrFailed()
