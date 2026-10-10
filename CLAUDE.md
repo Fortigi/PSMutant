@@ -72,7 +72,9 @@ Two different things. Conflating them is what caused #16.
   letting the name resolve, so CI and your machine cannot end up on different Pesters.
   Bumping it means changing `.github/pins.env`, this file and the README together -- every
   workflow loads its versions from that one file, but the two documents write the number out
-  in prose. The README's copy is checked by a test; this one is not, so check it by hand.
+  in prose. Both copies are checked against `PESTER_VERSION` by `tests/GateDecisions.Tests.ps1`,
+  this one through the exact sentence above -- reword it and that test fails, which is the
+  intent. Older Pesters named elsewhere in this file are measurements, and are left alone.
 - **The module** promises `Pester >= 5.0.0` in its manifest and has to drive whatever the
   consuming repo already has. The pin above narrows nothing about that.
 

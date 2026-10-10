@@ -426,6 +426,23 @@ Describe 'the shipped pins.env is itself a claim, so it is asserted here' {
         }
     }
 
+    It 'states in CLAUDE.md the estate pin the pins file actually names' {
+        # CLAUDE.md is where a maintainer reads which Pester the estate runs, and it carried the
+        # previous pin after pins.env moved -- nothing compared them. It ALSO names older Pesters on
+        # purpose, as measurements in recorded history, so neither "every version here is pinned"
+        # nor "this version is pinned somewhere" can be the rule: the first fails on correct history
+        # and the second passed on the stale number, which is still a compatibility leg.
+        #
+        # So the claim is one anchored sentence the file carries deliberately, and it is compared
+        # for EQUALITY. Rewording that sentence fails here rather than leaving it unchecked.
+        $claude = Get-Content -LiteralPath (Join-Path $script:repoRoot 'CLAUDE.md') -Raw
+        $estate = Get-PSMutantPinValue -Line $script:pinLines -Name 'PESTER_VERSION'
+        $pattern = '\*\*The test estate\*\* is pinned to exactly \*\*(?<v>\d+\.\d+\.\d+)\*\*'
+        $found = [regex]::Match($claude, $pattern)
+        $found.Success | Should-BeTrue -Because "CLAUDE.md no longer matches /$pattern/, so nothing checks the estate pin it states"
+        $found.Groups['v'].Value | Should-Be $estate
+    }
+
     It 'states the estate pin the pins file actually names' {
         # The README writes the estate pin out TWICE -- once in prose, once in a runnable
         # Import-Module line -- and it is a PACKAGED file, so it goes stale on every bump and
