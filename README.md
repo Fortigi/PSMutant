@@ -261,7 +261,12 @@ a 100% resting on a dozen declarations can never be mistaken for one that killed
 ## How it works
 
 1. **Baseline** — runs your tests once (must be green) with Pester code coverage over the
-   `mutate` files, recording which lines actually executed.
+   `mutate` files, recording which lines actually executed. A statement written over several
+   lines counts on all of them: a line is covered when the innermost command spanning it ran, so
+   the second line of a long condition is judged with the condition, and the body of a script
+   block that never ran stays uncovered even though the pipeline holding it did. A line no
+   command spans at all — a `param()` default — is never covered, because nothing Pester
+   instruments can say whether it executed.
 2. **Enumerate** — parses each file's AST and collects candidates; only those on covered
    lines are kept (an uncovered mutant is guaranteed to survive and teaches nothing).
 3. **Evaluate** — copies the source subtrees into a temp **sandbox**, splices each mutant

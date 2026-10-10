@@ -721,6 +721,15 @@ Describe 'a config path answers for itself before anything uses it' {
             Should-Throw -ExceptionMessage '*resolves outside the source root*'
     }
 
+    It 'says the WHOLE refusal, from its first word to its advice' {
+        # Anchored at both ends, and that is the point. The message is four strings joined with
+        # `+`, and turning one `+` into `-` does not lose the text: string minus string fails with
+        # "Cannot convert value \"<the joined text so far>\" to type System.Int32", which QUOTES the
+        # message -- so a `*fragment*` pattern matches the conversion error and the mutant survives.
+        { Get-PSMutationSubtree -Cfg ([pscustomobject]@{ sandboxSubtrees = @('src', '../outside') }) -SourceRoot $script:tempRoot } |
+            Should-Throw -ExceptionMessage "Config key 'sandboxSubtrees' names '../outside', which resolves outside the source root.*the directory that contains them all."
+    }
+
     It 'applies the documented default when reportPath is absent' {
         # Documented optional and, until this resolver, mandatory in practice: Join-Path with
         # $null returns the root itself, so the run failed at the very end trying to write a

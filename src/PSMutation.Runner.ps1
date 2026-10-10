@@ -82,12 +82,12 @@ function Invoke-PSMutationBaseline {
     #
     # It was unreachable while coverage was unconditional, which is why it sat here until the
     # tracer became optional.
-    $covered = @{}
-    foreach ($cmd in $result.CodeCoverage.CommandsExecuted) {
-        $f = [System.IO.Path]::GetFullPath($cmd.File)
-        if (-not $covered.ContainsKey($f)) { $covered[$f] = [System.Collections.Generic.HashSet[int]]::new() }
-        [void]$covered[$f].Add([int]$cmd.Line)
-    }
+    #
+    # Reached through Get-PSMutationCoveredLine, which reads the MISSED commands as well as the
+    # executed ones: a line is covered by the innermost command spanning it, and only the two lists
+    # together say which command that is and whether it ran.
+    $covered = Get-PSMutationCoveredLine -Executed $result.CodeCoverage.CommandsExecuted `
+        -Missed $result.CodeCoverage.CommandsMissed
 
     return @{
         Passed          = ($result.Result -eq 'Passed')
@@ -163,6 +163,98 @@ function Assert-PSMutationBaselineGreen {
         $detail = " Failed: $($shown -join '; ')$more."
     }
     throw "Baseline suite is not green - fix the tests before mutating.$detail"
+}
+
+function Get-PSMutationCoveredLine {
+    <#
+    .SYNOPSIS
+        Per-file covered line numbers, from the commands Pester saw run and the ones it saw not run. Pure.
+    .DESCRIPTION
+        A command is attributed to the line it STARTS on. Taken alone that leaves every later line
+        of a statement written over several lines uncovered although the statement ran -- the
+        continuation of a long condition, an argument list, a message built from several strings --
+        so `coveredLinesOnly` dropped every mutant on those lines from the score in silence, while
+        the coverage gate, which counts commands, reported 100% over the same code.
+
+        So a line no command starts on is covered when the INNERMOST command spanning it ran. Not
+        "any command spanning it": a pipeline whose script block never executed still spans that
+        block's lines, and reading those as covered would hand mutants nothing ran to the loop,
+        to come back as survivors no test could have killed. The innermost spanning command is the
+        one whose verdict belongs to the line, which is why the MISSED commands are read too: they
+        are what stops a hit outer command speaking for an inner one that did not run.
+
+        A line a command starts on keeps its old answer -- covered when any command starting there
+        ran. A line no command spans at all, such as a `param()` default, stays uncovered: nothing
+        Pester instruments can say whether it executed.
+    .PARAMETER Executed
+        Pester's CommandsExecuted. Null when the tracer was off, and then nothing is covered.
+    .PARAMETER Missed
+        Pester's CommandsMissed.
+    #>
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param(
+        [AllowNull()] [AllowEmptyCollection()] [object[]]$Executed,
+        [AllowNull()] [AllowEmptyCollection()] [object[]]$Missed
+    )
+    # foreach STATEMENTS throughout: a null list iterates zero times, where a pipeline would run
+    # once with $null and hand GetFullPath an empty string.
+    $byFile = @{}
+    foreach ($pass in @(@{ Hit = $true; Commands = $Executed }, @{ Hit = $false; Commands = $Missed })) {
+        foreach ($c in $pass.Commands) {
+            $f = [System.IO.Path]::GetFullPath($c.File)
+            if (-not $byFile.ContainsKey($f)) { $byFile[$f] = [System.Collections.Generic.List[object]]::new() }
+            $byFile[$f].Add([pscustomobject]@{
+                    StartLine = [int]$c.StartLine; StartColumn = [int]$c.StartColumn
+                    EndLine = [int]$c.EndLine; Hit = $pass.Hit
+                })
+        }
+    }
+    $covered = @{}
+    foreach ($f in $byFile.Keys) { $covered[$f] = Get-PSMutationFileCoveredLine -Command $byFile[$f].ToArray() }
+    return $covered
+}
+
+function Get-PSMutationFileCoveredLine {
+    <#
+    .SYNOPSIS
+        The covered lines of ONE file, from its commands. Pure.
+    .DESCRIPTION
+        One pass over the lines with a stack of the commands still open. Extents from one parse
+        are nested or disjoint, so after the commands that ended above a line are popped, the top
+        of the stack is the innermost command spanning it -- no per-line search over every
+        command, which on a large file is the difference between linear and quadratic.
+
+        A command that ended earlier on the same line as a later sibling can sit beneath it on the
+        stack. It never decides a line: it ended on the line it was pushed on, so it is popped
+        before any later line is judged.
+    #>
+    # Both types, as for every comma-wrapped return here: `, $set` is statically an Object[]
+    # wrapper that PowerShell unrolls on the way out, and the caller receives the set.
+    [OutputType([System.Collections.Generic.HashSet[int]], [object[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [object[]]$Command)
+    $covered = [System.Collections.Generic.HashSet[int]]::new()
+    # Sorted, because Pester hands executed and missed back as two lists and neither order is a
+    # promise. The stack only works over commands in document order.
+    $sorted = @($Command | Sort-Object StartLine, StartColumn)
+    $last = ($sorted | Measure-Object -Property EndLine -Maximum).Maximum
+    $open = [System.Collections.Generic.Stack[object]]::new()
+    $next = 0
+    for ($line = $sorted[0].StartLine; $line -le $last; $line++) {
+        while ($open.Count -gt 0 -and $open.Peek().EndLine -lt $line) { [void]$open.Pop() }
+        # Every command starting here: a start line is covered when ANY of them ran, which is the
+        # rule this function inherits unchanged.
+        while ($next -lt $sorted.Count -and $sorted[$next].StartLine -eq $line) {
+            if ($sorted[$next].Hit) { [void]$covered.Add($line) }
+            $open.Push($sorted[$next])
+            $next++
+        }
+        # Every other line: the innermost command spanning it decides. On a start line this is
+        # the command just pushed, which the loop above has already answered for.
+        if ($open.Count -gt 0 -and $open.Peek().Hit) { [void]$covered.Add($line) }
+    }
+    return , $covered
 }
 
 function Test-PSMutantCovered {
