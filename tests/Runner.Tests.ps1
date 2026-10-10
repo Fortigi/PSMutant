@@ -979,6 +979,71 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
         $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
 
         $r.FailedTest[0] | Should-Be 'Blocked.Test'
+        $r.Unexplained | Should-Be 1
+    }
+
+    It 'counts only the failures that came back with nothing to say' {
+        # One of each, so a count that included every failure, or none, is wrong here. The blank
+        # message is the second shape of "nothing": an error record whose text is only whitespace.
+        Mock Invoke-Pester {
+            [pscustomobject]@{
+                Result       = 'Failed'
+                CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
+                Failed       = @(
+                    [pscustomobject]@{ ExpandedPath = 'Blocked.Test'; ErrorRecord = @() }
+                    [pscustomobject]@{ ExpandedPath = 'Blank.Test'
+                        ErrorRecord = @([pscustomobject]@{ Exception = [pscustomobject]@{ Message = " `r`n " } }) }
+                    [pscustomobject]@{ ExpandedPath = 'Said.Test'
+                        ErrorRecord = @([pscustomobject]@{ Exception = [pscustomobject]@{ Message = 'Expected 1, got 2' } }) }
+                )
+            }
+        }
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
+        $r.Unexplained | Should-Be 2
+    }
+
+    It 'counts no unexplained failure on a green run' {
+        # Failed is null when nothing failed. A pipeline over it runs once with $null and would
+        # count a phantom failure -- harmless today, because the guard reads it only when the run
+        # is red, and exactly the kind of harmless that stops being so.
+        Mock Invoke-Pester {
+            [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }; Failed = $null }
+        }
+        $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
+        $r.Unexplained | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationFailedTestReason' {
+    BeforeAll {
+        function Rec([string]$Message) { [pscustomobject]@{ Exception = [pscustomobject]@{ Message = $Message } } }
+    }
+
+    It 'gives the first non-blank line of the first record, trimmed' {
+        $t = [pscustomobject]@{ ErrorRecord = @((Rec "`r`n  Expected 1, got 2  `r`nat <ScriptBlock>")) }
+        Get-PSMutationFailedTestReason -Test $t | Should-Be 'Expected 1, got 2'
+    }
+
+    It 'takes the FIRST record of several, not a later one' {
+        $t = [pscustomobject]@{ ErrorRecord = @((Rec 'first'), (Rec 'second')) }
+        Get-PSMutationFailedTestReason -Test $t | Should-Be 'first'
+    }
+
+    It 'does not fall through to a later record when the first one is blank' {
+        # The first record is the reason; a later one is usually cascade from it, and promoting it
+        # would name a consequence as the cause.
+        $t = [pscustomobject]@{ ErrorRecord = @((Rec " `r`n "), (Rec 'cascade')) }
+        Get-PSMutationFailedTestReason -Test $t | Should-Be ''
+    }
+
+    It 'answers empty for a test with no record, under StrictMode' {
+        # The BeforeAll-died case. Indexing an empty collection throws under StrictMode, so this is
+        # the shape the function must walk rather than index.
+        $r = & {
+            Set-StrictMode -Version Latest
+            Get-PSMutationFailedTestReason -Test ([pscustomobject]@{ ErrorRecord = @() })
+        }
+        $r | Should-Be ''
     }
 }
 
@@ -1023,6 +1088,47 @@ Describe 'Assert-PSMutationBaselineGreen' {
         { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
                     Passed = $false; FailedTest = @('Only.one -- Expected 1, got 0')
                 }) } | Should-Throw -ExceptionMessage '*Failed: Only.one -- Expected 1, got 0.*'
+    }
+
+    It 'says where to look when NO failure carried a reason' {
+        # Anchored at the refusal's first word and running through the hint, so the hint is shown
+        # to be part of THIS message rather than matched somewhere inside a quoted one.
+        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
+                    Passed = $false; FailedTest = @('Blocked.One', 'Blocked.Two'); Unexplained = 2
+                }) } | Should-Throw -ExceptionMessage 'Baseline suite is not green*Failed: Blocked.One; Blocked.Two. None of them carried an error.*Install-Module Pester*-Force.'
+    }
+
+    It 'gives the hint for a single unexplained failure too' {
+        # Exactly one, so a guard that wanted "more than one" before speaking is caught: a single
+        # dead BeforeAll in a one-test file is the commonest way to land here.
+        { Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
+                    Passed = $false; FailedTest = @('Blocked.Only'); Unexplained = 1
+                }) } | Should-Throw -ExceptionMessage 'Baseline suite is not green*Failed: Blocked.Only. None of them carried an error.*'
+    }
+
+    It 'gives no hint when any failure did carry a reason' {
+        # One failure explained itself, so the reader has somewhere to start and the hint would
+        # send them away from it.
+        $message = $null
+        try {
+            Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{
+                    Passed = $false; FailedTest = @('Blocked.One', 'Said.Two -- Expected 1'); Unexplained = 1
+                })
+        }
+        catch { $message = $_.Exception.Message }
+        $message | Should-BeLikeString '*Failed: Blocked.One; Said.Two -- Expected 1.'
+        $message | Should-NotBeLikeString '*None of them*'
+    }
+
+    It 'gives no hint when it has no names at all' {
+        # Zero of zero is "every failure unexplained" by arithmetic and by nothing else: there is
+        # no failure to explain, and a hint about failures that were never named reads as noise.
+        $message = $null
+        try {
+            Assert-PSMutationBaselineGreen -Baseline ([pscustomobject]@{ Passed = $false; FailedTest = @(); Unexplained = 0 })
+        }
+        catch { $message = $_.Exception.Message }
+        $message | Should-NotBeLikeString '*None of them*'
     }
 
     It 'says nothing about names it does not have' {

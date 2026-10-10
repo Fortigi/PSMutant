@@ -54,7 +54,14 @@ New in the README: how to get survivors onto a pull request, on both platforms, 
 `examples/azure-pipelines.yml`, a complete Azure pipeline -- a full run on `main`, a `-ChangedFile`
 run on pull requests, and both ways of publishing the log.
 
-No score moves and no existing output changes. The config gains one optional key.
+The SARIF log and the Azure annotations move no score and change no existing output. The config
+gains one optional key.
+
+**A red baseline says where to look when no failing test said why.** The refusal names the failing
+tests and the first line of each one's error. When NONE of them carried an error -- the shape of a
+`BeforeAll` that died, whose error Pester attaches to the test file, or of a damaged Pester install
+that fails even a test with no assertion -- the names alone point nowhere, so the message now says
+so and names both places to look.
 
 
 ## [0.5.0] - 2026-09-01
