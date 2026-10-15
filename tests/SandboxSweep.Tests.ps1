@@ -193,11 +193,46 @@ Describe 'Clear-PSMutationStaleSandbox under -WhatIf' {
         New-Item -ItemType Directory -Path $dead -Force | Out-Null
         try {
             Clear-PSMutationStaleSandbox
-            # Path, not LiteralPath: the sweep passes the FullName positionally. Filtering on
-            # the wrong parameter name reports zero calls and reads exactly like a sweep that
-            # removed nothing.
-            Should-Invoke Remove-Item -Times 1 -ParameterFilter { $Path -eq $dead }
+            # LiteralPath, as the sweep passes it since #267. Filtering on the wrong parameter name
+            # reports zero calls and reads exactly like a sweep that removed nothing.
+            Should-Invoke Remove-Item -Times 1 -ParameterFilter { $LiteralPath -eq $dead }
         }
         finally { Remove-Item -LiteralPath $dead -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
+Describe 'two sweeps at once (#267)' {
+    # Every run sweeps at startup, and under `workers: 3` so does every covering run of this file.
+    # Two sweeps list the same leftover and both remove it; the loser's Remove-Item THROWS --
+    # "does not exist" is terminating, so -ErrorAction SilentlyContinue does not contain it.
+    It 'tolerates a removal that throws because another sweep already removed the item' {
+        $gone = Join-Path $TestDrive "raced-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $gone | Out-Null
+        # The other sweep wins between the listing and this removal: the item is deleted, and THIS
+        # Remove-Item then fails the way the real one does.
+        Mock Remove-Item {
+            [System.IO.Directory]::Delete($LiteralPath, $true)
+            throw [System.Management.Automation.PSArgumentException]::new("An object at the specified path $LiteralPath does not exist.")
+        }
+        Remove-PSMutationStaleItem -Path $gone
+        Test-Path -LiteralPath $gone | Should-BeFalse
+        Should-Invoke Remove-Item -Exactly 1
+    }
+
+    It 'still throws when the removal failed and the item is still there' {
+        # Only "somebody else removed it" is the outcome the sweep wanted. Anything else is a
+        # failure, and was one before this change.
+        $kept = Join-Path $TestDrive "kept-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $kept | Out-Null
+        Mock Remove-Item { throw 'locked' }
+        { Remove-PSMutationStaleItem -Path $kept } | Should-Throw -ExceptionMessage 'locked'
+        Test-Path -LiteralPath $kept | Should-BeTrue
+    }
+
+    It 'removes an item that is simply there' {
+        $plain = Join-Path $TestDrive "plain-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $plain 'inner') -Force | Out-Null
+        Remove-PSMutationStaleItem -Path $plain
+        Test-Path -LiteralPath $plain | Should-BeFalse
     }
 }

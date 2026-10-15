@@ -1,3 +1,17 @@
+## [0.6.1] - 2026-10-15
+
+### For consumers
+
+**Two runs starting at once on one machine no longer kill each other at startup.** Every run
+sweeps temp for sandboxes left by killed runs. Two sweeps at the same moment found the same leftover
+and both removed it, and the loser's `Remove-Item` threw "An object at the specified path ... does
+not exist" -- a terminating error, which the sweep's `-ErrorAction SilentlyContinue` does not
+contain -- so a run died before it did anything. A removal that fails because the item is already
+gone is now the outcome the sweep wanted; one that fails while the item remains is still an error.
+
+It mattered to this module's own gate too: with several workers, mutants of the sandbox code ran
+the sweep's tests side by side, and a covering run that failed on the race scored its mutant Killed.
+
 ## [0.6.0] - 2026-10-10
 
 ### For consumers
