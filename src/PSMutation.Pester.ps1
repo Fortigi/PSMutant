@@ -187,6 +187,13 @@ $script:PSMutationWarmRunspace = @{}
 $script:PSMutationWarmShell = @{}
 $script:PSMutationWarmUses = @{}
 
+# Runspaces taken out of the pool after a timeout, whose stop has been REQUESTED and may not have
+# finished (#250). PowerShell's Stop() is synchronous and waits for a blocking .NET call to
+# return -- measured: 7.4s for an 8s Thread.Sleep -- and the scheduler is single-threaded, so
+# every worker stalled for it. BeginStop returns at once; the runspace waits here until its stop
+# completes, and is disposed then.
+$script:PSMutationRetiredRunspace = [System.Collections.Generic.List[object]]::new()
+
 # How many mutants one runspace serves before it is rebuilt. Bounds any state a covering suite
 # leaves behind: the saving is already 93% of the floor at this interval, so a larger number buys
 # almost nothing and widens the window in which a leak could go unnoticed.
@@ -217,6 +224,44 @@ function Close-PSMutationWarmRunspace {
     $script:PSMutationWarmUses.Remove($WorkerId)
 }
 
+function Stop-PSMutationWarmRunspace {
+    # Retire ONE worker's runspace without waiting for it to stop (#250). The worker's next shell is
+    # a fresh one, exactly as after a synchronous stop; only the waiting is gone.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Stops an in-process runspace; there is no system state to confirm.')]
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$WorkerId)
+    if (-not $script:PSMutationWarmShell.ContainsKey($WorkerId)) { return }
+    $shell = $script:PSMutationWarmShell[$WorkerId]
+    $script:PSMutationRetiredRunspace.Add([pscustomobject]@{
+            Shell = $shell; Runspace = $script:PSMutationWarmRunspace[$WorkerId]
+            Stop = $shell.BeginStop($null, $null)
+        })
+    # Removed, not closed: closing disposes, and disposing a running shell waits for it -- the
+    # very wait this exists to avoid.
+    $script:PSMutationWarmShell.Remove($WorkerId)
+    $script:PSMutationWarmRunspace.Remove($WorkerId)
+    $script:PSMutationWarmUses.Remove($WorkerId)
+}
+
+function Clear-PSMutationRetiredRunspace {
+    # Dispose every retired runspace whose stop has finished; leave the rest. One still stuck in a
+    # blocking call is left for the process to reclaim when the call returns, rather than making
+    # anyone wait for it -- which is the whole point of retiring it.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Disposes in-process runspaces; there is no system state to confirm.')]
+    [OutputType([void])]
+    [CmdletBinding()]
+    param()
+    foreach ($r in @($script:PSMutationRetiredRunspace)) {
+        if (-not $r.Stop.IsCompleted) { continue }
+        $r.Shell.Dispose()
+        $r.Runspace.Dispose()
+        [void]$script:PSMutationRetiredRunspace.Remove($r)
+    }
+}
+
 function Close-PSMutationWarmRunspacePool {
     # Dispose every worker's warm runspace. The run's exit path, so a long-lived host does not
     # keep a Pester-loaded runspace per completed run -- once per WORKER now, which is the whole
@@ -230,6 +275,7 @@ function Close-PSMutationWarmRunspacePool {
     # a hashtable being enumerated cannot be modified -- iterating .Keys directly throws on the
     # second worker, which is a failure that only appears once somebody runs in parallel.
     foreach ($id in @($script:PSMutationWarmShell.Keys)) { Close-PSMutationWarmRunspace -WorkerId $id }
+    Clear-PSMutationRetiredRunspace
 }
 
 function Get-PSMutationWarmShell {
@@ -237,6 +283,9 @@ function Get-PSMutationWarmShell {
     [OutputType([powershell])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [int]$WorkerId)
+    # Opportunistic: a retired runspace whose stop has since finished is disposed here, so a long
+    # run with many timeouts does not hold them all until the end.
+    Clear-PSMutationRetiredRunspace
     if ($script:PSMutationWarmShell.ContainsKey($WorkerId) -and
         $script:PSMutationWarmUses[$WorkerId] -lt $script:PSMutationWarmRunspaceLifetime) {
         $script:PSMutationWarmUses[$WorkerId]++

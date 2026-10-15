@@ -87,7 +87,13 @@ class reloads the same way. Dot-sourcing was never affected.
 Two things PowerShell keeps for the life of the process are refused instead, naming file and line:
 `using module <path>` of the code under test, which stays at the first version loaded even in a
 fresh runspace, and a mutant inside an `Add-Type` call, whose type cannot be compiled twice. The
-README''s new "How your tests should load the code under test" says what works.'
+README''s new "How your tests should load the code under test" says what works.
+
+**A mutant stuck in a blocking call no longer stalls every other worker.** Stopping a timed-out
+mutant waited for the call it was stuck in to return -- 7.4 seconds for an 8-second
+`Thread.Sleep`, and longer for a runaway regex -- and the scheduler waited with it, so every worker
+stood idle and the stall check could abort the run blaming a machine that had slept. The stop is now
+requested without waiting, and the worker carries on with a fresh runspace at once.'
         }
     }
 }

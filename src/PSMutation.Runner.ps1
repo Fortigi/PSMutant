@@ -509,8 +509,9 @@ function Stop-PSMutationJob {
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Job)
-    $Job.Shell.Stop()
-    Close-PSMutationWarmRunspace -WorkerId $Job.WorkerId
+    # Requested, not awaited (#250): a synchronous Stop() waits for a blocking .NET call to return,
+    # and while it waited every other worker stalled with it.
+    Stop-PSMutationWarmRunspace -WorkerId $Job.WorkerId
     # No killers on a timeout, and an EMPTY list rather than none: the caller reads .Killers
     # unconditionally, and a missing property would make "nothing killed it" and "we never
     # looked" the same answer at the one point where they differ most.

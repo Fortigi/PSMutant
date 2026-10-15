@@ -51,6 +51,12 @@ Two things PowerShell keeps for the life of the process are refused instead, nam
 fresh runspace, and a mutant inside an `Add-Type` call, whose type cannot be compiled twice. The
 README's new "How your tests should load the code under test" says what works.
 
+**A mutant stuck in a blocking call no longer stalls every other worker.** Stopping a timed-out
+mutant waited for the call it was stuck in to return -- 7.4 seconds for an 8-second
+`Thread.Sleep`, and longer for a runaway regex -- and the scheduler waited with it, so every worker
+stood idle and the stall check could abort the run blaming a machine that had slept. The stop is now
+requested without waiting, and the worker carries on with a fresh runspace at once.
+
 ## [0.6.0] - 2026-10-10
 
 ### For consumers
