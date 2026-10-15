@@ -431,12 +431,14 @@ function Get-PSMutationSuiteShell {
     param(
         [Parameter(Mandatory)] [int]$WorkerId,
         [Parameter(Mandatory)] [string[]]$Tests,
+        # The worker's own sandbox: modules loaded from it are removed before each run (#249).
+        [Parameter(Mandatory)] [string]$SandboxRoot,
         [switch]$RecordAllKillers
     )
     $ps = Get-PSMutationWarmShell -WorkerId $WorkerId
     $ps.Commands.Clear()
     [void]$ps.AddScript((Get-PSMutationWarmPesterScript).ToString()).AddParameter('tests', $Tests).
-        AddParameter('recordAllKillers', [bool]$RecordAllKillers)
+        AddParameter('recordAllKillers', [bool]$RecordAllKillers).AddParameter('sandboxRoot', $SandboxRoot)
     return $ps
 }
 
@@ -478,9 +480,11 @@ function Start-PSMutantEvaluation {
         [Parameter(Mandatory)] [AllowEmptyString()] [string]$OriginalContent,
         [Parameter(Mandatory)] [string[]]$CoveringTests,
         [Parameter(Mandatory)] [int]$WorkerId,
+        # The sandbox this worker mutates, whose modules the child unloads before running.
+        [Parameter(Mandatory)] [string]$SandboxRoot,
         [switch]$RecordAllKillers
     )
-    $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $CoveringTests -RecordAllKillers:$RecordAllKillers
+    $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $CoveringTests -SandboxRoot $SandboxRoot -RecordAllKillers:$RecordAllKillers
     [System.IO.File]::WriteAllText($Candidate.File, $MutatedContent)
     # The clock starts at BeginInvoke rather than when the candidate was queued, so a mutant's
     # measured seconds are what it spent running and not what it spent waiting for a worker.
@@ -876,7 +880,7 @@ function Start-PSMutationWorkerJob {
         })
     return Start-PSMutantEvaluation -Candidate $exec -Source $c -Index $Schedule.Next `
         -MutatedContent (Set-PSMutationText -Content $content -Candidate $c) -OriginalContent $content `
-        -CoveringTests $tests -WorkerId $WorkerId -RecordAllKillers:$Context.RecordAllKillers
+        -CoveringTests $tests -WorkerId $WorkerId -SandboxRoot $root -RecordAllKillers:$Context.RecordAllKillers
 }
 
 function Start-PSMutationDispatch {
@@ -1007,6 +1011,95 @@ function Complete-PSMutationRetirement {
     }
 }
 
+function Get-PSMutationUsingModuleFault {
+    # Each `using module <path>` in one file that names code inside the sandbox, as a fault line.
+    # A bare name loads an installed module, which no mutant changes, and a path that resolves
+    # outside the sandbox is not code under test either.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Ast,
+        [Parameter(Mandatory)] [string]$File,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    $own = $SandboxRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    foreach ($u in $Ast.UsingStatements) {
+        $name = [string]$u.Name.Value
+        if ($u.UsingStatementKind -ne 'Module' -or $name -notmatch '[\\/]|\.ps[dm]1$') { continue }
+        $target = [System.IO.Path]::GetFullPath($name, (Split-Path -Parent $File))
+        if ($target.StartsWith($own, [System.StringComparison]::OrdinalIgnoreCase)) {
+            "$(ConvertFrom-PSMutationSandboxPath -Path $File -SandboxRoot $SandboxRoot):$($u.Extent.StartLineNumber) loads the code under test with ``$($u.Extent.Text)``, which the process keeps whatever later changes on disk. Import it with Import-Module, or dot-source it, in a BeforeAll."
+        }
+    }
+}
+
+function Get-PSMutationAddTypeFault {
+    # A fault line when one candidate lies inside one of its file's Add-Type calls -- inclusive at
+    # both edges, because a mutant spanning the whole call still changes what it compiles.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Candidate,
+        [AllowEmptyCollection()] [object[]]$AddType = @(),
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    foreach ($cmd in $AddType) {
+        if ($Candidate.StartOffset -ge $cmd.Extent.StartOffset -and $Candidate.EndOffset -le $cmd.Extent.EndOffset) {
+            "$(ConvertFrom-PSMutationSandboxPath -Path $Candidate.File -SandboxRoot $SandboxRoot):$($Candidate.Line) has a mutant inside an Add-Type call ($($Candidate.Description)), and a compiled type cannot be compiled again in the process. Leave StringLiteral out of 'operators' for this file's run."
+        }
+    }
+}
+
+function Get-PSMutationReloadFault {
+    <#
+    .SYNOPSIS
+        What a run cannot evaluate because PowerShell keeps it for the life of the PROCESS, as one
+        refusal -- or $null (#249).
+    .DESCRIPTION
+        Every mutant runs in this process: the workers are runspaces in it, and the baseline runs in
+        the caller's session in it. A module imported from the sandbox is unloaded before each
+        mutant (see Get-PSMutationWarmPesterScript), which covers Import-Module with or without
+        -Force and a module defining a class. Two things survive even that, measured rather than
+        assumed:
+
+        * `using module <path>` -- a test still saw the old module after Remove-Module, in a FRESH
+          runspace, and after its own file was touched. Each worker caches whichever version it
+          loads first: the original for worker 0, which the baseline loaded, and some earlier
+          MUTANT for the others. Only a path is refused; a bare name loads an installed module,
+          which no mutant changes.
+        * a mutant inside an `Add-Type` call -- a compiled type cannot be compiled again in the
+          process, so the mutant's Add-Type fails with "already exists" and the old type stays.
+          Only the opt-in StringLiteral operator reaches the source text of such a call.
+
+        A refusal rather than a quiet guess, because both produce verdicts about code that did not
+        run. Named by file and line, relative to the source root.
+    .OUTPUTS
+        [string] the refusal, or $null.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$MutateFiles,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$TestFiles,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    $found = [System.Collections.Generic.List[string]]::new()
+    $addType = @{}
+    foreach ($file in @(@($MutateFiles) + @($TestFiles) | Select-Object -Unique)) {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($file, [ref]$null, [ref]$null)
+        foreach ($f in (Get-PSMutationUsingModuleFault -Ast $ast -File $file -SandboxRoot $SandboxRoot)) { $found.Add($f) }
+        $addType[$file] = @($ast.FindAll({ param($n)
+                    $n -is [System.Management.Automation.Language.CommandAst] -and $n.GetCommandName() -eq 'Add-Type' }, $true))
+    }
+    foreach ($c in $Candidates) {
+        foreach ($f in (Get-PSMutationAddTypeFault -Candidate $c -AddType $addType[$c.File] -SandboxRoot $SandboxRoot)) { $found.Add($f) }
+    }
+    if ($found.Count -eq 0) { return $null }
+    return ("PSMutant evaluates every mutant in this one process, and PowerShell keeps these for its whole life, so their mutants would be judged against code that did not run:`n  " +
+        ($found -join "`n  "))
+}
+
 function Get-PSMutationSuiteGroup {
     <#
     .SYNOPSIS
@@ -1094,7 +1187,7 @@ function Start-PSMutationGreenJob {
         })
     # Every failing test is wanted here, not the first: this is a refusal the reader has to act
     # on, and it is paid once per run rather than once per mutant.
-    $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $tests -RecordAllKillers
+    $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $tests -SandboxRoot $WorkerRoot -RecordAllKillers
     return [pscustomobject]@{ WorkerId = $WorkerId; Shell = $ps; Async = $ps.BeginInvoke() }
 }
 

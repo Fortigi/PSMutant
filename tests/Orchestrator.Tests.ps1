@@ -37,6 +37,9 @@ BeforeAll {
     # driven with stub candidates and a mocked loop. Stubbed for the whole file; the tests that are
     # ABOUT it say so and assert it.
     Mock Assert-PSMutationWorkerGreen { }
+    # And the reload refusal (#249), which parses real files and reads each candidate's File --
+    # the candidates here are placeholder strings. Its own test below overrides this.
+    Mock Get-PSMutationReloadFault { $null }
 }
 
 
@@ -242,6 +245,14 @@ Describe 'Invoke-PSMutation' {
         Should-Invoke Invoke-PSMutationLoop -Exactly 0
         Test-Path (Join-Path $script:root 'reports/run.json') | Should-BeFalse
         Should-Invoke Remove-PSMutationSandbox -Exactly 1
+    }
+
+    It 'refuses code the process cannot reload, before any mutant runs (#249)' {
+        Mock Get-PSMutationReloadFault { 'cannot reload this' }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } |
+            Should-Throw -ExceptionMessage 'cannot reload this'
+        Should-Invoke Get-PSMutationReloadFault -Exactly 1 -ParameterFilter { @($Candidates).Count -eq 2 }
+        Should-Invoke Invoke-PSMutationLoop -Exactly 0
     }
 
     It 'writes the ORDINARY report when a run legitimately evaluates nothing' {

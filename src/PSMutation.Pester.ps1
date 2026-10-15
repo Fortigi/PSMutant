@@ -321,7 +321,17 @@ function Get-PSMutationWarmPesterScript {
     # assembled text again -- one conditional away from the problem this fixes. It is now a
     # parameter the child reads, so there is exactly one script and it is always the same one.
     $sb = {
-        param($tests, $recordAllKillers)
+        param($tests, $recordAllKillers, [string]$sandboxRoot)
+        # Every module loaded from THIS worker's sandbox is removed first (#249). The runspace is
+        # reused across mutants, and `Import-Module` without -Force hands back a module already
+        # loaded -- measured: after the file changed, the second import returned the old code. So
+        # a suite importing the code under test would run mutant 2 against mutant 1. Removed, the
+        # next import reads the file as it is now; a module that defines a class reloads too.
+        # Only the sandbox's: an installed dependency does not change between mutants, and
+        # removing it would only make every run reload it.
+        $own = $sandboxRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+        Get-Module | Where-Object { $_.Path -and $_.Path.StartsWith($own, [System.StringComparison]::OrdinalIgnoreCase) } |
+            Remove-Module -Force
         $c = New-PesterConfiguration
         $c.Run.Path = $tests
         $c.Run.PassThru = $true
