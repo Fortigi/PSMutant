@@ -2183,6 +2183,13 @@ Describe 'the total score beside the covered-code one (#264)' {
         Get-PSMutationTotalScore -Summary ([pscustomobject]@{ Killed = 3; Total = 4 }) -Skipped 0 | Should-Be 75
     }
 
+    It 'scores a run of exactly one mutant, and rounds to one decimal as mutationScore does' {
+        # One mutant is the smallest run that is not empty: a guard written `-gt 1` would call it 0%.
+        Get-PSMutationTotalScore -Summary ([pscustomobject]@{ Killed = 1; Total = 1 }) -Skipped 0 | Should-Be 100
+        # 2 of 3: 66.7 at one decimal, 66.67 at two.
+        Get-PSMutationTotalScore -Summary ([pscustomobject]@{ Killed = 2; Total = 2 }) -Skipped 1 | Should-Be 66.7
+    }
+
     It 'is 0, not a division by zero, over no mutants at all' {
         Get-PSMutationTotalScore -Summary ([pscustomobject]@{ Killed = 0; Total = 0 }) -Skipped 0 | Should-Be 0
     }
