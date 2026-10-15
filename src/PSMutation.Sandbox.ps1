@@ -334,6 +334,26 @@ function Get-PSMutationProcessStart {
     return $start
 }
 
+function Remove-PSMutationStaleItem {
+    # Remove one swept item, tolerating a CONCURRENT sweep that removed it first (#267).
+    #
+    # Every run sweeps at startup, and so does every covering run of the sweep's own tests -- three
+    # at once under `workers: 3`. Two sweeps list the same leftover and both remove it, and the
+    # loser's Remove-Item does not fail quietly: "An object at the specified path ... does not
+    # exist" is a TERMINATING PSArgumentException, which -ErrorAction SilentlyContinue does not
+    # contain. A run died at startup for it, and a mutant was scored Killed by it.
+    #
+    # Tolerated only when the item is GONE, because that is the outcome the sweep wanted. One that
+    # is still there failed for some other reason and is re-thrown, exactly as before.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Called only from Clear-PSMutationStaleSandbox, inside its ShouldProcess.')]
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Path)
+    try { Remove-Item -LiteralPath $Path -Recurse -Force -ErrorAction SilentlyContinue }
+    catch { if (Test-Path -LiteralPath $Path) { throw } }
+}
+
 function Clear-PSMutationStaleSandbox {
     # Sweep sandboxes left by a previously killed run (belt-and-braces at startup),
     # WITHOUT touching one that a concurrent run is using.
@@ -353,6 +373,6 @@ function Clear-PSMutationStaleSandbox {
             # skipping costs nothing and removes the sweep as a deletion primitive.
             Where-Object { -not $_.LinkType } |
             Where-Object { Test-PSMutationSandboxAbandoned -Directory $_ } |
-            ForEach-Object { Remove-Item $_.FullName -Recurse -Force -ErrorAction SilentlyContinue }
+            ForEach-Object { Remove-PSMutationStaleItem -Path $_.FullName }
     }
 }
