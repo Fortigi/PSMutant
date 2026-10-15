@@ -1074,6 +1074,30 @@ function Get-PSMutationWorkerGreenFault {
         'Killed by that failure rather than by a test.')
 }
 
+function Start-PSMutationGreenJob {
+    # One worker's unmutated run of one suite, started and not waited for. Its own function so the
+    # check's loop stays under the cognitive ceiling this repo gates itself on.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Starts an in-process pipeline on an unmutated suite; nothing is written.')]
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string[]]$Suite,
+        [Parameter(Mandatory)] [int]$WorkerId,
+        [Parameter(Mandatory)] [string]$WorkerRoot,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    # Re-rooted into THIS worker's copy, as a mutant's tests are: the primary sandbox's files
+    # would prove the primary copy green and say nothing about this one.
+    $tests = [string[]]@($Suite | ForEach-Object {
+            Get-PSMutationWorkerPath -Path $_ -SandboxRoot $SandboxRoot -WorkerRoot $WorkerRoot
+        })
+    # Every failing test is wanted here, not the first: this is a refusal the reader has to act
+    # on, and it is paid once per run rather than once per mutant.
+    $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $tests -RecordAllKillers
+    return [pscustomobject]@{ WorkerId = $WorkerId; Shell = $ps; Async = $ps.BeginInvoke() }
+}
+
 function Assert-PSMutationWorkerGreen {
     <#
     .SYNOPSIS
@@ -1112,14 +1136,7 @@ function Assert-PSMutationWorkerGreen {
     $roots = [string[]]@(@($SandboxRoot) + @($WorkerSandbox))
     foreach ($suite in (Get-PSMutationSuiteGroup -Candidates $Candidates -TestsByFile $TestsByFile -AllTests $AllTests)) {
         $jobs = @(for ($w = 0; $w -lt $roots.Count; $w++) {
-                $root = $roots[$w]
-                $tests = [string[]]@($suite | ForEach-Object {
-                        Get-PSMutationWorkerPath -Path $_ -SandboxRoot $SandboxRoot -WorkerRoot $root
-                    })
-                # Every failing test is wanted here, not the first: this is a refusal the reader
-                # has to act on, and it is paid once per run rather than once per mutant.
-                $ps = Get-PSMutationSuiteShell -WorkerId $w -Tests $tests -RecordAllKillers
-                [pscustomobject]@{ WorkerId = $w; Shell = $ps; Async = $ps.BeginInvoke() }
+                Start-PSMutationGreenJob -Suite $suite -WorkerId $w -WorkerRoot $roots[$w] -SandboxRoot $SandboxRoot
             })
         # Named as the report names files, relative to the source root: the sandbox is a temp
         # directory the reader has never seen, and which copy a worker ran the worker number says.
