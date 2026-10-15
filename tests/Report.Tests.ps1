@@ -572,7 +572,7 @@ Describe 'the contract a consumer actually depends on' {
             (Get-Content $out -Raw | ConvertFrom-Json).PSObject.Properties.Name |
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
-                    'mutationScore', 'total', 'killed', 'survived', 'timedOut',
+                    'mutationScore', 'total', 'killed', 'survived', 'timedOut', 'compileErrors', 'runtimeErrors',
                     'declaredEquivalent', 'filesMutated', 'killersComplete', 'testFiles', 'perFile', 'skippedAsUncovered', 'filesWithNoMutants',
                     'filesWithNoCandidate', 'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
@@ -1034,7 +1034,7 @@ Describe 'New-PSMutationProvenance' {
         # The point of the field: #20 had to reconcile two report shapes by hand, and #4
         # will have to tell a merged report from a plain one. Sniffing for keys is what a
         # version number exists to replace.
-        $script:prov.schemaVersion | Should-Be 2
+        $script:prov.schemaVersion | Should-Be 3
     }
 
     It 'attributes the report to a module build' {
@@ -1080,7 +1080,7 @@ Describe 'the provenance a report carries' {
             $prov = New-PSMutationProvenance -ModuleVersion '9.9.9' -BaselineSeconds 1 -TotalSeconds 2 -PerMutantTimeoutSeconds 15
             Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Provenance $prov | Out-Null
             $json = Get-Content $out -Raw | ConvertFrom-Json
-            $json.schemaVersion            | Should-Be 2
+            $json.schemaVersion            | Should-Be 3
             $json.producedBy.version       | Should-Be '9.9.9'
             $json.durations.totalSeconds   | Should-Be 2
             # Asserted against the FILE, not the parsed object: ConvertFrom-Json recognises
@@ -1243,7 +1243,7 @@ Describe 'Write-PSMutationPartialReport' {
         # somebody opens the file.
         $doc = script:WritePartial
         $doc.generatedFrom          | Should-Be 'PSMutant'
-        $doc.schemaVersion          | Should-Be 2
+        $doc.schemaVersion          | Should-Be 3
         $doc.producedBy.module      | Should-Be 'PSMutant'
         $doc.durations.totalSeconds | Should-Be 2
     }
@@ -2078,5 +2078,93 @@ Describe 'Write-PSMutationReport and the scope it was measured over' {
         $doc = Get-Content $out -Raw | ConvertFrom-Json
         $doc.mode | Should-Be 'Changed'
         $doc.changedFiles | Should-Be 'src/a.ps1'
+    }
+}
+
+Describe 'mutants with no verdict (#252, schema v3)' {
+    # A mutant that did not parse ran no test, and one whose run stopped without a verdict
+    # produced none. Neither is a kill or a survival, so both stay OUT of the score and are
+    # counted on their own -- a reader comparing the count to the mutant list must see them.
+    BeforeAll {
+        $script:noVerdict = @(
+            [pscustomobject]@{ File = 'a.ps1'; Function = 'F'; Line = 1; Operator = 'BinaryOperator'; Description = 'k'; Status = 'Killed' }
+            [pscustomobject]@{ File = 'a.ps1'; Function = 'F'; Line = 2; Operator = 'BinaryOperator'; Description = 's'; Status = 'Survived' }
+            [pscustomobject]@{ File = 'a.ps1'; Function = 'F'; Line = 3; Operator = 'BinaryOperator'; Description = 'c'; Status = 'CompileError' }
+            [pscustomobject]@{ File = 'b.ps1'; Function = 'G'; Line = 4; Operator = 'BinaryOperator'; Description = 'r'; Status = 'RuntimeError' }
+        )
+    }
+
+    It 'leaves them out of the total and the score, and counts each kind' {
+        $s = Get-PSMutationScore -Results $script:noVerdict
+        $s.Total | Should-Be 2
+        $s.Killed | Should-Be 1
+        $s.Survived | Should-Be 1
+        $s.Score | Should-Be 50
+        $s.CompileErrors | Should-Be 1
+        $s.RuntimeErrors | Should-Be 1
+    }
+
+    It 'neither confirms nor contradicts an equivalence declaration' {
+        # A declaration claims the mutant SURVIVES; one that could not run says nothing about that.
+        # Counted as excluded it would vanish twice; counted as killed it would read as stale.
+        $eq = [pscustomobject]@{ 'a.ps1:3:c' = 'cannot be caught' }
+        $s = Get-PSMutationScore -Results $script:noVerdict -Equivalents $eq
+        $s.DeclaredEquivalent | Should-Be 0
+        @($s.StaleEquivalents).Count | Should-Be 0
+        $s.CompileErrors | Should-Be 1
+        $s.Total | Should-Be 2
+        # The control: the same spelling of declaration on the SURVIVOR is honoured, so the
+        # zero above is not a key that simply never matched.
+        (Get-PSMutationScore -Results $script:noVerdict -Equivalents ([pscustomobject]@{ 'a.ps1:2:s' = 'cannot be caught' })).DeclaredEquivalent |
+            Should-Be 1
+    }
+
+    It 'carries both counts into each file''s score' {
+        $pf = Get-PSMutationPerFileScore -Results $script:noVerdict
+        $a = $pf | Where-Object file -eq 'a.ps1'
+        $b = $pf | Where-Object file -eq 'b.ps1'
+        "$($a.compileErrors)/$($a.runtimeErrors)/$($a.total)" | Should-Be '1/0/2'
+        "$($b.compileErrors)/$($b.runtimeErrors)/$($b.total)" | Should-Be '0/1/0'
+    }
+
+    It 'records both counts in the report document' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-nv-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:noVerdict -ReportPath $out -Thresholds $null | Out-Null
+            $doc = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+            "$($doc.compileErrors)/$($doc.runtimeErrors)/$($doc.total)" | Should-Be '1/1/2'
+            @($doc.mutants | ForEach-Object Status) -join ',' | Should-Be 'Killed,Survived,CompileError,RuntimeError'
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'says nothing when every mutant had a verdict' {
+        Get-PSMutationUnscoredLine -Summary ([pscustomobject]@{ CompileErrors = 0; RuntimeErrors = 0 }) | Should-Be ''
+    }
+
+    It 'names <Name>' -ForEach @(
+        @{ Name = 'a parse failure as this module''s defect'; C = 2; R = 0
+            Expected = '  Not in the score: 2 mutant(s) did not parse and were not tested -- a PSMutant defect, please report it.' }
+        @{ Name = 'a run with no verdict'; C = 0; R = 1
+            Expected = '  Not in the score: 1 mutant(s) stopped their run without a verdict.' }
+        @{ Name = 'both, in one line'; C = 1; R = 1
+            Expected = '  Not in the score: 1 mutant(s) did not parse and were not tested -- a PSMutant defect, please report it; 1 mutant(s) stopped their run without a verdict.' }
+    ) {
+        Get-PSMutationUnscoredLine -Summary ([pscustomobject]@{ CompileErrors = $C; RuntimeErrors = $R }) | Should-Be $Expected
+    }
+
+    It 'reaches the summary, as a warning' {
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $script:noVerdict) `
+            -Results $script:noVerdict -High 85 -Low 70 -ReportPath 'r.json'
+        $hit = @($lines | Where-Object { $_.Text -like '*Not in the score:*' })
+        $hit.Count | Should-Be 1
+        $hit[0].Role | Should-Be 'Warn'
+    }
+
+    It 'adds no line to a summary where every mutant had a verdict' {
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $script:mixed) `
+            -Results $script:mixed -High 85 -Low 70 -ReportPath 'r.json'
+        @($lines | Where-Object { $_.Text -like '*Not in the score:*' }).Count | Should-Be 0
     }
 }

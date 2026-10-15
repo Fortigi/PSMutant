@@ -270,7 +270,7 @@ Describe 'b' { It 'runs' { { Get-Flag 2 } | Should -Not -Throw } }
     It 'writes a scoped report the published schema accepts' {
         # And the schema requires changedFiles beside the score, so a reader cannot see the
         # number without seeing what it covered.
-        $schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v2/report.schema.json') -Raw
+        $schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v3/report.schema.json') -Raw
         $text = [System.IO.File]::ReadAllText((Join-Path $script:cf 'reports/r.changed.json'))
         function Test-ScopedSchema { param([string]$Json)
             try { Test-Json -Json $Json -Schema $schema -ErrorAction Stop | Out-Null; return $true }
@@ -445,7 +445,7 @@ Describe 'Test-Flag (added mid-loop)' {
         # threaded through a different call path than the full report's and wiring it in one
         # place and not the other is invisible until someone reads the artifact.
         $first = Get-Content $script:chainPath -Raw | ConvertFrom-Json
-        $first.schemaVersion          | Should-Be 2
+        $first.schemaVersion          | Should-Be 3
         $first.producedBy.module      | Should-Be 'PSMutant'
         $first.producedBy.version     | Should-NotBeEmptyString
         $first.durations.totalSeconds | Should-BeGreaterThan 0
@@ -827,7 +827,7 @@ Describe 'the help a user actually gets' {
 
 
 Describe 'the published report schema' {
-    # schemas/v2/report.schema.json is shipped with the module so a consumer can validate a
+    # schemas/v3/report.schema.json is shipped with the module so a consumer can validate a
     # report without reading this repo's tests. That only means anything if the reports we
     # actually emit satisfy it, which is what this Describe is for -- a schema that has
     # drifted from the writer is worse than none, because it invites a consumer to code
@@ -837,7 +837,7 @@ Describe 'the published report schema' {
     # generatedAt and hands back a [datetime], so a round-tripped object no longer has the
     # string the schema describes. The file is the contract.
     BeforeAll {
-        $script:schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v2/report.schema.json') -Raw
+        $script:schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v3/report.schema.json') -Raw
         $script:fullText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.json'))
         $script:recheckText = [System.IO.File]::ReadAllText((Join-Path $script:proj 'reports/e2e.recheck.json'))
 
@@ -961,17 +961,64 @@ Describe 'Get-Sign' {
         Should-BeFalse -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12))
     }
 
-    It 'refuses a version 1 document, naming the version rather than the field' {
-        # schemaVersion is minimum 2 here, not a const. A v1 report then fails on the version --
-        # the true reason -- instead of on a field it was never supposed to carry, while a later
-        # version still validates as long as it keeps these fields.
+    It 'refuses an older document, naming the version rather than the field' {
+        # schemaVersion is minimum 3 here, not a const. An older report then fails on the version
+        # -- the true reason -- instead of on a field, while a later version still validates as
+        # long as it keeps these fields.
         $doc = $script:fullText | ConvertFrom-Json
-        $doc.schemaVersion = 1
+        $doc.schemaVersion = 2
         Should-BeFalse -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12))
 
-        $doc.schemaVersion = 3
+        $doc.schemaVersion = 4
         Should-BeTrue -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12)) `
-            -Because 'a reader validating against v2 must keep working when a later version records more'
+            -Because 'a reader validating against v3 must keep working when a later version records more'
+    }
+
+    It 'accepts a mutant that timed out, which version 2 rejected (#252)' {
+        # Why version 3 exists. A timed-out mutant has always been written with Status TimedOut,
+        # and v2's Status allowed Killed and Survived only -- so every report with a timeout in it
+        # failed the schema this module shipped. Edited as TEXT, because a parsed and re-written
+        # document no longer carries generatedAt as the string the schema describes.
+        $timed = ([regex]'"Status":\s*"Killed"').Replace($script:fullText, '"Status": "TimedOut"', 1)
+        $timed | Should-NotBe $script:fullText -Because 'the fixture must actually differ, or this asserts nothing'
+        Should-BeTrue -Actual (Test-AgainstSchema -Json $timed)
+        $v2 = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v2/report.schema.json') -Raw
+        $asV2 = $timed -replace '"schemaVersion":\s*3', '"schemaVersion": 2'
+        $refused = $false
+        try { Test-Json -Json $asV2 -Schema $v2 -ErrorAction Stop | Out-Null } catch { $refused = $true }
+        Should-BeTrue -Actual $refused -Because 'the v2 schema is what could not describe a timeout'
+    }
+
+    It 'accepts <Status>, and refuses a status it does not define' -ForEach @(
+        @{ Status = 'CompileError' }
+        @{ Status = 'RuntimeError' }
+    ) {
+        $row = ([regex]'"Status":\s*"Killed"').Replace($script:fullText, "`"Status`": `"$Status`"", 1)
+        Should-BeTrue -Actual (Test-AgainstSchema -Json $row)
+        $unknown = ([regex]'"Status":\s*"Killed"').Replace($script:fullText, '"Status": "Exploded"', 1)
+        Should-BeFalse -Actual (Test-AgainstSchema -Json $unknown)
+    }
+
+    It 'refuses a scored report that omits <Field>' -ForEach @(
+        @{ Field = 'timedOut' }
+        @{ Field = 'compileErrors' }
+        @{ Field = 'runtimeErrors' }
+    ) {
+        # Required beside the score in version 3, for the reason every disclosure here is: a number
+        # cannot be read without what it left out. Removed from a report that is otherwise valid,
+        # so the required rule is the only thing that can refuse it.
+        $doc = $script:fullText | ConvertFrom-Json
+        $doc.PSObject.Properties.Remove($Field)
+        Should-BeFalse -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12))
+    }
+
+    It 'still ships the v2 schema, which is the only thing that can validate a 0.5 or 0.6 report' {
+        $v2 = Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v2/report.schema.json'
+        $parsed = Get-Content $v2 -Raw | ConvertFrom-Json
+        $parsed.properties.schemaVersion.minimum | Should-Be 2
+        # Its $id named the v1 file until version 3 was cut; a schema that claims another's
+        # identity is resolved to the wrong document by anything that caches by $id.
+        $parsed.'$id' | Should-BeLikeString '*/schemas/v2/report.schema.json'
     }
 
     It 'still ships the v1 schema, which is the only thing that can validate an archived report' {

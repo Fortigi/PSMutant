@@ -1840,7 +1840,16 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   fields.
 
   The report's version and the survivor baseline's are independent constants. Bumping one must not
-  re-version the other; a test pins the baseline at 1 while the report says 2.
+  re-version the other; a test pins the baseline at 1 while the report says 3.
+
+  **Widening an ENUM is a version bump too** (v3, #252). A reader validating against the old schema
+  rejects the new value, which is the same "valid document stops being valid" as a new required
+  field. v2's mutant `Status` allowed `Killed | Survived` while the writer had always produced
+  `TimedOut` for a timeout -- so every report with a timeout failed the schema shipped beside it,
+  and no test fed one through `Test-Json`. v3 widened the enum once for everything the open issues
+  needed (`CompileError`, `RuntimeError`, named as mutation-testing-elements names them), so the
+  next status is not another bump. The lesson for the next schema edit: validate a document carrying
+  EVERY value the writer can produce, not only the ones a happy-path fixture happens to contain.
 
 - **`$null | ForEach-Object` runs its body ONCE, and `@( )` does not save you.** Measured all
   three forms: the pipeline iterates **1**, `@($null) | ForEach-Object` iterates **1** because

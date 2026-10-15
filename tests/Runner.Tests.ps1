@@ -126,6 +126,9 @@ Describe 'Get-PSMutationProgressLine' {
         @{ Status = 'Survived'; Glyph = '.'; Role = 'Warn' }
         @{ Status = 'Killed'; Glyph = 'x'; Role = 'Muted' }
         @{ Status = 'TimedOut'; Glyph = 'x'; Role = 'Muted' }
+        # No verdict: neither a survivor's '.' nor a kill's 'x', and worth a reader's eye.
+        @{ Status = 'CompileError'; Glyph = '!'; Role = 'Warn' }
+        @{ Status = 'RuntimeError'; Glyph = '!'; Role = 'Warn' }
     ) {
         # The glyph is how a long run is read at a glance; swapping them would invert the
         # meaning of every line of output while still "reporting progress".
@@ -1871,5 +1874,58 @@ Describe 'Get-PSMutationReloadFault (#249)' {
         $t2 = Put 'tests/b.Tests.ps1' 'using module ../src/M.psm1'
         $f = Get-PSMutationReloadFault -MutateFiles @($script:mod) -TestFiles @($t1, $t2) -Candidates @() -SandboxRoot $script:box
         @($f -split "`n" | Where-Object { $_ -like '  tests/*' }).Count | Should-Be 2
+    }
+}
+
+Describe 'a mutant that does not parse (#252)' {
+    # Parsed before it is written. One that does not parse fails its tests for a reason that has
+    # nothing to do with them, and was scored a kill; now it is recorded CompileError without a
+    # test run, through the same retirement as every other mutant.
+    BeforeEach {
+        $script:brokenFile = Join-Path $TestDrive "broken-$([System.Guid]::NewGuid().ToString('N')).ps1"
+        $script:brokenText = 'function F { if ($x) { 1 } }'
+        Set-Content -LiteralPath $script:brokenFile -Value $script:brokenText -NoNewline
+        # Removes the closing brace of the function: what a statement-deletion operator gone
+        # wrong would leave.
+        $at = $script:brokenText.LastIndexOf('}')
+        $script:brokenCand = [pscustomobject]@{
+            Id = 1; File = $script:brokenFile; Line = 1; Operator = 'BinaryOperator'; Function = 'F'
+            Description = '} -> '; StartOffset = $at; EndOffset = $at + 1; Mutated = ''
+        }
+    }
+
+    It 'is recorded CompileError, with no test run and the file never written' {
+        Mock Start-PSMutantEvaluation { throw 'a mutant that does not parse must not be run' }
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($script:brokenCand) `
+            -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
+        $r[0].Status | Should-Be 'CompileError'
+        @($r[0].KilledBy).Count | Should-Be 0
+        Should-Invoke Start-PSMutantEvaluation -Exactly 0
+        [System.IO.File]::ReadAllText($script:brokenFile) | Should-Be $script:brokenText
+    }
+
+    It 'still runs a mutant that DOES parse' {
+        # The pairing: a guard that refused everything would satisfy the case above.
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $ok = $script:brokenCand.PSObject.Copy()
+        $ok.Mutated = ' }'
+        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($ok) `
+            -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
+        $r[0].Status | Should-Be 'Killed'
+        Should-Invoke Start-PSMutantEvaluation -Exactly 1
+    }
+
+    It 'is collected by its verdict, without asking a runspace' {
+        Mock Receive-PSMutationJob { throw 'must not be asked' }
+        Mock Stop-PSMutationJob { throw 'must not be asked' }
+        $job = New-PSMutationDecidedJob -Candidate $script:brokenCand -Source $script:brokenCand -Index 0 -WorkerId 0 `
+            -OriginalContent $script:brokenText -Status 'CompileError'
+        $job.Async.IsCompleted | Should-BeTrue
+        $job.Async.AsyncWaitHandle.WaitOne(0) | Should-BeTrue
+        Should-BeNull -Actual $job.Shell
+        (Complete-PSMutantEvaluation -Job $job).Status | Should-Be 'CompileError'
+        # Expired or not, a decided job's verdict stands: there is nothing running to stop.
+        (Complete-PSMutantEvaluation -Job $job -Expired).Status | Should-Be 'CompileError'
     }
 }
