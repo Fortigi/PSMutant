@@ -33,6 +33,10 @@ BeforeAll {
         'PSMutation.Sarif.ps1', 'PSMutation.Recheck.ps1', 'Invoke-PSMutation.ps1') {
         . (Join-Path $src $f)
     }
+    # The unmutated suite check (#248) runs real suites in real runspaces, and every run here is
+    # driven with stub candidates and a mocked loop. Stubbed for the whole file; the tests that are
+    # ABOUT it say so and assert it.
+    Mock Assert-PSMutationWorkerGreen { }
 }
 
 
@@ -225,6 +229,19 @@ Describe 'Invoke-PSMutation' {
         $doc = Get-Content (Join-Path $script:root 'reports/run.json') -Raw | ConvertFrom-Json
         $doc.PSObject.Properties.Name | Should-NotContainCollection 'mutationScore'
         $doc.PSObject.Properties.Name | Should-NotContainCollection 'thresholds'
+    }
+
+    It 'proves the suites green where the mutants run, BEFORE the loop and outside its partial report' {
+        # A refusal is not an interruption. Inside the loop's try it would write a partial report
+        # saying "Interrupted after 0 of N", which is the wrong account of a run nothing was
+        # evaluated in -- so the check sits before that try, and the loop never starts.
+        Mock Assert-PSMutationWorkerGreen { throw 'not green in a clean runspace' }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } |
+            Should-Throw -ExceptionMessage 'not green in a clean runspace'
+        Should-Invoke Assert-PSMutationWorkerGreen -Exactly 1 -ParameterFilter { @($Candidates).Count -eq 2 -and $TimeoutSeconds -gt 0 }
+        Should-Invoke Invoke-PSMutationLoop -Exactly 0
+        Test-Path (Join-Path $script:root 'reports/run.json') | Should-BeFalse
+        Should-Invoke Remove-PSMutationSandbox -Exactly 1
     }
 
     It 'writes the ORDINARY report when a run legitimately evaluates nothing' {

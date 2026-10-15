@@ -348,6 +348,10 @@ function Invoke-PSMutationRun {
         # $done is the flag rather than testing $results, because the loop returning normally
         # with zero rows is a legitimate outcome (a config whose files contribute no covered
         # candidates) and must write the ordinary empty report, not a partial one.
+        # Before the try that writes a partial report, because a refusal is not an interruption:
+        # nothing was evaluated, and "Interrupted after 0 of N" would say otherwise (#248).
+        Assert-PSMutationWorkerGreen -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests `
+            -TimeoutSeconds $ctx.TimeoutSeconds -SandboxRoot $sandbox -WorkerSandbox $workerSandbox
         $partial = [System.Collections.Generic.List[object]]::new()
         $done = $false
         try {

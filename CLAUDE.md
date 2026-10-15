@@ -310,6 +310,21 @@ Four things about it are easy to undo:
   estate pin and every compatibility leg -- has the property, so the false arm would otherwise
   never execute.
 
+**The baseline proves the suite green in the CALLER'S session; `Assert-PSMutationWorkerGreen` proves
+it green where the mutants run** (#248). They are different places: the session carries its modules,
+global functions, `$ErrorActionPreference` and strict mode, and a worker runspace has only Pester. A
+suite green in the first and red in the second scores every mutant Killed. So before the loop, each
+distinct covering suite runs once unmutated in every worker -- through `Get-PSMutationSuiteShell`, the
+same shell preparation a mutant uses, so the two cannot drift. Three things about it:
+
+- **It is called BEFORE the loop, by both callers, not from inside it.** A throw inside the loop is an
+  interruption to `Invoke-PSMutationRun`, which writes a partial report saying "Interrupted after 0 of
+  N" -- the wrong account of a run that was refused.
+- **Every worker, not one.** Each has its own sandbox copy, and a suite red in one copy kills that
+  worker's mutants only. The workers check in parallel, so it costs one pass, not one per worker.
+- **The baseline stays in the session.** It is what measures coverage, and moving it into a runspace
+  would be a different change with a different cost; the check only has to answer pass or fail.
+
 **`Get-PSMutationRunspaceError` lives in `PSMutation.Pester.ps1`, not `PSMutation.Runner.ps1`.**
 Reading a child runspace's error stream is this file's domain. The first draft of the warm runspace
 left it in Runner and called upward, making a cycle -- and coverage, the suite and the mutation gate

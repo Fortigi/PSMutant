@@ -12,6 +12,20 @@ gone is now the outcome the sweep wanted; one that fails while the item remains 
 It mattered to this module's own gate too: with several workers, mutants of the sandbox code ran
 the sweep's tests side by side, and a covering run that failed on the race scored its mutant Killed.
 
+**A suite that is green only because of your session is refused, instead of scoring 100%.**
+The baseline runs your suite in the session you call `Invoke-PSMutation` from, with whatever that
+session has loaded: modules, global functions and variables, `$ErrorActionPreference`, strict mode,
+`$PSDefaultParameterValues`. Each mutant runs in a fresh runspace that has only Pester. A test that
+leaned on the session passed the baseline and failed for every mutant, for a reason that had nothing
+to do with the mutant, and every mutant was scored Killed: a perfect score with nothing to flag it.
+
+Before the first mutant, every covering suite the run will use now runs once, unmutated, in every
+worker's runspace and sandbox -- the same shell and script a mutant gets. A suite that fails there,
+returns nothing, or overruns the per-mutant timeout refuses the run, naming the suite, the worker and
+the failed tests. The workers check in parallel, so the cost is about one pass over the covering
+suites. A `-RecheckFrom` run checks only the suites its survivors use. If a run of yours is now
+refused, make the failing test load what it needs itself, in its own `BeforeAll`.
+
 ## [0.6.0] - 2026-10-10
 
 ### For consumers

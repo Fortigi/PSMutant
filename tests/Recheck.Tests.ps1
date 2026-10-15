@@ -17,6 +17,11 @@ BeforeAll {
     . (Join-Path $src 'PSMutation.Output.ps1')
     . (Join-Path $src 'PSMutation.Recheck.ps1')
 
+    # The unmutated suite check (#248) runs real suites in real runspaces, and every run here is
+    # driven with stub candidates and a mocked loop. Stubbed for the whole file; the tests that are
+    # ABOUT it say so and assert it.
+    Mock Assert-PSMutationWorkerGreen { }
+
     function Get-FakeReport {
         param(
             [hashtable]$SourceHashes = @{ 'src/a.ps1' = 'hash-a' },
@@ -480,6 +485,8 @@ Describe 'Invoke-PSMutationRecheckRun' {
         # The narrowed set is what makes a recheck cheap; passing all candidates
         # through would just be a full run wearing a recheck's label.
         Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { @($Candidates).Count -eq 2 }
+        # The check proves only the suites the recheck will run: the TARGETS, not every candidate.
+        Should-Invoke Assert-PSMutationWorkerGreen -Exactly 1 -ParameterFilter { @($Candidates).Count -eq 2 -and $TimeoutSeconds -eq 5 }
         # The prior survivor COUNT comes from the report, not from the loop results.
         Should-Invoke Write-PSMutationRecheckReport -Exactly 1 -ParameterFilter { $PriorSurvivorCount -eq 2 }
         # -Quiet reaches BOTH emitters -- the progress line and the closing summary -- and
