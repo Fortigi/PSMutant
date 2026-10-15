@@ -546,6 +546,11 @@ archived report says `schemaVersion: 2` or `1` and only its own schema can valid
 baseline it was derived from, so a suite drifting toward its bound is visible before it
 crosses.
 
+Beside `mutationScore` sits **`totalMutationScore`**: the same kills over every mutant the operators
+produced, with the uncovered ones counted as not killed, as Stryker's total is. `mutationScore` says
+how well the tests check the code they run; the total says how much of the code they check at all.
+The summary prints it when the two differ. The thresholds gate on `mutationScore`.
+
 A full report also discloses what its score does **not** answer for: `skippedAsUncovered`,
 `filesWithNoMutants` (files whose candidates the coverage filter removed entirely) and
 `filesWithNoCandidate` (files no operator matched at all). The last two are the two shapes of a

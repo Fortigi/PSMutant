@@ -102,7 +102,13 @@ tests mapped to its own file. On a repo with many test files that let a non-term
 for minutes before it was stopped. Each covering suite''s time is now measured once, unmutated, in
 the worker runspaces before the first mutant, and sizes the deadline of the files it covers, with
 the same factor, worker multiplier and floor. `durations.perMutantTimeoutSeconds` reports the
-largest deadline given.'
+largest deadline given.
+
+**The report carries a total score beside the covered-code score.** `mutationScore` leaves out
+mutants on lines no test ran, so it says how well the tests check the code they run and nothing
+about the code they never reach. `totalMutationScore` counts those uncovered mutants as not killed,
+as Stryker''s total does, and the summary prints it whenever the two differ. The thresholds still
+gate on `mutationScore`.'
         }
     }
 }

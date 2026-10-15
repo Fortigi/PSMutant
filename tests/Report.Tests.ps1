@@ -572,7 +572,7 @@ Describe 'the contract a consumer actually depends on' {
             (Get-Content $out -Raw | ConvertFrom-Json).PSObject.Properties.Name |
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
-                    'mutationScore', 'total', 'killed', 'survived', 'timedOut', 'compileErrors', 'runtimeErrors',
+                    'mutationScore', 'totalMutationScore', 'total', 'killed', 'survived', 'timedOut', 'compileErrors', 'runtimeErrors',
                     'declaredEquivalent', 'filesMutated', 'killersComplete', 'testFiles', 'perFile', 'skippedAsUncovered', 'filesWithNoMutants',
                     'filesWithNoCandidate', 'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
@@ -777,7 +777,8 @@ Describe 'a score answers for what the coverage filter removed' {
         $none = [pscustomobject]@{ Skipped = 0; FilesWithNoMutants = @() }
         $with = @(Get-PSMutationSummaryLine -Summary $summary -Results $script:mixed -High 85 -Low 70 -Exclusion ([pscustomobject]@{ Skipped = 2; FilesWithNoMutants = @() }))
         $without = @(Get-PSMutationSummaryLine -Summary $summary -Results $script:mixed -High 85 -Low 70 -Exclusion $none)
-        ($with.Count - $without.Count) | Should-Be 1
+        # TWO since #264: the exclusion line and the total score it implies, both absent without one.
+        ($with.Count - $without.Count) | Should-Be 2
     }
 
     It 'names a file that produced exactly one candidate and kept none' {
@@ -2169,5 +2170,43 @@ Describe 'mutants with no verdict (#252, schema v3)' {
         # Nor an EMPTY line where it would have gone: adding the line unconditionally would put a
         # blank warning into every summary, which the check above cannot see.
         @($lines | Where-Object { [string]::IsNullOrEmpty($_.Text) }).Count | Should-Be 0
+    }
+}
+
+Describe 'the total score beside the covered-code one (#264)' {
+    It 'counts uncovered mutants as not killed' {
+        # 3 killed of 4 covered, 2 more uncovered: 75% covered, 50% total.
+        Get-PSMutationTotalScore -Summary ([pscustomobject]@{ Killed = 3; Total = 4 }) -Skipped 2 | Should-Be 50
+    }
+
+    It 'equals the covered-code score when coverage removed nothing' {
+        Get-PSMutationTotalScore -Summary ([pscustomobject]@{ Killed = 3; Total = 4 }) -Skipped 0 | Should-Be 75
+    }
+
+    It 'is 0, not a division by zero, over no mutants at all' {
+        Get-PSMutationTotalScore -Summary ([pscustomobject]@{ Killed = 0; Total = 0 }) -Skipped 0 | Should-Be 0
+    }
+
+    It 'shows a line only when the two numbers differ' {
+        $s = [pscustomobject]@{ Killed = 3; Total = 4 }
+        Get-PSMutationTotalScoreLine -Summary $s -Exclusion ([pscustomobject]@{ Skipped = 2 }) |
+            Should-Be '  Total score: 50%, counting the 2 uncovered mutant(s) as not killed'
+        Get-PSMutationTotalScoreLine -Summary $s -Exclusion ([pscustomobject]@{ Skipped = 0 }) | Should-Be ''
+        Get-PSMutationTotalScoreLine -Summary $s -Exclusion $null | Should-Be ''
+    }
+
+    It 'reaches the summary and the report' {
+        $exclusion = [pscustomobject]@{ Skipped = 2; FilesWithNoMutants = @(); FilesWithNoCandidate = @() }
+        $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $script:mixed) `
+            -Results $script:mixed -High 85 -Low 70 -ReportPath 'r.json' -Exclusion $exclusion
+        $expected = Get-PSMutationTotalScore -Summary (Get-PSMutationScore -Results $script:mixed) -Skipped 2
+        @($lines | Where-Object { $_.Text -like "  Total score: $expected%, counting the 2 uncovered*" }).Count | Should-Be 1
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-total-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Exclusion $exclusion | Out-Null
+            (Get-Content -LiteralPath $out -Raw | ConvertFrom-Json).totalMutationScore | Should-Be $expected
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
