@@ -1844,6 +1844,17 @@ Describe 'Get-PSMutationReloadFault (#249)' {
         $f | Should-NotBeLikeString '*(outside)*'
     }
 
+    It 'finds an Add-Type call inside a function body, where it usually lives' {
+        # Nested script blocks are searched: a function body is one, and a search of the top level
+        # alone would miss every Add-Type that is not at the top of the file.
+        $src = "function Initialize-T {`n    Add-Type -TypeDefinition 'public class T249n { }'`n}"
+        $m = Put 'src/nested.ps1' $src
+        $at = $src.IndexOf("'public")
+        $c = [pscustomobject]@{ File = $m; Line = 2; StartOffset = $at; EndOffset = $at + 5; Description = 'nested' }
+        (Get-PSMutationReloadFault -MutateFiles @($m) -TestFiles @() -Candidates @($c) -SandboxRoot $script:box) |
+            Should-BeLikeString '*src/nested.ps1:2 has a mutant inside an Add-Type call (nested)*'
+    }
+
     It 'counts a mutant at either edge of the Add-Type call as inside' {
         # The two comparisons are inclusive: a mutant spanning the whole call still changes it.
         $src = "Add-Type -TypeDefinition 'x'"
