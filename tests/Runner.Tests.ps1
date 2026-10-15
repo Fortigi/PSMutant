@@ -2009,3 +2009,17 @@ Describe 'Get-PSMutationFileSecond (#253)' {
         "$($by['a.ps1'])/$($by['b.ps1'])/$($by['c.ps1'])" | Should-Be '2.5/2.5/9'
     }
 }
+
+Describe 'Wait-PSMutationWorker wakes for the soonest OWN deadline (#253)' {
+    It 'looks again when a mutant''s own deadline runs out, not after the run-wide one' {
+        # 0.9s into a 1s deadline of its own, under a run-wide one of 30s, and still running: the
+        # scheduler must be back within a fraction of a second to cut it off, not 30 -- or 1.9,
+        # which is what reading the deadline the wrong way round would give.
+        $cand = [pscustomobject]@{ File = $script:stubFile }
+        $job = StubJob -Source $cand -Completed $false -Seconds 0.9 -TimeoutSeconds 1
+        $sched = [pscustomobject]@{ InFlight = [object[]]@($job) }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Wait-PSMutationWorker -Schedule $sched -Context ([pscustomobject]@{ TimeoutSeconds = 30 })
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 0.8
+    }
+}
