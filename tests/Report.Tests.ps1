@@ -2166,5 +2166,8 @@ Describe 'mutants with no verdict (#252, schema v3)' {
         $lines = Get-PSMutationSummaryLine -Summary (Get-PSMutationScore -Results $script:mixed) `
             -Results $script:mixed -High 85 -Low 70 -ReportPath 'r.json'
         @($lines | Where-Object { $_.Text -like '*Not in the score:*' }).Count | Should-Be 0
+        # Nor an EMPTY line where it would have gone: adding the line unconditionally would put a
+        # blank warning into every summary, which the check above cannot see.
+        @($lines | Where-Object { [string]::IsNullOrEmpty($_.Text) }).Count | Should-Be 0
     }
 }
