@@ -419,6 +419,27 @@ function Select-PSMutationCandidate {
 # outside this set is refused rather than scored -- see Get-PSMutationVerdict.
 $script:PSMutationKnownOutcomes = @('Passed', 'Failed', 'TimedOut')
 
+function Get-PSMutationSuiteShell {
+    # One worker's warm shell, loaded with the child script and its arguments but NOT started.
+    #
+    # Shared by a mutant and by the green check before the loop, so the check runs the suite
+    # exactly the way a mutant will: same runspace, same script, same parameters. Not started,
+    # because a mutant must write its file between preparing the shell and invoking it -- see
+    # Start-PSMutantEvaluation for why that order is load-bearing.
+    [OutputType([powershell])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [int]$WorkerId,
+        [Parameter(Mandatory)] [string[]]$Tests,
+        [switch]$RecordAllKillers
+    )
+    $ps = Get-PSMutationWarmShell -WorkerId $WorkerId
+    $ps.Commands.Clear()
+    [void]$ps.AddScript((Get-PSMutationWarmPesterScript).ToString()).AddParameter('tests', $Tests).
+        AddParameter('recordAllKillers', [bool]$RecordAllKillers)
+    return $ps
+}
+
 function Start-PSMutantEvaluation {
     <#
     .SYNOPSIS
@@ -459,10 +480,7 @@ function Start-PSMutantEvaluation {
         [Parameter(Mandatory)] [int]$WorkerId,
         [switch]$RecordAllKillers
     )
-    $ps = Get-PSMutationWarmShell -WorkerId $WorkerId
-    $ps.Commands.Clear()
-    [void]$ps.AddScript((Get-PSMutationWarmPesterScript).ToString()).AddParameter('tests', $CoveringTests).
-        AddParameter('recordAllKillers', [bool]$RecordAllKillers)
+    $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $CoveringTests -RecordAllKillers:$RecordAllKillers
     [System.IO.File]::WriteAllText($Candidate.File, $MutatedContent)
     # The clock starts at BeginInvoke rather than when the candidate was queued, so a mutant's
     # measured seconds are what it spent running and not what it spent waiting for a worker.
@@ -986,6 +1004,137 @@ function Complete-PSMutationRetirement {
             -ElapsedSeconds $Context.RunClock.Elapsed.TotalSeconds -DeadlineSeconds $Context.DeadlineSeconds `
             -Index $Schedule.Retired -Total $Context.Total
         if ($fault) { throw $fault }
+    }
+}
+
+function Get-PSMutationSuiteGroup {
+    <#
+    .SYNOPSIS
+        The distinct covering suites a candidate set will run, each once, in first-use order. Pure.
+    .DESCRIPTION
+        Several mutate files can share one suite, and every candidate of a file shares its file's,
+        so the green check would otherwise run the same tests once per candidate. Keyed on the
+        joined paths rather than on the file, because two files mapped to the same tests are one
+        suite to prove and not two.
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
+        [Parameter(Mandatory)] [hashtable]$TestsByFile,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$AllTests
+    )
+    $seen = @{}
+    $groups = [System.Collections.Generic.List[object]]::new()
+    foreach ($c in $Candidates) {
+        $suite = Get-PSMutationCoveringSuite -File $c.File -TestsByFile $TestsByFile -AllTests $AllTests
+        $key = $suite -join "`n"
+        if (-not $seen.ContainsKey($key)) {
+            $seen[$key] = $true
+            $groups.Add($suite)
+        }
+    }
+    return , $groups.ToArray()
+}
+
+function Get-PSMutationWorkerGreenFault {
+    <#
+    .SYNOPSIS
+        What one unmutated run of a covering suite, in a worker's runspace, says about the run. Pure.
+    .DESCRIPTION
+        $null when the suite passed there. Otherwise the refusal, naming the suite and the worker,
+        because "the suite is not green" is false in the session the user is looking at -- the
+        baseline just said it was -- and the reader needs to know where else it was run.
+    .OUTPUTS
+        [string] the refusal, or $null.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Run,
+        [Parameter(Mandatory)] [string[]]$Suite,
+        [Parameter(Mandatory)] [int]$WorkerId,
+        [Parameter(Mandatory)] [int]$TimeoutSeconds
+    )
+    if ($Run.Result -eq 'Passed') { return $null }
+    $where = "$($Suite -join ', ') in worker $WorkerId"
+    if ($Run.Result -eq 'TimedOut') {
+        return "The unmutated covering suite did not finish within the per-mutant timeout of $TimeoutSeconds s: $where. Every mutant it covers would time out, and a timeout scores with the kills."
+    }
+    # Named, and capped at ten, as the baseline guard does: a suite that depends on the session
+    # usually fails every test it has, and the first name is the one most likely to explain them.
+    $named = @($Run.Killers)
+    $failed = ' No test carried the error, so a BeforeAll failed: run the file alone in a new session to see it.'
+    if ($named.Count -gt 0) {
+        $more = ''
+        if ($named.Count -gt 10) { $more = " (and $($named.Count - 10) more)" }
+        $failed = " Failed: $(@($named | Select-Object -First 10) -join '; ')$more."
+    }
+    return ("The covering suite passes in this session but not in a clean runspace, which is where every mutant runs: $where.$failed " +
+        'It depends on something the calling session provides -- a loaded module, a global variable or function, ' +
+        '$ErrorActionPreference, strict mode, $PSDefaultParameterValues -- and every mutant it covers would be scored ' +
+        'Killed by that failure rather than by a test.')
+}
+
+function Assert-PSMutationWorkerGreen {
+    <#
+    .SYNOPSIS
+        Run every covering suite the candidates will use, unmutated, in every worker, and refuse the
+        run if any is not green there (#248).
+    .DESCRIPTION
+        The baseline runs in the CALLER'S session: its loaded modules, its global functions and
+        variables, its $ErrorActionPreference and strict mode. A mutant runs in a worker runspace
+        that has only Pester. A suite green only because of the first is red in the second for a
+        reason that has nothing to do with any mutant, and every mutant is then scored Killed -- a
+        perfect score that nothing flags. Stryker's initial test run exists for the same reason.
+
+        Through the SAME shell, script and sandbox a mutant uses, so passing here means what a
+        mutant's Passed would mean. Every worker, not one: each has its own sandbox copy, and a
+        suite red in one copy would kill that worker's mutants only. The workers run in parallel,
+        so the cost is about one pass over the covering suites -- not one per worker.
+
+        Every job is collected before any fault is raised, so no runspace is left mid-run when the
+        refusal unwinds the run.
+
+        Called by the two callers of Invoke-PSMutationLoop, just before it, rather than from inside
+        it. A throw inside the loop is an interruption to its callers, which write a partial report
+        and say "Interrupted after 0 of N" -- the wrong account of a run that was refused.
+    #>
+    [OutputType([void])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
+        [Parameter(Mandatory)] [hashtable]$TestsByFile,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$AllTests,
+        [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        [Parameter(Mandatory)] [string]$SandboxRoot,
+        # The extra sandboxes, as Invoke-PSMutationLoop takes them: worker 0 is the primary.
+        [AllowEmptyCollection()] [string[]]$WorkerSandbox = @()
+    )
+    $roots = [string[]]@(@($SandboxRoot) + @($WorkerSandbox))
+    foreach ($suite in (Get-PSMutationSuiteGroup -Candidates $Candidates -TestsByFile $TestsByFile -AllTests $AllTests)) {
+        $jobs = @(for ($w = 0; $w -lt $roots.Count; $w++) {
+                $root = $roots[$w]
+                $tests = [string[]]@($suite | ForEach-Object {
+                        Get-PSMutationWorkerPath -Path $_ -SandboxRoot $SandboxRoot -WorkerRoot $root
+                    })
+                # Every failing test is wanted here, not the first: this is a refusal the reader
+                # has to act on, and it is paid once per run rather than once per mutant.
+                $ps = Get-PSMutationSuiteShell -WorkerId $w -Tests $tests -RecordAllKillers
+                [pscustomobject]@{ WorkerId = $w; Shell = $ps; Async = $ps.BeginInvoke() }
+            })
+        # Named as the report names files, relative to the source root: the sandbox is a temp
+        # directory the reader has never seen, and which copy a worker ran the worker number says.
+        $shown = [string[]]@($suite | ForEach-Object { ConvertFrom-PSMutationSandboxPath -Path $_ -SandboxRoot $SandboxRoot })
+        $faults = foreach ($job in $jobs) {
+            $done = $job.Async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))
+            $run = $done ? (Receive-PSMutationJob -Job $job) : (Stop-PSMutationJob -Job $job)
+            Get-PSMutationWorkerGreenFault -Run $run -Suite $shown -WorkerId $job.WorkerId -TimeoutSeconds $TimeoutSeconds
+        }
+        # A passing job yields $null, which a foreach statement still collects -- so the first
+        # FAULT is asked for, not the first element.
+        $first = @($faults | Where-Object { $_ })[0]
+        if ($first) { throw $first }
     }
 }
 

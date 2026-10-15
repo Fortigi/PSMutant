@@ -1634,3 +1634,144 @@ Describe 'the worker pool the loop is given' {
             Should-BeCollection @((Split-Path $script:fixture -Leaf))
     }
 }
+
+Describe 'Get-PSMutationSuiteGroup' {
+    It 'yields each distinct suite once, in the order candidates first use it' {
+        # Two files mapped to the same tests are ONE suite to prove, and every candidate of a file
+        # shares its file's -- so without the dedupe the check would run a suite once per mutant.
+        $c = @(
+            [pscustomobject]@{ File = 'b.ps1' }, [pscustomobject]@{ File = 'a.ps1' },
+            [pscustomobject]@{ File = 'b.ps1' }, [pscustomobject]@{ File = 'c.ps1' }
+        )
+        $map = @{ 'a.ps1' = @('a.Tests.ps1'); 'b.ps1' = @('b.Tests.ps1', 'x.Tests.ps1'); 'c.ps1' = @('a.Tests.ps1') }
+        $groups = Get-PSMutationSuiteGroup -Candidates $c -TestsByFile $map -AllTests @('all.Tests.ps1')
+        (@($groups | ForEach-Object { $_ -join '+' }) -join ' | ') | Should-Be 'b.Tests.ps1+x.Tests.ps1 | a.Tests.ps1'
+    }
+
+    It 'falls back to the whole suite for an unmapped file, as a mutant of it would' {
+        $groups = Get-PSMutationSuiteGroup -Candidates @([pscustomobject]@{ File = 'z.ps1' }) -TestsByFile @{} `
+            -AllTests @('one.Tests.ps1', 'two.Tests.ps1')
+        (@($groups | ForEach-Object { $_ -join '+' }) -join ' | ') | Should-Be 'one.Tests.ps1+two.Tests.ps1'
+    }
+
+    It 'yields nothing for no candidates' {
+        # Not wrapped in @(): the result is comma-returned, and @() would count the empty array as one.
+        (Get-PSMutationSuiteGroup -Candidates @() -TestsByFile @{} -AllTests @('t.ps1')).Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationWorkerGreenFault' {
+    It 'says nothing about a suite that passed' {
+        Should-BeNull -Actual (Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Passed'; Killers = @() }) `
+                -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5)
+    }
+
+    It 'names the suite, the worker and the failed tests, and what the session may have provided' {
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @('A.one', 'A.two') }) `
+            -Suite @('tests/a.Tests.ps1', 'tests/b.Tests.ps1') -WorkerId 2 -TimeoutSeconds 5
+        # Anchored at both ends, so a broken concatenation -- which QUOTES the text so far -- cannot match.
+        $f | Should-BeLikeString 'The covering suite passes in this session but not in a clean runspace*'
+        $f | Should-BeLikeString '*: tests/a.Tests.ps1, tests/b.Tests.ps1 in worker 2. Failed: A.one; A.two. It depends on*'
+        $f | Should-BeLikeString '*$ErrorActionPreference, strict mode, $PSDefaultParameterValues*'
+        $f | Should-BeLikeString '*scored Killed by that failure rather than by a test.'
+    }
+
+    It 'caps the names at ten and counts the rest' {
+        $eleven = @(1..11 | ForEach-Object { "T.$_" })
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = $eleven }) `
+            -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
+        $f | Should-BeLikeString '*Failed: T.1; T.2; T.3; T.4; T.5; T.6; T.7; T.8; T.9; T.10 (and 1 more). It*'
+    }
+
+    It 'names exactly ten without counting a remainder' {
+        # The boundary: ten names is the cap, not past it.
+        $ten = @(1..10 | ForEach-Object { "T.$_" })
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = $ten }) `
+            -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
+        $f | Should-BeLikeString '*Failed: T.1;*; T.10. It*'
+        $f | Should-NotBeLikeString '*more)*'
+    }
+
+    It 'points at a BeforeAll when no test carried the error' {
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @() }) `
+            -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
+        $f | Should-BeLikeString '*in worker 0. No test carried the error, so a BeforeAll failed: run the file alone in a new session to see it. It depends on*'
+    }
+
+    It 'says an unmutated suite that overran would time out every mutant' {
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'TimedOut'; Killers = @() }) `
+            -Suite @('a.Tests.ps1') -WorkerId 1 -TimeoutSeconds 7
+        $f | Should-Be 'The unmutated covering suite did not finish within the per-mutant timeout of 7 s: a.Tests.ps1 in worker 1. Every mutant it covers would time out, and a timeout scores with the kills.'
+    }
+}
+
+Describe 'the unmutated suite, in every worker, before any mutant' {
+    # Real worker runspaces with Pester really imported, running stub child scripts -- the same
+    # shape as "a worker's child runspace" above. The stub decides its verdict from the paths it
+    # was handed, which is what shows each worker got ITS OWN re-rooted copy of the suite.
+    BeforeAll {
+        $script:primary = Join-Path $TestDrive 'primary'
+        $script:second = Join-Path $TestDrive 'second'
+        New-Item -ItemType Directory -Path (Join-Path $script:primary 'tests'), (Join-Path $script:second 'tests') -Force | Out-Null
+        $script:greenCand = @(
+            [pscustomobject]@{ File = (Join-Path $script:primary 'src/a.ps1') },
+            [pscustomobject]@{ File = (Join-Path $script:primary 'src/b.ps1') }
+        )
+        $script:greenMap = @{
+            (Join-Path $script:primary 'src/a.ps1') = @(Join-Path $script:primary 'tests/a.Tests.ps1')
+            (Join-Path $script:primary 'src/b.ps1') = @(Join-Path $script:primary 'tests/b.Tests.ps1')
+        }
+        function Invoke-GreenForTest {
+            param([int]$TimeoutSeconds = 30, [switch]$OneWorker)
+            $extra = $OneWorker ? @() : @($script:second)
+            Assert-PSMutationWorkerGreen -Candidates $script:greenCand -TestsByFile $script:greenMap -AllTests @() `
+                -TimeoutSeconds $TimeoutSeconds -SandboxRoot $script:primary -WorkerSandbox $extra
+        }
+    }
+    AfterEach { Close-PSMutationWarmRunspacePool }
+
+    It 'passes when every suite is green in every worker' {
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
+        Should-BeNull -Actual (Invoke-GreenForTest)
+    }
+
+    It 'refuses a suite red in the PRIMARY worker, naming it and the failed tests' {
+        Mock Get-PSMutationWarmPesterScript {
+            'param($tests, $recordAllKillers) [pscustomobject]@{ Result = ($tests -like "*primary*b.Tests.ps1") ? "Failed" : "Passed"; Killers = @("B.needs the session") }'
+        }
+        # Relative to the source root, as the report names files -- not the temp sandbox path.
+        { Invoke-GreenForTest } | Should-Throw -ExceptionMessage '*runs: tests/b.Tests.ps1 in worker 0. Failed: B.needs the session.*'
+    }
+
+    It 'refuses a suite red only in ANOTHER worker''s sandbox, after a worker where it passed' {
+        # Every worker, not one: a suite red in one copy kills that worker's mutants only. And the
+        # fault comes from the SECOND job, after a passing first -- so the first fault is found
+        # past the empty answer a green worker gives.
+        Mock Get-PSMutationWarmPesterScript {
+            'param($tests, $recordAllKillers) [pscustomobject]@{ Result = ($tests -like "*second*a.Tests.ps1") ? "Failed" : "Passed"; Killers = @("A.copy") }'
+        }
+        # Named as the PRIMARY copy is: which sandbox a worker ran is scheduling, and the worker
+        # number says it.
+        { Invoke-GreenForTest } | Should-Throw -ExceptionMessage '*runs: tests/a.Tests.ps1 in worker 1. Failed: A.copy.*'
+    }
+
+    It 'asks for EVERY failing test, not the first' {
+        # Paid once per run, and read by a person who has to act on it.
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Failed"; Killers = @("all=$recordAllKillers") }' }
+        { Invoke-GreenForTest -OneWorker } | Should-Throw -ExceptionMessage '*Failed: all=True.*'
+    }
+
+    It 'refuses a suite that overruns the per-mutant timeout, and discards the runspace it stopped' {
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) Start-Sleep -Seconds 30' }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        { Invoke-GreenForTest -TimeoutSeconds 1 -OneWorker } | Should-Throw -ExceptionMessage '*did not finish within the per-mutant timeout of 1 s*'
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 20
+        $script:PSMutationWarmShell.ContainsKey(0) | Should-BeFalse
+    }
+
+    It 'runs nothing for no candidates' {
+        Mock Get-PSMutationSuiteShell { throw 'must not run' }
+        Should-BeNull -Actual (Assert-PSMutationWorkerGreen -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
+                -TimeoutSeconds 5 -SandboxRoot $script:primary)
+    }
+}

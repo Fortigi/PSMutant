@@ -510,6 +510,36 @@ Describe 'already broken' { It 'fails' { $true | Should -BeFalse } }
         finally { Remove-Item $bad -Force -ErrorAction SilentlyContinue }
     }
 
+    It 'refuses a suite that is green only because of the calling session, before any mutant runs (#248)' {
+        # The baseline runs in THIS session; a mutant runs in a runspace with only Pester. A test
+        # that leans on a function this session defines passes the first and fails the second, so
+        # every mutant would be scored Killed by the missing function -- a 100% nothing flags.
+        $leaning = Join-Path $script:proj 'tests/session.Tests.ps1'
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'calc.ps1') }
+Describe 'leans on the session' { It 'pos' { Get-PSMutE2ESessionOnly | Should -Be 'here'; Get-Sign 5 | Should -Be 'pos' } }
+'@ | Set-Content $leaning -Encoding utf8
+        function global:Get-PSMutE2ESessionOnly { 'here' }
+        try {
+            $cfg = [ordered]@{
+                sandboxSubtrees = @('src', 'tests')
+                mutate          = @('src/calc.ps1')
+                tests           = @{ 'src/calc.ps1' = @('tests/session.Tests.ps1') }
+                reportPath      = 'reports/session.json'
+            }
+            $p = Join-Path $script:proj 'mutation.session.json'
+            $cfg | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
+            { Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet } |
+                Should-Throw -ExceptionMessage '*passes in this session but not in a clean runspace, which is where every mutant runs: tests/session.Tests.ps1 in worker 0. Failed: pos.*'
+            # Refused, not interrupted: no report of any kind, partial or otherwise.
+            Test-Path (Join-Path $script:proj 'reports/session.json') | Should-BeFalse
+        }
+        finally {
+            Remove-Item function:global:Get-PSMutE2ESessionOnly -ErrorAction SilentlyContinue
+            Remove-Item $leaning, $p -Force -ErrorAction SilentlyContinue
+        }
+    }
+
     It 'prints its progress and summary when not run with -Quiet' {
         # -Quiet is what every other test here uses, so without this the entire
         # console layer -- per-mutant progress and the closing summary -- ships

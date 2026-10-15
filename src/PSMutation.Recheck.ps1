@@ -607,6 +607,10 @@ function Invoke-PSMutationRecheckRun {
     # counts-only report and re-running it is cheap -- but the loop takes the list rather than
     # owning one, so there is nowhere else for the rows to go.
     $rows = [System.Collections.Generic.List[object]]::new()
+    # Over the TARGETS, not the whole candidate set: only the suites the recheck will run need to
+    # be proven green where the mutants run (#248).
+    Assert-PSMutationWorkerGreen -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
+        -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox
     $results = Invoke-PSMutationLoop -Candidates $targets -Sink $rows -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
         -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox -Quiet:$Quiet
     $recheckPath = Get-PSMutationRecheckReportPath -ReportPath $ReportPath

@@ -352,6 +352,11 @@ a 100% resting on a dozen declarations can never be mistaken for one that killed
    is never touched. The sandbox is created under a name carrying 128 bits of randomness, and
    a path that already exists is refused rather than cleared: temp is world-writable on a
    shared machine, and a predictable name is one another local user can occupy first.
+
+   Before the first mutant, each covering suite runs once, unmutated, where the mutants will
+   run: a fresh runspace per worker that has only Pester, not your session's modules, global
+   functions or preferences. A suite green in your session but not there is refused, named with
+   its failing tests, because every mutant would otherwise be scored Killed by that failure.
 4. **Score** — `killed / total`, written to the JSON report. A mutant that hits the
    per-mutant timeout counts toward `killed`, because a mutant that hangs your suite is a
    fault -- but it is also reported on its own as `timedOut`, in the JSON and on the
