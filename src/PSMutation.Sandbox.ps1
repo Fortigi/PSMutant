@@ -28,7 +28,7 @@ function New-PSMutationSandboxName {
     # the name unguessable is the suffix, and it comes from a cryptographic RNG rather than
     # Get-Random or a GUID: those are about uniqueness, and the property needed here is that an
     # attacker cannot predict the next value. RandomNumberGenerator.Create() predates .NET Core 1.0,
-    # so it costs nothing against this module's PowerShell 7.2 floor.
+    # so it costs nothing against this module's PowerShell 7.0 floor.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Pure factory: returns a string, changes no system state. New-PSMutationSandbox below is the one that creates something, and it does support ShouldProcess.')]
     [OutputType([string])]

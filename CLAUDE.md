@@ -381,7 +381,7 @@ primitive.
 
 **Residual, and stated rather than left to be discovered:** the sandbox directory is created with
 the process umask, so on a typical Unix box it is world-READABLE while the run lasts. Closing that
-needs `File.SetUnixFileMode`, which is .NET 7 and above this module's PowerShell 7.2 floor. The
+needs `File.SetUnixFileMode`, which is .NET 7 (PowerShell 7.3) and above this module's PowerShell 7.0 floor. The
 unguessable name closes the write-through attack, which is the one with the proof of concept; a
 reader still has to find the name first.
 

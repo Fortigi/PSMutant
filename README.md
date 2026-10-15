@@ -25,6 +25,11 @@ declared -- one leg per supported minor of each. On PowerShell 7.0 to 7.3 use Pe
 Pester 6 fails there with `Unable to find type [PesterConfiguration]`, which is Pester's
 constraint rather than this module's.
 
+**Windows PowerShell 5.1 is not supported, and cannot be.** The module's own source uses the
+ternary operator, which 5.1 cannot parse, so it fails to load rather than running degraded. And
+the operator set mutates ternaries by naming the 7.0 syntax-tree type for them, which does not
+exist before 7.0.
+
 **PSMutant does not import a Pester for you, and does not declare one as a required module.**
 It runs under whichever Pester >= 5.2.0 your session already has, and only imports one if none
 is loaded at all. That is what makes the >= 5 promise real: a manifest dependency is a
