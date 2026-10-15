@@ -325,6 +325,15 @@ same shell preparation a mutant uses, so the two cannot drift. Three things abou
 - **The baseline stays in the session.** It is what measures coverage, and moving it into a runspace
   would be a different change with a different cost; the check only has to answer pass or fail.
 
+**Reuse is safe only for code read from disk afresh, and the child makes it so** (#249). The claim
+above -- "the covering suite dot-sources the file under test" -- was an assumption about the
+consumer. A suite that imports a module got the cached one back, so the child now removes every
+module loaded from its own sandbox before each run. What that cannot fix is refused up front by
+`Get-PSMutationReloadFault`, and both were measured, not assumed: `using module <path>` stays at its
+first version through `Remove-Module`, a fresh runspace and a touched test file, and an `Add-Type`
+type cannot be compiled twice in the process. A fresh runspace per mutant was the obvious answer and
+is wrong for both -- the cache is the PROCESS's, which is what separate worker processes would buy.
+
 **`Get-PSMutationRunspaceError` lives in `PSMutation.Pester.ps1`, not `PSMutation.Runner.ps1`.**
 Reading a child runspace's error stream is this file's domain. The first draft of the warm runspace
 left it in Runner and called upward, making a cycle -- and coverage, the suite and the mutation gate

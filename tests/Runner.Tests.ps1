@@ -701,7 +701,7 @@ Describe 'one mutant, started and completed' {
         Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
 
         $job = Start-PSMutantEvaluation -Candidate $script:candidate -Source $script:candidate -Index 0 `
-            -MutatedContent 'MUTATED' -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -WorkerId 0
+            -MutatedContent 'MUTATED' -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -WorkerId 0 -SandboxRoot $TestDrive
         [System.IO.File]::ReadAllText($script:target) | Should-Be 'MUTATED'
 
         $null = $job.Async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds(30))
@@ -744,7 +744,7 @@ Describe "a worker's child runspace" {
         function Invoke-ChildForTest {
             param([int]$TimeoutSeconds = 10)
             $job = Start-PSMutantEvaluation -Candidate $script:childCand -Source $script:childCand -Index 0 `
-                -MutatedContent 'x' -OriginalContent 'x' -CoveringTests @('t.Tests.ps1') -WorkerId 0
+                -MutatedContent 'x' -OriginalContent 'x' -CoveringTests @('t.Tests.ps1') -WorkerId 0 -SandboxRoot $TestDrive
             $done = $job.Async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))
             return $done ? (Receive-PSMutationJob -Job $job) : (Stop-PSMutationJob -Job $job)
         }
@@ -1773,5 +1773,92 @@ Describe 'the unmutated suite, in every worker, before any mutant' {
         Mock Get-PSMutationSuiteShell { throw 'must not run' }
         Should-BeNull -Actual (Assert-PSMutationWorkerGreen -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
                 -TimeoutSeconds 5 -SandboxRoot $script:primary)
+    }
+}
+
+Describe 'Get-PSMutationReloadFault (#249)' {
+    # Two things PowerShell keeps for the life of the PROCESS, measured: a module loaded with
+    # `using module <path>` (stale even in a fresh runspace) and a type compiled by Add-Type.
+    # Every mutant runs in this one process, so their mutants would be judged on code that did
+    # not run. The rest -- Import-Module with or without -Force -- is unloaded per mutant.
+    BeforeEach {
+        $script:box = Join-Path $TestDrive "box-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:box 'src'), (Join-Path $script:box 'tests') -Force | Out-Null
+        $script:mod = Join-Path $script:box 'src/M.psm1'
+        'class K { }' | Set-Content -LiteralPath $script:mod
+        function script:Put { param([string]$Rel, [string]$Text)
+            $p = Join-Path $script:box $Rel; Set-Content -LiteralPath $p -Value $Text; return $p }
+    }
+
+    It 'says nothing when nothing is loaded that way' {
+        $t = Put 'tests/a.Tests.ps1' "BeforeAll { Import-Module `$PSScriptRoot/../src/M.psm1 }"
+        Should-BeNull -Actual (Get-PSMutationReloadFault -MutateFiles @($script:mod) -TestFiles @($t) -Candidates @() -SandboxRoot $script:box)
+    }
+
+    It 'refuses `using module` of a path inside the sandbox, naming file, line and statement' -ForEach @(
+        @{ Spelling = '../src/M.psm1' }
+        @{ Spelling = '..\src\M.psm1' }
+    ) {
+        $t = Put 'tests/a.Tests.ps1' "# header`nusing module $Spelling`nDescribe 'a' { }"
+        $f = Get-PSMutationReloadFault -MutateFiles @($script:mod) -TestFiles @($t) -Candidates @() -SandboxRoot $script:box
+        $f | Should-BeLikeString 'PSMutant evaluates every mutant in this one process, and PowerShell keeps these for its whole life*'
+        # ? for each backtick: in a -like pattern a backtick is the escape character. And ${Spelling}
+        # braced, because PowerShell 7 allows ? in a variable name: "$Spelling?" names another variable.
+        $f | Should-BeLikeString "*`n  tests/a.Tests.ps1:2 loads the code under test with ?using module ${Spelling}?, which the process keeps*Import it with Import-Module, or dot-source it, in a BeforeAll."
+    }
+
+    It 'refuses a manifest by path too' {
+        $psd = Put 'src/M.psd1' "@{ RootModule = 'M.psm1'; ModuleVersion = '1.0' }"
+        $t = Put 'tests/a.Tests.ps1' "using module ./../src/M.psd1"
+        (Get-PSMutationReloadFault -MutateFiles @($script:mod) -TestFiles @($t) -Candidates @() -SandboxRoot $script:box) |
+            Should-BeLikeString '*tests/a.Tests.ps1:1 loads*'
+        Test-Path $psd | Should-BeTrue
+    }
+
+    It 'leaves alone <Name>' -ForEach @(
+        @{ Name = 'a module by bare name, which is installed and never mutated'; Code = 'using module Pester' }
+        @{ Name = 'a path that resolves outside the sandbox'; Code = 'using module ../../elsewhere/Other.psm1' }
+        @{ Name = 'using namespace, which loads nothing'; Code = 'using namespace System.Text' }
+    ) {
+        $t = Put 'tests/a.Tests.ps1' $Code
+        Should-BeNull -Actual (Get-PSMutationReloadFault -MutateFiles @($script:mod) -TestFiles @($t) -Candidates @() -SandboxRoot $script:box)
+    }
+
+    It 'checks the mutate files as well as the tests' {
+        $m = Put 'src/user.ps1' 'using module ./M.psm1'
+        (Get-PSMutationReloadFault -MutateFiles @($m) -TestFiles @() -Candidates @() -SandboxRoot $script:box) |
+            Should-BeLikeString '*src/user.ps1:1 loads*'
+    }
+
+    It 'refuses a mutant INSIDE an Add-Type call, and only that one' {
+        $src = "function Get-T { 1 }`nAdd-Type -TypeDefinition 'public class T249 { }'`n`$x = 'after'"
+        $m = Put 'src/t.ps1' $src
+        $inside = $src.IndexOf("'public")
+        $after = $src.IndexOf("'after'")
+        $cands = @(
+            [pscustomobject]@{ File = $m; Line = 2; StartOffset = $inside; EndOffset = $inside + 5; Description = 'inside' }
+            [pscustomobject]@{ File = $m; Line = 3; StartOffset = $after; EndOffset = $after + 7; Description = 'outside' }
+        )
+        $f = Get-PSMutationReloadFault -MutateFiles @($m) -TestFiles @() -Candidates $cands -SandboxRoot $script:box
+        $f | Should-BeLikeString "*`n  src/t.ps1:2 has a mutant inside an Add-Type call (inside), and a compiled type cannot be compiled again in the process. Leave StringLiteral out of 'operators' for this file's run."
+        $f | Should-NotBeLikeString '*(outside)*'
+    }
+
+    It 'counts a mutant at either edge of the Add-Type call as inside' {
+        # The two comparisons are inclusive: a mutant spanning the whole call still changes it.
+        $src = "Add-Type -TypeDefinition 'x'"
+        $m = Put 'src/edge.ps1' $src
+        $whole = [pscustomobject]@{ File = $m; Line = 1; StartOffset = 0; EndOffset = $src.Length; Description = 'whole' }
+        (Get-PSMutationReloadFault -MutateFiles @($m) -TestFiles @() -Candidates @($whole) -SandboxRoot $script:box) |
+            Should-BeLikeString '*(whole)*'
+        $past = [pscustomobject]@{ File = $m; Line = 1; StartOffset = 0; EndOffset = $src.Length + 1; Description = 'past' }
+        Should-BeNull -Actual (Get-PSMutationReloadFault -MutateFiles @($m) -TestFiles @() -Candidates @($past) -SandboxRoot $script:box)
+    }
+
+    It 'lists every fault, one per line' {
+        $t1 = Put 'tests/a.Tests.ps1' 'using module ../src/M.psm1'
+        $t2 = Put 'tests/b.Tests.ps1' 'using module ../src/M.psm1'
+        $f = Get-PSMutationReloadFault -MutateFiles @($script:mod) -TestFiles @($t1, $t2) -Candidates @() -SandboxRoot $script:box
+        @($f -split "`n" | Where-Object { $_ -like '  tests/*' }).Count | Should-Be 2
     }
 }

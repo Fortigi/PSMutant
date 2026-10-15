@@ -153,6 +153,10 @@ function Get-PSMutationRunContext {
     # could drift; there would then be two answers to "which report does this run write".
     # ASSIGNED, never wrapped: the projection returns `, @(...)` so an empty selection stays an
     # empty array, and @( ) around that gives a one-element array holding the array.
+    # After selection, because the Add-Type half asks about the candidates themselves (#249).
+    $reload = Get-PSMutationReloadFault -MutateFiles $t.Mutate -TestFiles $t.AllTests `
+        -Candidates $selection.Candidates -SandboxRoot $SandboxRoot
+    if ($reload) { throw $reload }
     $perFile = ConvertTo-PSMutationDisplayPerFile -PerFile $selection.PerFile -SandboxRoot $SandboxRoot
     $hashes = Get-PSMutationSourceHashMap -MutateFiles $t.Mutate -SandboxRoot $SandboxRoot
     $reportPath = Get-PSMutationReportPath -Cfg $Cfg -SourceRoot $SourceRoot

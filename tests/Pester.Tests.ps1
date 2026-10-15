@@ -384,7 +384,7 @@ Describe 'fixture' {
 
         # The ORIGINAL block, not a copy made from its text: a re-created scriptblock has no
         # file association, so nothing it runs is attributed to the lines under test.
-        $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $All
+        $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $All -sandboxRoot $TestDrive
 
         $out.Result | Should-Be 'Failed' -Because "a failing suite is what kills a mutant, on $Because"
         # The COUNT is the assertion, not merely that some killer came back. The fixture has two
@@ -407,7 +407,7 @@ Describe 'fixture' {
         $fixture = Join-Path $TestDrive "green-$([System.Guid]::NewGuid().ToString('N')).Tests.ps1"
         "Describe 'g' { It 'passes' { 1 | Should-Be 1 } }" | Set-Content -LiteralPath $fixture -Encoding utf8
 
-        $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $false
+        $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $false -sandboxRoot $TestDrive
         $out.Result | Should-Be 'Passed'
         @($out.Killers) | Should-BeCollection -Count 0
     }
@@ -418,7 +418,7 @@ Describe 'fixture' {
         $ast = [System.Management.Automation.Language.Parser]::ParseInput(
             (Get-PSMutationWarmPesterScript).ToString(), [ref]$null, [ref]$null)
         $params = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
-        $params | Should-BeCollection @('tests', 'recordAllKillers')
+        $params | Should-BeCollection @('tests', 'recordAllKillers', 'sandboxRoot')
     }
 
     It 'keeps the early stop unless every killer is wanted' {
@@ -434,5 +434,65 @@ Describe 'fixture' {
                 }, $true))
         $guarded | Should-BeCollection -Count 1
         $guarded[0].Clauses[0].Item1.Extent.Text | Should-MatchString 'recordAllKillers'
+    }
+}
+
+Describe 'the child unloads the code under test before every run (#249)' {
+    # The runspace is reused across mutants, and `Import-Module` without -Force returns a module
+    # already loaded -- so a suite importing the code under test ran mutant 2 against mutant 1.
+    # The child removes every module loaded from its OWN sandbox first, and nothing else.
+    BeforeAll {
+        function Import-ProbeModule {
+            param([string]$Dir)
+            $name = "PSMutProbe$([System.Guid]::NewGuid().ToString('N'))"
+            New-Item -ItemType Directory -Path $Dir -Force | Out-Null
+            $path = Join-Path $Dir "$name.psm1"
+            'function Get-Probe { 1 }' | Set-Content -LiteralPath $path
+            Import-Module $path -Global
+            return $name
+        }
+        function Invoke-Child {
+            param([string]$SandboxRoot)
+            $fixture = Join-Path $TestDrive "unload-$([System.Guid]::NewGuid().ToString('N')).Tests.ps1"
+            "Describe 'u' { It 'passes' { 1 | Should-Be 1 } }" | Set-Content -LiteralPath $fixture -Encoding utf8
+            $null = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $false -sandboxRoot $SandboxRoot
+        }
+    }
+    AfterEach { Get-Module PSMutProbe* | Remove-Module -Force }
+
+    It 'removes a module loaded from the sandbox, and keeps one loaded from elsewhere' {
+        $box = Join-Path $TestDrive "box-$([System.Guid]::NewGuid().ToString('N'))"
+        $inside = Import-ProbeModule -Dir (Join-Path $box 'src')
+        $outside = Import-ProbeModule -Dir (Join-Path $TestDrive "elsewhere-$([System.Guid]::NewGuid().ToString('N'))")
+        Invoke-Child -SandboxRoot $box
+        Should-BeNull -Actual (Get-Module $inside)
+        Should-NotBeNull -Actual (Get-Module $outside)
+    }
+
+    It 'keeps a module from a SIBLING directory whose name merely starts the same' {
+        # The root is matched with a separator after it: /tmp/box must not claim /tmp/box-2.
+        $box = Join-Path $TestDrive "box-$([System.Guid]::NewGuid().ToString('N'))"
+        $sibling = Import-ProbeModule -Dir "$box-2"
+        Invoke-Child -SandboxRoot $box
+        Should-NotBeNull -Actual (Get-Module $sibling)
+    }
+
+    It 'matches a root given with a trailing separator, and in another case' {
+        # A Windows path can arrive with a different drive-letter case, and a root may or may
+        # not end in a separator; neither may leave the code under test loaded.
+        $box = Join-Path $TestDrive "box-$([System.Guid]::NewGuid().ToString('N'))"
+        $one = Import-ProbeModule -Dir $box
+        Invoke-Child -SandboxRoot ($box + [System.IO.Path]::DirectorySeparatorChar)
+        Should-BeNull -Actual (Get-Module $one)
+        $two = Import-ProbeModule -Dir $box
+        Invoke-Child -SandboxRoot $box.ToUpperInvariant()
+        Should-BeNull -Actual (Get-Module $two)
+    }
+
+    It 'passes over a module with no path, such as one made in memory' {
+        $dynamic = "PSMutProbe$([System.Guid]::NewGuid().ToString('N'))"
+        New-Module -Name $dynamic -ScriptBlock { function Get-InMemory { 1 } } | Import-Module -Global
+        Invoke-Child -SandboxRoot (Join-Path $TestDrive 'any')
+        Should-NotBeNull -Actual (Get-Module $dynamic)
     }
 }

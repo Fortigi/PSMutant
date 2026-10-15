@@ -540,6 +540,35 @@ Describe 'leans on the session' { It 'pos' { Get-PSMutE2ESessionOnly | Should -B
         }
     }
 
+    It 'refuses a suite that loads the code under test with `using module`, which no runspace can reload (#249)' {
+        # Measured: after `using module` loads a file, the process keeps that version -- through
+        # Remove-Module, a fresh runspace, and a touched test file. Each worker would judge its
+        # mutants against whichever version it loaded first.
+        $psm = Join-Path $script:proj 'src/klass.psm1'
+        'class Klass { [int] V([int]$n) { if ($n -gt 0) { return 1 } return 0 } }' | Set-Content $psm -Encoding utf8
+        $usingTest = Join-Path $script:proj 'tests/klass.Tests.ps1'
+        @'
+using module ../src/klass.psm1
+Describe 'klass' { It 'v' { [Klass]::new().V(5) | Should -Be 1 } }
+'@ | Set-Content $usingTest -Encoding utf8
+        $p = Join-Path $script:proj 'mutation.using.json'
+        try {
+            [ordered]@{
+                sandboxSubtrees = @('src', 'tests')
+                mutate          = @('src/klass.psm1')
+                tests           = @{ 'src/klass.psm1' = @('tests/klass.Tests.ps1') }
+                # No coverage: Pester's coverage of a module that defines a class fails the
+                # baseline with "Index was out of range", before this refusal is reached.
+                coveredLinesOnly = $false
+                reportPath      = 'reports/using.json'
+            } | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
+            { Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet } |
+                Should-Throw -ExceptionMessage '*tests/klass.Tests.ps1:1 loads the code under test with*using module ../src/klass.psm1*'
+            Test-Path (Join-Path $script:proj 'reports/using.json') | Should-BeFalse
+        }
+        finally { Remove-Item $psm, $usingTest, $p -Force -ErrorAction SilentlyContinue }
+    }
+
     It 'prints its progress and summary when not run with -Quiet' {
         # -Quiet is what every other test here uses, so without this the entire
         # console layer -- per-mutant progress and the closing summary -- ships

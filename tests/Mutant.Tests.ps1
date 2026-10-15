@@ -38,7 +38,7 @@ function Get-Count { $i = 0; while ($i -lt 3) { $i = $i + 1 }; return $i }
         param($Candidate, $MutatedContent, $OriginalContent, $CoveringTests, $TimeoutSeconds)
         $job = Start-PSMutantEvaluation -Candidate $Candidate -Source $Candidate -Index 0 `
             -MutatedContent $MutatedContent -OriginalContent $OriginalContent `
-            -CoveringTests $CoveringTests -WorkerId 0
+            -CoveringTests $CoveringTests -WorkerId 0 -SandboxRoot $script:proj
         $expired = -not $job.Async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds($TimeoutSeconds))
         return Complete-PSMutantEvaluation -Job $job -Expired:$expired
     }
@@ -80,7 +80,7 @@ Describe 'one mutant, isolated' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
         { Start-PSMutantEvaluation -Candidate $script:cand -Source $script:cand -Index 0 `
                 -MutatedContent $mutated -OriginalContent $script:original `
-                -CoveringTests @($script:strictTest) -WorkerId 0 } | Should-Throw
+                -CoveringTests @($script:strictTest) -WorkerId 0 -SandboxRoot $TestDrive } | Should-Throw
         [System.IO.File]::ReadAllText($script:modPath) | Should-Be $script:original
     }
 }
@@ -105,7 +105,7 @@ Describe 'the child a worker runs' {
     It 'returns Passed for a passing suite' {
         $job = Start-PSMutantEvaluation -Candidate $script:cand -Source $script:cand -Index 0 `
             -MutatedContent $script:original -OriginalContent $script:original `
-            -CoveringTests @($script:strictTest) -WorkerId 0
+            -CoveringTests @($script:strictTest) -WorkerId 0 -SandboxRoot $TestDrive
         $null = $job.Async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds(30))
         (Receive-PSMutationJob -Job $job).Result | Should-Be 'Passed'
     }
@@ -144,5 +144,34 @@ Describe 'the child a worker runs' {
         $infinite = $script:original -replace '\$i = \$i \+ 1', '$i = $i - 1'
         (Invoke-TestMutant -Candidate $script:cand -MutatedContent $infinite -OriginalContent $script:original `
                 -CoveringTests @($script:countTest) -TimeoutSeconds 3).Status | Should-Be 'TimedOut'
+    }
+}
+
+Describe 'a suite that IMPORTS the code under test, in a reused runspace (#249)' {
+    # `Import-Module` without -Force returns a module already loaded. The worker's runspace serves
+    # many mutants, so before the child unloaded the sandbox's modules, the second mutant here was
+    # judged against the FIRST mutant's code -- the original, which the test passes -- and
+    # survived a change the test plainly catches.
+    BeforeAll {
+        $script:psm = Join-Path $script:proj "triple-$([System.Guid]::NewGuid().ToString('N')).psm1"
+        $script:psmOriginal = 'function Get-Triple { param($n) return ($n * 3) }'
+        Set-Content -LiteralPath $script:psm -Value $script:psmOriginal -Encoding utf8
+        $script:importTest = Join-Path $script:proj "import-$([System.Guid]::NewGuid().ToString('N')).Tests.ps1"
+        "BeforeAll { Import-Module '$($script:psm -replace "'", "''")' }; Describe 'i' { It 'triples' { Get-Triple 2 | Should -Be 6 } }" |
+            Set-Content -LiteralPath $script:importTest -Encoding utf8
+        $script:psmCand = [pscustomobject]@{ File = $script:psm }
+    }
+    AfterAll { Close-PSMutationWarmRunspacePool }
+
+    It 'judges the second mutant on a warm worker by ITS OWN code' {
+        Close-PSMutationWarmRunspacePool
+        $first = Invoke-TestMutant -Candidate $script:psmCand -MutatedContent $script:psmOriginal `
+            -OriginalContent $script:psmOriginal -CoveringTests @($script:importTest) -TimeoutSeconds 60
+        $first.Status | Should-Be 'Survived'
+        $second = Invoke-TestMutant -Candidate $script:psmCand -MutatedContent ($script:psmOriginal -replace '\* 3', '* 4') `
+            -OriginalContent $script:psmOriginal -CoveringTests @($script:importTest) -TimeoutSeconds 60
+        # The same warm runspace both times -- otherwise this proves nothing about reuse.
+        $script:PSMutationWarmUses[0] | Should-Be 2
+        $second.Status | Should-Be 'Killed'
     }
 }

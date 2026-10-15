@@ -572,6 +572,22 @@ there is unreachable without real infrastructure.
 Treat the score like a ratchet: **directional**. Don't chase 100% — equivalent mutants and
 untested log strings make the last stretch noise. Raise `thresholds.break` to lock in gains.
 
+### How your tests should load the code under test
+
+Every mutant runs in one PowerShell process, in a runspace that is reused for many mutants. So
+each mutant's tests must read the source **from disk, as it is now**:
+
+| In a covering test | Works? |
+|---|---|
+| `. $PSScriptRoot/../src/Thing.ps1` in a `BeforeAll` (dot-source) | yes |
+| `Import-Module $PSScriptRoot/../src/Thing.psm1`, with or without `-Force` | yes -- PSMutant unloads every module loaded from its sandbox before each mutant |
+| a module or script that defines a PowerShell `class`, loaded either way above | yes |
+| `using module ../src/Thing.psm1` | **no** -- refused. PowerShell keeps the first version it loads for the life of the process, even across runspaces |
+| a mutant inside an `Add-Type` call | **no** -- refused. A compiled type cannot be compiled again in the process; only the opt-in `StringLiteral` operator reaches one |
+
+A refused run names the file and line, and says what to change. Code that needs `using module`
+for its classes cannot be mutation-tested in-process yet.
+
 ## Development
 
 The test estate is written against **Pester 6.2.0** and CI pins that exact version. That

@@ -62,7 +62,19 @@ worker''s runspace and sandbox -- the same shell and script a mutant gets. A sui
 returns nothing, or overruns the per-mutant timeout refuses the run, naming the suite, the worker and
 the failed tests. The workers check in parallel, so the cost is about one pass over the covering
 suites. A `-RecheckFrom` run checks only the suites its survivors use. If a run of yours is now
-refused, make the failing test load what it needs itself, in its own `BeforeAll`.'
+refused, make the failing test load what it needs itself, in its own `BeforeAll`.
+
+**A suite that imports the code under test is judged on each mutant''s own code.** A worker reuses
+its runspace for many mutants, and `Import-Module` without `-Force` returns a module that is already
+loaded -- so a test importing the file under test ran later mutants against an earlier mutant''s code,
+producing kills and survivals about code that was not running. Every module loaded from the sandbox
+is now unloaded before each mutant, so the next import reads the file as it is; a module defining a
+class reloads the same way. Dot-sourcing was never affected.
+
+Two things PowerShell keeps for the life of the process are refused instead, naming file and line:
+`using module <path>` of the code under test, which stays at the first version loaded even in a
+fresh runspace, and a mutant inside an `Add-Type` call, whose type cannot be compiled twice. The
+README''s new "How your tests should load the code under test" says what works.'
         }
     }
 }
