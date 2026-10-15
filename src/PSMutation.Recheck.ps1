@@ -585,6 +585,12 @@ function Invoke-PSMutationRecheckRun {
         # A scriptblock, not a value: it is evaluated after the loop so the elapsed time it
         # records is the whole run rather than the moment the run started.
         [scriptblock]$Provenance = { @{} },
+        # What sizes each mutant's deadline from its suite's measured time (#253), as a full run does.
+        $Cfg,
+        [int]$Workers = 1,
+        # The values $Provenance reads, so the deadline it records is the largest one actually
+        # given. The caller's own table, updated in place.
+        [hashtable]$ProvenanceArgs = @{},
         [switch]$Quiet,
         # Fold this recheck's verdicts back into the baseline it came from. Opt-in, and it
         # refuses rather than merging when the tests behind the carried-over statuses may have
@@ -609,10 +615,12 @@ function Invoke-PSMutationRecheckRun {
     $rows = [System.Collections.Generic.List[object]]::new()
     # Over the TARGETS, not the whole candidate set: only the suites the recheck will run need to
     # be proven green where the mutants run (#248).
-    Assert-PSMutationWorkerGreen -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
+    $fileSeconds = Assert-PSMutationWorkerGreen -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
         -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox
+    $timeoutByFile = Get-PSMutationTimeoutByFile -Cfg $Cfg -FileSeconds $fileSeconds -Workers $Workers
+    $ProvenanceArgs.PerMutantTimeoutSeconds = Get-PSMutationLargestTimeout -TimeoutByFile $timeoutByFile -Fallback $TimeoutSeconds
     $results = Invoke-PSMutationLoop -Candidates $targets -Sink $rows -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
-        -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox -Quiet:$Quiet
+        -TimeoutByFile $timeoutByFile -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox -Quiet:$Quiet
     $recheckPath = Get-PSMutationRecheckReportPath -ReportPath $ReportPath
     # The prior report's own hashes and operator set travel with the new one, so the next
     # round can validate against them. Recomputing here would describe the CURRENT source

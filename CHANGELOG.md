@@ -57,6 +57,15 @@ mutant waited for the call it was stuck in to return -- 7.4 seconds for an 8-sec
 stood idle and the stall check could abort the run blaming a machine that had slept. The stop is now
 requested without waiting, and the worker carries on with a fresh runspace at once.
 
+**Each mutant's deadline comes from its own test file, so a mutant looping forever is cut off in
+seconds rather than minutes.** The deadline was the whole baseline -- every test file, with
+coverage instrumentation -- times the factor and the worker count, while each mutant runs only the
+tests mapped to its own file. On a repo with many test files that let a non-terminating mutant run
+for minutes before it was stopped. Each covering suite's time is now measured once, unmutated, in
+the worker runspaces before the first mutant, and sizes the deadline of the files it covers, with
+the same factor, worker multiplier and floor. `durations.perMutantTimeoutSeconds` reports the
+largest deadline given.
+
 ## [0.6.0] - 2026-10-10
 
 ### For consumers

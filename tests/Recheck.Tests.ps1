@@ -16,11 +16,12 @@ BeforeAll {
     . (Join-Path $src 'PSMutation.Report.ps1')     # the equivalence key, to skip declared ones
     . (Join-Path $src 'PSMutation.Output.ps1')
     . (Join-Path $src 'PSMutation.Recheck.ps1')
+    . (Join-Path $src 'PSMutation.Config.ps1')     # per-file deadlines (#253)
 
     # The unmutated suite check (#248) runs real suites in real runspaces, and every run here is
     # driven with stub candidates and a mocked loop. Stubbed for the whole file; the tests that are
     # ABOUT it say so and assert it.
-    Mock Assert-PSMutationWorkerGreen { }
+    Mock Assert-PSMutationWorkerGreen { @{} }
 
     function Get-FakeReport {
         param(
@@ -596,6 +597,28 @@ Describe 'Invoke-PSMutationRecheckRun' {
         # The closing summary is the second call, and it carries the caveat that stops a
         # partial number being read as a score.
         Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Lines.Text -like '*Not a mutation score*' }
+    }
+}
+
+Describe 'a recheck sizes each deadline as a full run does (#253)' {
+    It 'hands the loop each file''s deadline and records the largest in the provenance' {
+        $report = Join-Path $TestDrive 'prior253.json'
+        '{ "survivors": [ { "Id": 1, "File": "src/a.ps1" } ], "mutants": [] }' | Set-Content $report -Encoding utf8
+        Mock Get-PSMutationAnnotationHost { $null }
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        Mock Assert-PSMutationWorkerGreen { @{ 'x.ps1' = 10.0 } }
+        Mock Invoke-PSMutationLoop { , @() }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out253.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 0; StillSurviving = 0 } }
+        $prov = @{ PerMutantTimeoutSeconds = 15 }
+        $null = Invoke-PSMutationRecheckRun -RecheckFrom $report -Candidates @('a') -Plan @{ TestsByFile = @{}; AllTests = @('t.ps1') } `
+            -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 15 -SandboxRoot $TestDrive `
+            -ReportPath (Join-Path $TestDrive 'out253.json') -Workers 2 -ProvenanceArgs $prov -Quiet
+        # 10s, factor 4, TWO workers: 80.
+        Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { $TimeoutByFile['x.ps1'] -eq 80 }
+        $prov.PerMutantTimeoutSeconds | Should-Be 80
     }
 }
 

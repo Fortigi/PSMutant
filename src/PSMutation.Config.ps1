@@ -1153,6 +1153,40 @@ function Get-PSMutationWorkerSandboxCount {
     return [int][math]::Max(0, [math]::Min($Workers, $CandidateCount) - 1)
 }
 
+function Get-PSMutationTimeoutByFile {
+    # Each mutate file's own per-mutant deadline (#253): the same rule as the run-wide one --
+    # factor, workers, floor, and the refusal below it -- applied to the time its covering suite
+    # took in the unmutated check rather than to the whole baseline. A mutant runs only its file's
+    # suite, without coverage, so the whole baseline overstated it by as much as the suite is
+    # large, and a mutant looping forever burned minutes before it was cut off.
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param(
+        $Cfg,
+        [Parameter(Mandatory)] [hashtable]$FileSeconds,
+        [Parameter(Mandatory)] [int]$Workers
+    )
+    $out = @{}
+    foreach ($f in $FileSeconds.Keys) {
+        $out[$f] = Get-PSMutationTimeout -Cfg $Cfg -BaselineSeconds $FileSeconds[$f] -Workers $Workers
+    }
+    return $out
+}
+
+function Get-PSMutationLargestTimeout {
+    # The largest deadline any mutant was given, which is what the report's
+    # durations.perMutantTimeoutSeconds means (schema v3). The run-wide deadline when no file was
+    # measured, because then that is the one every mutant got.
+    [OutputType([int])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [hashtable]$TimeoutByFile,
+        [Parameter(Mandatory)] [int]$Fallback
+    )
+    if ($TimeoutByFile.Count -eq 0) { return $Fallback }
+    return [int]($TimeoutByFile.Values | Measure-Object -Maximum).Maximum
+}
+
 function Get-PSMutationTimeout {
     # Per-mutant timeout in whole seconds.
     #

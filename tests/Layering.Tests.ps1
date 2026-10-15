@@ -41,6 +41,9 @@ BeforeAll {
 
         # Recheck holds a whole feature, orchestration included, so it drives the runner
         # and reuses the report layer rather than restating either.
+        # A recheck sizes each mutant's deadline from its suite's measured time with the same
+        # decision a full run uses (#253), rather than a second copy of the formula.
+        'PSMutation.Recheck.ps1 -> PSMutation.Config.ps1'
         'PSMutation.Recheck.ps1 -> PSMutation.Output.ps1'
         'PSMutation.Recheck.ps1 -> PSMutation.Report.ps1'
         'PSMutation.Recheck.ps1 -> PSMutation.Runner.ps1'
