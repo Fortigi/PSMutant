@@ -1024,15 +1024,13 @@ function Get-PSMutationSuiteGroup {
         [Parameter(Mandatory)] [hashtable]$TestsByFile,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$AllTests
     )
-    $seen = @{}
+    # A set, not a hashtable of flags: Add answers whether the key was new, so there is no stored
+    # value nothing reads -- which the mutation gate found as a `$true -> $false` that survived.
+    $seen = [System.Collections.Generic.HashSet[string]]::new()
     $groups = [System.Collections.Generic.List[object]]::new()
     foreach ($c in $Candidates) {
         $suite = Get-PSMutationCoveringSuite -File $c.File -TestsByFile $TestsByFile -AllTests $AllTests
-        $key = $suite -join "`n"
-        if (-not $seen.ContainsKey($key)) {
-            $seen[$key] = $true
-            $groups.Add($suite)
-        }
+        if ($seen.Add($suite -join "`n")) { $groups.Add($suite) }
     }
     return , $groups.ToArray()
 }
