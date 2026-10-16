@@ -813,14 +813,17 @@ Describe "a worker's child runspace" {
     It 'cuts off a child stuck in a BLOCKING .NET call without waiting for the call (#250)' {
         # Start-Sleep above is a cmdlet, which a stop interrupts. Thread.Sleep is not: a synchronous
         # Stop() waited the whole call out, and every other worker waited with it.
-        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [System.Threading.Thread]::Sleep(10000)' }
+        # Sized to stay cheap -- this file covers Runner.ps1, so every one of its mutants that gets
+        # here pays for it. A 4s sleep with a 1s budget: a waiting stop returns after 4s, a
+        # non-waiting one after the budget plus the warm-up. The parked runspace is NOT waited out:
+        # it finishes its sleep in the background and is disposed by a later sweep, which is the
+        # behaviour under test, and waiting here cost 9s of every run of this file.
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [System.Threading.Thread]::Sleep(4000)' }
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $outcome = (Invoke-ChildForTest -TimeoutSeconds 1).Result
         $sw.Stop()
         $outcome | Should-Be 'TimedOut'
-        $sw.Elapsed.TotalSeconds | Should-BeLessThan 6
-        foreach ($r in @($script:PSMutationRetiredRunspace)) { $null = $r.Stop.AsyncWaitHandle.WaitOne(15000) }
-        Clear-PSMutationRetiredRunspace
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 3.5
     }
 
     It 'discards the worker whose child it had to stop' {
@@ -1919,9 +1922,13 @@ Describe 'a mutant that does not parse (#252)' {
 
     It 'is recorded CompileError, with no test run and the file never written' {
         Mock Start-PSMutantEvaluation { throw 'a mutant that does not parse must not be run' }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
         $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($script:brokenCand) `
             -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
         $r[0].Status | Should-Be 'CompileError'
+        # Collected AT ONCE, not when its 5s budget runs out: a decided job is complete when it is
+        # made. A job left incomplete, or a handle never set, would be found only by the clock.
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 2
         @($r[0].KilledBy).Count | Should-Be 0
         Should-Invoke Start-PSMutantEvaluation -Exactly 0
         [System.IO.File]::ReadAllText($script:brokenFile) | Should-Be $script:brokenText
