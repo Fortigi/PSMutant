@@ -19,6 +19,20 @@
     depend on which worker happened to finish first.
 #>
 
+function Set-PSMutationCoverageBreakpoint {
+    # Ask for breakpoint coverage where the Pester has the choice (#270). Feature-detected rather than
+    # version-compared, as SkipRemainingOnFailure is: Pester 5.2.2 has no UseBreakpoints setting
+    # (measured) because it only ever had breakpoints, and assigning a property that is not there
+    # would fail the run. Its own function so both arms are tested against stand-ins -- every Pester
+    # CI installs for the suite has the setting.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Sets a field on an in-memory configuration object.')]
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $CodeCoverage)
+    if ($CodeCoverage.PSObject.Properties['UseBreakpoints']) { $CodeCoverage.UseBreakpoints = $true }
+}
+
 function Invoke-PSMutationBaseline {
     <#
     .SYNOPSIS
@@ -68,6 +82,13 @@ function Invoke-PSMutationBaseline {
     # sandbox path that was fixed in #95 -- lesser, because the content is coverage data rather
     # than source, but there is no reason to keep one after removing the other.
     $cfg.CodeCoverage.OutputPath = Join-Path $SandboxRoot 'coverage.xml'
+    # BREAKPOINTS, not Pester 6's default Profiler tracer (#270). The tracer fails any test that
+    # touches a PowerShell class -- "Index was out of range", measured with a class in a module and
+    # in a dot-sourced script alike -- so a baseline over class-based code was refused as "not
+    # green" with the tests blamed. Measured on this repo's own baseline, breakpoints also saw ONE
+    # MORE executed command than the tracer (2534 against 2533), for 6% more time (69s against
+    # 65s): the tracer is not only fragile but short.
+    Set-PSMutationCoverageBreakpoint -CodeCoverage $cfg.CodeCoverage
 
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
     $result = Invoke-Pester -Configuration $cfg
@@ -604,6 +625,9 @@ function Complete-PSMutantEvaluation {
         # the SAME worker -- but it is what makes the pair self-contained: a mutant that throws,
         # or a run killed here, leaves the sandbox as it found it.
         [System.IO.File]::WriteAllText($Job.Candidate.File, $Job.OriginalContent)
+        # The covering tests too, when they were marked for this mutant (#270). A foreach STATEMENT,
+        # so a job with none -- the ordinary case -- iterates zero times rather than once on $null.
+        foreach ($o in $Job.TestOriginals) { [System.IO.File]::WriteAllBytes($o.Path, $o.Bytes) }
     }
 }
 
@@ -875,6 +899,56 @@ function New-PSMutationDecidedJob {
     }
 }
 
+function Test-PSMutationDefinesType {
+    # True when any of these files defines a PowerShell class or enum (#270). Those are the runs that
+    # need their covering tests marked per mutant; every other run pays nothing.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Path)
+    foreach ($p in $Path) {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($p, [ref]$null, [ref]$null)
+        if ($ast.Find({ param($n) $n -is [System.Management.Automation.Language.TypeDefinitionAst] }, $true)) { return $true }
+    }
+    return $false
+}
+
+function Set-PSMutationTestMarker {
+    <#
+    .SYNOPSIS
+        Append a line naming this mutant to each covering test file, and hand back the bytes to
+        restore (#270).
+    .DESCRIPTION
+        PowerShell caches a compiled script by its TEXT, process-wide, and a type literal such as
+        [MyClass] in a cached script stays bound to the first class it saw. A consumer's test file
+        never changes between mutants and the baseline compiles it first, so every mutant inside a
+        class was judged against the original and survived. Measured: three class mutants survived
+        unmarked and all three were killed marked. Functions are unaffected -- they are looked up
+        by name when called.
+
+        Appended at the END, on its own line, so no line number in a failure message moves. The
+        original BYTES are kept rather than the text, so a byte-order mark or a missing final
+        newline is restored exactly: the report records test-file lengths, and -ResumeFrom
+        compares them.
+    .OUTPUTS
+        One { Path; Bytes } per file, to restore.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Writes only inside the throwaway sandbox; tracked tests are never touched.')]
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string[]]$Tests,
+        [Parameter(Mandatory)] [string]$Id
+    )
+    $marker = [System.Text.Encoding]::ASCII.GetBytes("`n# psmutant mutant $Id -- appended so PowerShell recompiles this file`n")
+    $kept = foreach ($t in $Tests) {
+        $bytes = [System.IO.File]::ReadAllBytes($t)
+        [System.IO.File]::WriteAllBytes($t, [byte[]]($bytes + $marker))
+        [pscustomobject]@{ Path = $t; Bytes = $bytes }
+    }
+    return , @($kept)
+}
+
 function Start-PSMutationWorkerJob {
     # Dispatch the next candidate to one idle worker, addressed inside THAT worker's sandbox copy.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
@@ -915,16 +989,22 @@ function Start-PSMutationWorkerJob {
     # Parsed before it is written (#252). A mutant that does not parse is decided here, without a
     # test run, and goes through the same retirement as every other -- so the report keeps its
     # candidate order and the worker is free again on the next sweep.
+    # Nothing to restore unless the run marks its tests and this mutant reaches a run.
+    $marked = @()
     $job = if (-not (Test-PSMutationParsable -Content $mutated)) {
         New-PSMutationDecidedJob -Candidate $exec -Source $c -Index $Schedule.Next -WorkerId $WorkerId `
             -OriginalContent $content -Status 'CompileError'
     }
     else {
+        # Marked before the run and restored when it is collected (#270), only in a run whose
+        # mutate files define a class or enum.
+        $marked = $Context.MarkTests ? (Set-PSMutationTestMarker -Tests $tests -Id "$($c.Id)") : @()
         Start-PSMutantEvaluation -Candidate $exec -Source $c -Index $Schedule.Next `
             -MutatedContent $mutated -OriginalContent $content `
             -CoveringTests $tests -WorkerId $WorkerId -SandboxRoot $root -RecordAllKillers:$Context.RecordAllKillers
     }
     $job | Add-Member -NotePropertyName TimeoutSeconds -NotePropertyValue $timeout -Force
+    $job | Add-Member -NotePropertyName TestOriginals -NotePropertyValue @($marked) -Force
     return $job
 }
 
@@ -1381,6 +1461,7 @@ function Invoke-PSMutationLoop {
         RecordAllKillers = [bool]$RecordAllKillers; Quiet = [bool]$Quiet
         DeadlineSeconds = $DeadlineSeconds; Originals = @{}; Sink = $Sink
         RunClock = [System.Diagnostics.Stopwatch]::StartNew()
+        MarkTests = Test-PSMutationDefinesType -Path @($Candidates | ForEach-Object { $_.File } | Select-Object -Unique)
     }
     # Mutable, and a pscustomobject rather than a hashtable so the four fields are named at every
     # use. The counters have to live here rather than in locals: dispatch, sweep and retirement

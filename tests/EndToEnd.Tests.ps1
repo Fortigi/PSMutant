@@ -557,9 +557,6 @@ Describe 'klass' { It 'v' { [Klass]::new().V(5) | Should -Be 1 } }
                 sandboxSubtrees = @('src', 'tests')
                 mutate          = @('src/klass.psm1')
                 tests           = @{ 'src/klass.psm1' = @('tests/klass.Tests.ps1') }
-                # No coverage: Pester's coverage of a module that defines a class fails the
-                # baseline with "Index was out of range", before this refusal is reached.
-                coveredLinesOnly = $false
                 reportPath      = 'reports/using.json'
             } | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
             { Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet } |
@@ -567,6 +564,34 @@ Describe 'klass' { It 'v' { [Klass]::new().V(5) | Should -Be 1 } }
             Test-Path (Join-Path $script:proj 'reports/using.json') | Should-BeFalse
         }
         finally { Remove-Item $psm, $usingTest, $p -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'baselines a mutate file that defines a class, and judges each mutant on its own class (#270)' {
+        # Pester 6's default coverage tracer failed any test touching a class, so this baseline was
+        # refused as "not green" and the tests were blamed. Dot-sourced, as the README advises.
+        $kls = Join-Path $script:proj 'src/kls.ps1'
+        'class Kls { [int] V([int]$n) { if ($n -gt 0) { return 1 } return 0 } }' | Set-Content $kls -Encoding utf8
+        $klsTest = Join-Path $script:proj 'tests/kls.Tests.ps1'
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'kls.ps1') }
+Describe 'kls' { It 'v' { [Kls]::new().V(5) | Should -Be 1; [Kls]::new().V(-5) | Should -Be 0 } }
+'@ | Set-Content $klsTest -Encoding utf8
+        $p = Join-Path $script:proj 'mutation.kls.json'
+        try {
+            [ordered]@{
+                sandboxSubtrees = @('src', 'tests')
+                mutate          = @('src/kls.ps1')
+                tests           = @{ 'src/kls.ps1' = @('tests/kls.Tests.ps1') }
+                reportPath      = 'reports/kls.json'
+            } | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
+            $r = Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet
+            # 4 mutants, 3 killed. The fourth, -gt 0 -> -gt 1, survives honestly: 5 and -5 are on
+            # the same side of both. Before the test files were marked per mutant, PowerShell bound
+            # [Kls] in the unchanged test file to the original class and all four survived.
+            $r.Total | Should-Be 4
+            $r.Killed | Should-Be 3
+        }
+        finally { Remove-Item $kls, $klsTest, $p -Force -ErrorAction SilentlyContinue }
     }
 
     It 'prints its progress and summary when not run with -Quiet' {

@@ -602,18 +602,19 @@ each mutant's tests must read the source **from disk, as it is now**:
 |---|---|
 | `. $PSScriptRoot/../src/Thing.ps1` in a `BeforeAll` (dot-source) | yes |
 | `Import-Module $PSScriptRoot/../src/Thing.psm1`, with or without `-Force` | yes -- PSMutant unloads every module loaded from its sandbox before each mutant |
-| code that defines a PowerShell `class` | **not yet** -- see below |
+| code that defines a PowerShell `class` or `enum`, loaded either way above | yes -- see below |
 | `using module ../src/Thing.psm1` | **no** -- refused. PowerShell keeps the first version it loads for the life of the process, even across runspaces |
 | a mutant inside an `Add-Type` call | **no** -- refused. A compiled type cannot be compiled again in the process; only the opt-in `StringLiteral` operator reaches one |
 
 A refused run names the file and line, and says what to change.
 
-**Classes are not supported yet, and the result is wrong rather than refused.** With the default
-coverage filter the baseline fails ("Index was out of range", from Pester's coverage tracer). With
-`coveredLinesOnly: false` it runs, but PowerShell binds a type literal such as `[MyClass]` in a test
-file to the first version of the class it compiled, and the test file's text never changes between
-mutants -- so every mutant inside a class is tested against the original and survives. A score for
-class-based code is too low, not too high. Tracked in issue #270.
+**Classes and enums need one extra step, which PSMutant takes for you.** PowerShell caches a
+compiled script by its text, and a type literal such as `[MyClass]` in a cached script stays bound to
+the first class it saw -- so a test file that never changes would test every mutant against the
+original class. When a mutate file defines a class or an enum, each covering test file in the
+sandbox gets one line appended for each mutant, `# psmutant mutant <id> ...`, and is restored
+afterwards. Line numbers are unchanged. Two things notice the line: a test that reads or hashes its
+own file, and a signed test file under an `AllSigned` execution policy.
 
 ## Development
 
