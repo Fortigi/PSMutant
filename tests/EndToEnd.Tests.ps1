@@ -272,9 +272,9 @@ Describe 'b' { It 'runs' { { Get-Flag 2 } | Should -Not -Throw } }
         # number without seeing what it covered.
         $schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v3/report.schema.json') -Raw
         $text = [System.IO.File]::ReadAllText((Join-Path $script:cf 'reports/r.changed.json'))
+        # The return value is the verdict, never an exception: see Test-AgainstSchema (#281).
         function Test-ScopedSchema { param([string]$Json)
-            try { Test-Json -Json $Json -Schema $schema -ErrorAction Stop | Out-Null; return $true }
-            catch { return $false }
+            return (Test-Json -Json $Json -Schema $schema -ErrorAction SilentlyContinue)
         }
         Should-BeTrue -Actual (Test-ScopedSchema -Json $text)
 
@@ -896,9 +896,12 @@ Describe 'Get-Sign' {
         catch { Write-Verbose "expected: $($_.Exception.Message)" }
         $script:partialText = [System.IO.File]::ReadAllText((Join-Path $script:pProj 'reports/partial.json'))
 
+        # The RETURN VALUE is the verdict, never an exception (#281). PowerShell 7.6.7 returns
+        # False for a document failing an if/then inside allOf but writes no error record, so a
+        # helper waiting for -ErrorAction Stop to throw called it valid -- a v3 report missing
+        # timedOut among them. Malformed JSON returns False too, so nothing is lost by not catching.
         function Test-AgainstSchema { param([string]$Json)
-            try { Test-Json -Json $Json -Schema $script:schema -ErrorAction Stop | Out-Null; return $true }
-            catch { return $false }
+            return (Test-Json -Json $Json -Schema $script:schema -ErrorAction SilentlyContinue)
         }
     }
 
@@ -1009,8 +1012,7 @@ Describe 'Get-Sign' {
         Should-BeTrue -Actual (Test-AgainstSchema -Json $timed)
         $v2 = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v2/report.schema.json') -Raw
         $asV2 = $timed -replace '"schemaVersion":\s*3', '"schemaVersion": 2'
-        $refused = $false
-        try { Test-Json -Json $asV2 -Schema $v2 -ErrorAction Stop | Out-Null } catch { $refused = $true }
+        $refused = -not (Test-Json -Json $asV2 -Schema $v2 -ErrorAction SilentlyContinue)
         Should-BeTrue -Actual $refused -Because 'the v2 schema is what could not describe a timeout'
     }
 
@@ -1104,11 +1106,20 @@ Describe 'Get-Sign' {
         # the only reason that surfaced as a failure instead of as a vacuous pass.
         $bad = $script:fullText -replace '(?m)^[ \t]*"skippedAsUncovered":[ \t]*\d+,[ \t]*\r?$', ''
         $bad | Should-NotBe $script:fullText -Because 'the fixture must actually differ, or this asserts nothing'
-        $message = ''
-        try { Test-Json -Json $bad -Schema $script:schema -ErrorAction Stop | Out-Null }
-        catch { $message = $_.Exception.Message }
-        $message | Should-MatchString 'skippedAsUncovered'
-        $message | Should-NotMatchString 'mode'
+        # Invalid by the RETURN VALUE first, which every PowerShell agrees on. The message is
+        # asserted only where one is written: 7.6.7 rejects a document failing an if/then inside
+        # allOf without writing any error record (#281), so there it has no message to be wrong
+        # about. Every PowerShell older than that writes one, and it must name the right field.
+        $schemaErrors = $null
+        $valid = Test-Json -Json $bad -Schema $script:schema -ErrorAction SilentlyContinue -ErrorVariable schemaErrors
+        Should-BeFalse -Actual $valid
+        if ($PSVersionTable.PSVersion -lt [version]'7.6.7') {
+            # The FIRST record, which is what -ErrorAction Stop throws and a reader sees. The rest
+            # are the unsatisfied `if` arms, which name mode and carriedOverUnverified by design.
+            $message = $schemaErrors[0].Exception.Message
+            $message | Should-MatchString 'skippedAsUncovered'
+            $message | Should-NotMatchString 'mode'
+        }
     }
 
     It 'refuses a recheck report that carries a mutation score' {
