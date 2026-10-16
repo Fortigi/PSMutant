@@ -1012,6 +1012,16 @@ Describe 'Get-Sign' {
         Should-BeFalse -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12))
     }
 
+    It 'requires the total score beside the score, and refuses it on a recheck (#264)' {
+        $doc = $script:fullText | ConvertFrom-Json
+        $doc.PSObject.Properties.Remove('totalMutationScore')
+        Should-BeFalse -Actual (Test-AgainstSchema -Json ($doc | ConvertTo-Json -Depth 12))
+        # A recheck measures a subset, so a total over it is as partial as a score would be.
+        $tampered = $script:recheckText -replace '("mode"\s*:\s*"Recheck")', '$1, "totalMutationScore": 100'
+        $tampered | Should-NotBe $script:recheckText
+        Should-BeFalse -Actual (Test-AgainstSchema -Json $tampered)
+    }
+
     It 'still ships the v2 schema, which is the only thing that can validate a 0.5 or 0.6 report' {
         $v2 = Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v2/report.schema.json'
         $parsed = Get-Content $v2 -Raw | ConvertFrom-Json

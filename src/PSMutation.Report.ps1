@@ -874,6 +874,11 @@ function Write-PSMutationReport {
         generatedAt   = $Provenance.generatedAt
         durations     = $Provenance.durations
         mutationScore = $summary.Score
+        # The same kills over EVERY mutant the operators produced, the uncovered ones counted as
+        # not killed (#264). mutationScore answers "how well do the tests check the code they run";
+        # this answers "how much of the code is checked at all". The thresholds still gate on
+        # mutationScore.
+        totalMutationScore = Get-PSMutationTotalScore -Summary $summary -Skipped ([int]$Exclusion.Skipped)
         total = $summary.Total; killed = $summary.Killed; survived = $summary.Survived
         # Additive, and included in `killed` rather than beside it: a consumer that never
         # read this field still reconciles killed + survived against total.
@@ -1127,6 +1132,34 @@ function Get-PSMutationTimeoutNote {
     return "   [$TimedOut killed on the clock, not by a failing test]"
 }
 
+function Get-PSMutationTotalScore {
+    # The score with uncovered mutants counted as not killed, as Stryker's total is (#264). Pure.
+    # Declared equivalents and mutants with no verdict stay out of both numbers alike.
+    [OutputType([double])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Summary,
+        [Parameter(Mandatory)] [int]$Skipped
+    )
+    $all = $Summary.Total + $Skipped
+    return $all -gt 0 ? [math]::Round(100.0 * $Summary.Killed / $all, 1) : 0
+}
+
+function Get-PSMutationTotalScoreLine {
+    # The line that shows the total score beside the covered-code one, or nothing when they are
+    # the same number -- that is, when coverage removed no mutant.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Summary,
+        $Exclusion
+    )
+    $skipped = [int]$Exclusion.Skipped
+    if ($skipped -eq 0) { return '' }
+    return ("  Total score: {0}%, counting the {1} uncovered mutant(s) as not killed" -f `
+            (Get-PSMutationTotalScore -Summary $Summary -Skipped $skipped), $skipped)
+}
+
 function Get-PSMutationUnscoredLine {
     <#
     .SYNOPSIS
@@ -1210,6 +1243,8 @@ function Get-PSMutationSummaryLine {
     # than the config asked for. This one removes far more mutants than declarations do.
     $skipLine = Get-PSMutationExclusionLine -Exclusion $Exclusion
     if ($skipLine) { $lines.Add((New-PSMutationLine -Role 'Muted' -Text $skipLine)) }
+    $totalLine = Get-PSMutationTotalScoreLine -Summary $Summary -Exclusion $Exclusion
+    if ($totalLine) { $lines.Add((New-PSMutationLine -Role 'Muted' -Text $totalLine)) }
     $unscored = Get-PSMutationUnscoredLine -Summary $Summary
     if ($unscored) { $lines.Add((New-PSMutationLine -Role 'Warn' -Text $unscored)) }
     # The files the blend is hiding. Only those BELOW the good band, and only when more than one

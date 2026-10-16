@@ -107,6 +107,10 @@
       "type": "number",
       "description": "Full runs only. Percentage of killed over total, where total EXCLUDES declared equivalents."
     },
+    "totalMutationScore": {
+      "type": "number",
+      "description": "Scored runs only. The same kills over every mutant the operators produced, with skippedAsUncovered counted as not killed -- how much of the code the tests check at all, where mutationScore is how well they check the code they run. Declared equivalents and mutants with no verdict are left out of both. The thresholds gate on mutationScore."
+    },
     "total": {
       "type": "integer",
       "description": "Full runs only. Mutants counted in the score, excluding declared equivalents."
@@ -295,6 +299,7 @@
       "then": {
         "required": [
           "mutationScore",
+          "totalMutationScore",
           "total",
           "killed",
           "survived",
@@ -356,7 +361,8 @@
           "nowKilled"
         ],
         "properties": {
-          "mutationScore": false
+          "mutationScore": false,
+          "totalMutationScore": false
         }
       }
     },
@@ -380,7 +386,8 @@
           "testFiles"
         ],
         "properties": {
-          "mutationScore": false
+          "mutationScore": false,
+          "totalMutationScore": false
         }
       }
     },
