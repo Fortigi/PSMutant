@@ -1049,3 +1049,15 @@ Describe 'the per-file AST index' {
             Should-BeCollection @()
     }
 }
+
+Describe 'Test-PSMutationParsable (#252)' {
+    It 'is true for source that parses, including none at all' {
+        Test-PSMutationParsable -Content 'function F { if ($a -eq 1) { 2 } }' | Should-BeTrue
+        Test-PSMutationParsable -Content '' | Should-BeTrue
+    }
+
+    It 'is false for source that does not' {
+        # An unclosed block: what a statement-deletion operator that removed one brace would leave.
+        Test-PSMutationParsable -Content 'function F { if ($a -eq 1) { 2 }' | Should-BeFalse
+    }
+}

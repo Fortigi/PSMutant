@@ -110,6 +110,20 @@ function Set-PSMutationText {
 # loses noticeably more. Long enough to discriminate, short enough to paste into a config.
 $script:PSMutationDescriptionLength = 120
 
+function Test-PSMutationParsable {
+    # True when a mutated file still parses (#252). Asked before the mutant is written, because a
+    # mutant that does not parse fails its tests for a reason that has nothing to do with them,
+    # and would be scored a kill. Every operator works on the syntax tree, so this is a guard for
+    # an operator defect rather than a filter for the consumer's code -- measured: none of the
+    # 1809 candidates this module's own source yields fails it, at 2.6 ms a parse.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$Content)
+    $errors = $null
+    $null = [System.Management.Automation.Language.Parser]::ParseInput($Content, [ref]$null, [ref]$errors)
+    return $errors.Count -eq 0
+}
+
 function New-PSMutationCandidate {
     # Build one candidate object. Central so every operator emits the same shape.
     #

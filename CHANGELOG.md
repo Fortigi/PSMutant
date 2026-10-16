@@ -1,6 +1,19 @@
-## [0.6.1] - 2026-10-15
+## [0.7.0] - 2026-10-15
 
 ### For consumers
+
+**The report format is version 3: a mutant's `Status` can be `TimedOut`, `CompileError` or
+`RuntimeError`, and the version 2 schema rejected the first of those already.** A timed-out mutant
+has always been written with `Status: TimedOut`, and `schemas/v2` allowed only `Killed` and
+`Survived` -- so any report with a timeout in it failed the schema this module shipped. Version 3
+defines all five. `TimedOut` still counts as killed. A mutant whose mutated source does not parse is
+now recorded `CompileError` without running any test, where before it was run and scored a kill;
+every operator works on the syntax tree, so one is a PSMutant defect -- please report it.
+`RuntimeError` is defined for a run that ends without a verdict. Both are left out of the score and
+counted in the new `compileErrors` and `runtimeErrors`, which, with `timedOut`, are now required
+beside a score. `durations.perMutantTimeoutSeconds` is defined as the largest deadline any mutant got,
+which is today's only one. **A reader validating against `schemas/v2` must move to `schemas/v3`;**
+v2 and v1 still ship, to validate archived reports.
 
 **Two runs starting at once on one machine no longer kill each other at startup.** Every run
 sweeps temp for sandboxes left by killed runs. Two sweeps at the same moment found the same leftover

@@ -524,8 +524,8 @@ has none of its own.
 Every report also carries how it was produced:
 
 ```json
-"schemaVersion": 2,
-"producedBy": { "module": "PSMutant", "version": "0.3.0" },
+"schemaVersion": 3,
+"producedBy": { "module": "PSMutant", "version": "0.7.0" },
 "generatedAt": "2026-08-20T14:05:09Z",
 "durations": { "baselineSeconds": 12.4, "totalSeconds": 354.1, "perMutantTimeoutSeconds": 50 }
 ```
@@ -533,10 +533,13 @@ Every report also carries how it was produced:
 `schemaVersion` is there so a consumer can branch on a number instead of guessing from which
 keys are present. It changes when a field changes meaning, disappears, or **becomes required** —
 the three ways a document that was valid stops being valid — never when an optional one is added.
-It is **2** as of this release: `filesWithNoCandidate` joined the full-run disclosures, and a
-report without it cannot be read as one that had nothing to disclose. `schemas/v1/report.schema.json`
-still ships, because an archived report says `schemaVersion: 1` and that is the only schema that
-can validate it. `durations` makes a run comparable with the next one — the timeout sits beside the
+It is **3** as of 0.7.0: a mutant's `Status` can now be `TimedOut`, `CompileError` or
+`RuntimeError` as well as `Killed` and `Survived`, which a version 2 reader would reject, and
+`timedOut`, `compileErrors` and `runtimeErrors` joined the required full-run disclosures. A
+`TimedOut` mutant counts as killed, as before. `CompileError` (the mutated source did not parse, so
+no test ran -- a PSMutant defect, please report one) and `RuntimeError` (the run ended without a
+verdict) are left out of the score. `schemas/v2/` and `schemas/v1/` still ship, because an
+archived report says `schemaVersion: 2` or `1` and only its own schema can validate it. `durations` makes a run comparable with the next one — the timeout sits beside the
 baseline it was derived from, so a suite drifting toward its bound is visible before it
 crosses.
 
@@ -549,13 +552,13 @@ before a run rather than after one.
 Reports also record `operators` and a `sourceHashes` map (SHA256 per mutated file). Those
 exist so `-RecheckFrom` can prove the mutant ids in a report still refer to the same code.
 
-The report format is defined by **[`schemas/v2/report.schema.json`](schemas/v2/report.schema.json)**,
+The report format is defined by **[`schemas/v3/report.schema.json`](schemas/v3/report.schema.json)**,
 which ships with the module, so a dashboard or a ratchet can validate a report without
 reading this repo's tests:
 
 ```powershell
 Test-Json -Json (Get-Content ./reports/ps-mutation.json -Raw) `
-          -Schema (Get-Content ./schemas/v2/report.schema.json -Raw)
+          -Schema (Get-Content ./schemas/v3/report.schema.json -Raw)
 ```
 
 It covers both shapes — a full run, and the partial run `-RecheckFrom` writes, identified by

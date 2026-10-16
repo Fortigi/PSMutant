@@ -63,12 +63,14 @@ Write-Host "  all $($shipped.Count) shipped src file(s) are dot-sourced"
 # report schema defines what they read back. Neither is any use left behind in the repo,
 # and the staging Copy-Item is the one place that decides whether they travel.
 # Keyed by VERSION per schema, not one version for both. They move independently -- the report
-# format reached v2 while the config format is still v1 -- and a single hardcoded 'v1' here would
+# format reached v3 while the config format is still v1 -- and a single hardcoded 'v1' here would
 # have kept passing against a directory the module no longer resolves.
 # v1/report.schema.json is listed although nothing writes v1 any more: an archived report says
 # schemaVersion 1, and the only schema that can validate it is the one shipped beside it. Dropping
-# it would make every report written before v2 unvalidatable by anyone who upgraded.
-foreach ($s in @{ Version = 'v2'; Name = 'report.schema.json' }, @{ Version = 'v1'; Name = 'report.schema.json' },
+# it would make every report written before v2 unvalidatable by anyone who upgraded. v2 ships for
+# the same reason: 0.5 and 0.6 wrote it.
+foreach ($s in @{ Version = 'v3'; Name = 'report.schema.json' }, @{ Version = 'v2'; Name = 'report.schema.json' },
+    @{ Version = 'v1'; Name = 'report.schema.json' },
     @{ Version = 'v1'; Name = 'config.schema.json' }) {
     $name = "$($s.Version)/$($s.Name)"
     $schemaPath = Join-Path $stage 'schemas' -AdditionalChildPath $s.Version, $s.Name

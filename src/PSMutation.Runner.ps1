@@ -593,6 +593,8 @@ function Complete-PSMutantEvaluation {
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Job, [switch]$Expired)
     try {
+        # A job decided without a run carries its verdict; there is nothing to receive or stop.
+        if ($Job.PSObject.Properties['Verdict']) { return $Job.Verdict }
         return Get-PSMutationVerdict -Run ($Expired ? (Stop-PSMutationJob -Job $Job) : (Receive-PSMutationJob -Job $Job))
     }
     finally {
@@ -612,8 +614,10 @@ function Get-PSMutationProgressLine {
     [CmdletBinding()]
     param([int]$Index, [int]$Total, $Result, [string]$DisplayFile)
     $survived = $Result.Status -eq 'Survived'
-    $glyph = $survived ? '.' : 'x'
-    $role = $survived ? 'Warn' : 'Muted'
+    # '!' for a mutant with no verdict: neither the '.' of a survivor nor the 'x' of a kill.
+    $unscored = $Result.Status -in 'CompileError', 'RuntimeError'
+    $glyph = $unscored ? '!' : ($survived ? '.' : 'x')
+    $role = ($survived -or $unscored) ? 'Warn' : 'Muted'
     return New-PSMutationLine -Role $role -Data $Result `
         -Text ("  [{0}/{1}] {2} {3}:{4} {5}" -f $Index, $Total, $glyph, $DisplayFile, $Result.Line, $Result.Description)
 }
@@ -845,6 +849,31 @@ function Wait-PSMutationWorker {
         [System.Threading.WaitHandle[]]@($jobs | ForEach-Object { $_.Async.AsyncWaitHandle }), $budget)
 }
 
+function New-PSMutationDecidedJob {
+    # A job whose verdict was reached without running anything: already complete, holding the
+    # verdict, and owning no runspace. The scheduler collects it like any finished job.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Pure: returns an object, changes no state.')]
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Candidate,
+        [Parameter(Mandatory)] $Source,
+        [Parameter(Mandatory)] [int]$Index,
+        [Parameter(Mandatory)] [int]$WorkerId,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$OriginalContent,
+        [Parameter(Mandatory)] [string]$Status
+    )
+    return [pscustomobject]@{
+        WorkerId = $WorkerId; Shell = $null
+        Async = [pscustomobject]@{ IsCompleted = $true; AsyncWaitHandle = [System.Threading.ManualResetEvent]::new($true) }
+        Candidate = $Candidate; Source = $Source; Index = $Index
+        OriginalContent = $OriginalContent
+        Clock = [System.Diagnostics.Stopwatch]::new()
+        Verdict = [pscustomobject]@{ Status = $Status; Killers = @() }
+    }
+}
+
 function Start-PSMutationWorkerJob {
     # Dispatch the next candidate to one idle worker, addressed inside THAT worker's sandbox copy.
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
@@ -878,8 +907,16 @@ function Start-PSMutationWorkerJob {
     $tests = [string[]]@($covering | ForEach-Object {
             Get-PSMutationWorkerPath -Path $_ -SandboxRoot $Context.SandboxRoot -WorkerRoot $root
         })
+    $mutated = Set-PSMutationText -Content $content -Candidate $c
+    # Parsed before it is written (#252). A mutant that does not parse is decided here, without a
+    # test run, and goes through the same retirement as every other -- so the report keeps its
+    # candidate order and the worker is free again on the next sweep.
+    if (-not (Test-PSMutationParsable -Content $mutated)) {
+        return New-PSMutationDecidedJob -Candidate $exec -Source $c -Index $Schedule.Next -WorkerId $WorkerId `
+            -OriginalContent $content -Status 'CompileError'
+    }
     return Start-PSMutantEvaluation -Candidate $exec -Source $c -Index $Schedule.Next `
-        -MutatedContent (Set-PSMutationText -Content $content -Candidate $c) -OriginalContent $content `
+        -MutatedContent $mutated -OriginalContent $content `
         -CoveringTests $tests -WorkerId $WorkerId -SandboxRoot $root -RecordAllKillers:$Context.RecordAllKillers
 }
 

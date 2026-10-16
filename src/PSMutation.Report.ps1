@@ -9,7 +9,9 @@
 # when one is added, which readers survive. It exists so a consumer can branch on a number
 # instead of sniffing for keys -- this module already ships two report shapes, and anything
 # reconciling them has otherwise to recognise each by which keys it happens to carry.
-$script:PSMutationSchemaVersion = 2
+# 3: a mutant's Status widened -- TimedOut, CompileError, RuntimeError -- which a version 2 reader
+#    rejects, and timedOut, compileErrors and runtimeErrors became required disclosures.
+$script:PSMutationSchemaVersion = 3
 
 function New-PSMutationProvenance {
     # How a report was produced: which schema, which build, when, and how long it took.
@@ -154,6 +156,19 @@ function Get-PSMutationDeclarationFault {
     return $null
 }
 
+function Get-PSMutationUnscoredCount {
+    # The rows that carry a verdict, and a count of each kind that does not. Its own function so
+    # the score's fold stays under the cognitive ceiling this repo gates itself on.
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Results)
+    return [pscustomobject]@{
+        Scored        = @($Results | Where-Object { $_.Status -notin 'CompileError', 'RuntimeError' })
+        CompileErrors = @($Results | Where-Object Status -eq 'CompileError').Count
+        RuntimeErrors = @($Results | Where-Object Status -eq 'RuntimeError').Count
+    }
+}
+
 function Get-PSMutationScore {
     # Pure: turn result rows into a score summary. No I/O.
     #
@@ -191,8 +206,13 @@ function Get-PSMutationScore {
     $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
     $stale = [System.Collections.Generic.List[string]]::new()
 
+    # No verdict was observed for these, so they are neither a kill nor a survival and stay out of
+    # the score entirely -- counted, so a reader can see what the number left out. Skipped BEFORE
+    # the declaration check: a declaration claims a mutant SURVIVES, and one that could not run
+    # neither confirms nor contradicts it.
+    $unscored = Get-PSMutationUnscoredCount -Results $Results
     $killed = 0; $survived = 0; $excluded = 0; $timedOut = 0
-    foreach ($r in $Results) {
+    foreach ($r in $unscored.Scored) {
         $key = Get-PSMutationDeclaredKey -Result $r -Declared $declared
         $isDeclared = $null -ne $key
         # A timeout counts toward $killed so the headline score does not move, and is
@@ -206,11 +226,11 @@ function Get-PSMutationScore {
         elseif ($isDeclared) { $excluded++ }
         else { $survived++ }
     }
-    $total = $Results.Count - $excluded
+    $total = $unscored.Scored.Count - $excluded
     $score = $total -gt 0 ? [math]::Round(100.0 * $killed / $total, 1) : 0
     return [pscustomobject]@{
         Score = $score; Killed = $killed; Survived = $survived; Total = $total
-        TimedOut = $timedOut
+        TimedOut = $timedOut; CompileErrors = $unscored.CompileErrors; RuntimeErrors = $unscored.RuntimeErrors
         DeclaredEquivalent = $excluded; StaleEquivalents = $stale.ToArray()
     }
 }
@@ -409,6 +429,8 @@ function Get-PSMutationPerFileScore {
                 survived = $s.Survived
                 total = $s.Total
                 timedOut = $s.TimedOut
+                compileErrors = $s.CompileErrors
+                runtimeErrors = $s.RuntimeErrors
                 declaredEquivalent = $s.DeclaredEquivalent
             })
     }
@@ -856,6 +878,9 @@ function Write-PSMutationReport {
         # Additive, and included in `killed` rather than beside it: a consumer that never
         # read this field still reconciles killed + survived against total.
         timedOut = $summary.TimedOut
+        # Excluded from total, not folded into killed: no verdict was observed for either.
+        compileErrors = $summary.CompileErrors
+        runtimeErrors = $summary.RuntimeErrors
         # Reported so the headline score can always be reconciled against the raw
         # mutant count: total EXCLUDES declared equivalents, and a reader who cannot
         # see how many were excluded cannot tell a real 100% from a declared one.
@@ -1102,6 +1127,29 @@ function Get-PSMutationTimeoutNote {
     return "   [$TimedOut killed on the clock, not by a failing test]"
 }
 
+function Get-PSMutationUnscoredLine {
+    <#
+    .SYNOPSIS
+        The line a score carries when some mutants produced no verdict at all, or nothing.
+    .DESCRIPTION
+        Neither kind is in the score, so a reader comparing the count to the mutant list needs
+        to be told. A CompileError is this module's fault rather than the suite's -- every
+        operator works on the syntax tree -- so it asks to be reported rather than fixed.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Summary)
+    $parts = [System.Collections.Generic.List[string]]::new()
+    if ($Summary.CompileErrors -gt 0) {
+        $parts.Add("$($Summary.CompileErrors) mutant(s) did not parse and were not tested -- a PSMutant defect, please report it")
+    }
+    if ($Summary.RuntimeErrors -gt 0) {
+        $parts.Add("$($Summary.RuntimeErrors) mutant(s) stopped their run without a verdict")
+    }
+    if ($parts.Count -eq 0) { return '' }
+    return "  Not in the score: $($parts -join '; ')."
+}
+
 function Get-PSMutationWeakFileLine {
     <#
     .SYNOPSIS
@@ -1162,6 +1210,8 @@ function Get-PSMutationSummaryLine {
     # than the config asked for. This one removes far more mutants than declarations do.
     $skipLine = Get-PSMutationExclusionLine -Exclusion $Exclusion
     if ($skipLine) { $lines.Add((New-PSMutationLine -Role 'Muted' -Text $skipLine)) }
+    $unscored = Get-PSMutationUnscoredLine -Summary $Summary
+    if ($unscored) { $lines.Add((New-PSMutationLine -Role 'Warn' -Text $unscored)) }
     # The files the blend is hiding. Only those BELOW the good band, and only when more than one
     # file was mutated: a blended score is an average, so a strong file carries a weak one and the
     # gate passes on a number nobody would accept per file. Listing every file instead would put
