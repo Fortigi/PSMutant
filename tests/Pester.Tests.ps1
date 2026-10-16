@@ -496,3 +496,73 @@ Describe 'the child unloads the code under test before every run (#249)' {
         Should-NotBeNull -Actual (Get-Module $dynamic)
     }
 }
+
+Describe 'retiring a timed-out runspace without waiting for it (#250)' {
+    # Stop() is synchronous and waits for a blocking .NET call to return -- 7.4s for an 8s
+    # Thread.Sleep, measured -- and the scheduler is single-threaded, so every worker stalled.
+    BeforeAll {
+        function Invoke-StuckWorker {
+            param([int]$WorkerId, [int]$Milliseconds)
+            $ps = Get-PSMutationWarmShell -WorkerId $WorkerId
+            $ps.Commands.Clear()
+            [void]$ps.AddScript("[System.Threading.Thread]::Sleep($Milliseconds)")
+            $null = $ps.BeginInvoke()
+            Start-Sleep -Milliseconds 200
+        }
+    }
+    AfterEach {
+        Close-PSMutationWarmRunspacePool
+        # Anything still stuck is waited out here, in the test, so no runspace outlives it.
+        foreach ($r in @($script:PSMutationRetiredRunspace)) { $null = $r.Stop.AsyncWaitHandle.WaitOne(15000) }
+        Clear-PSMutationRetiredRunspace
+    }
+
+    It 'returns at once, takes the worker out of the pool, and parks the runspace' {
+        Invoke-StuckWorker -WorkerId 7 -Milliseconds 4000
+        $before = $script:PSMutationRetiredRunspace.Count
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Stop-PSMutationWarmRunspace -WorkerId 7
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 1
+        $script:PSMutationWarmShell.ContainsKey(7) | Should-BeFalse
+        $script:PSMutationWarmRunspace.ContainsKey(7) | Should-BeFalse
+        $script:PSMutationWarmUses.ContainsKey(7) | Should-BeFalse
+        $script:PSMutationRetiredRunspace.Count | Should-Be ($before + 1)
+    }
+
+    It 'disposes a parked runspace only once its stop has finished' {
+        Invoke-StuckWorker -WorkerId 8 -Milliseconds 2500
+        Stop-PSMutationWarmRunspace -WorkerId 8
+        $parked = $script:PSMutationRetiredRunspace[$script:PSMutationRetiredRunspace.Count - 1]
+        Clear-PSMutationRetiredRunspace
+        $script:PSMutationRetiredRunspace.Contains($parked) | Should-BeTrue -Because 'its stop is still waiting on the sleep'
+        $parked.Runspace.RunspaceStateInfo.State | Should-NotBe 'Closed'
+        $null = $parked.Stop.AsyncWaitHandle.WaitOne(15000)
+        Clear-PSMutationRetiredRunspace
+        $script:PSMutationRetiredRunspace.Contains($parked) | Should-BeFalse
+        $parked.Runspace.RunspaceStateInfo.State | Should-Be 'Closed'
+    }
+
+    It 'is clearing work done whenever a shell is handed out' {
+        Invoke-StuckWorker -WorkerId 9 -Milliseconds 300
+        Stop-PSMutationWarmRunspace -WorkerId 9
+        $parked = $script:PSMutationRetiredRunspace[$script:PSMutationRetiredRunspace.Count - 1]
+        $null = $parked.Stop.AsyncWaitHandle.WaitOne(15000)
+        $null = Get-PSMutationWarmShell -WorkerId 10
+        $script:PSMutationRetiredRunspace.Contains($parked) | Should-BeFalse
+    }
+
+    It 'is done at the end of the run too' {
+        Invoke-StuckWorker -WorkerId 11 -Milliseconds 300
+        Stop-PSMutationWarmRunspace -WorkerId 11
+        $parked = $script:PSMutationRetiredRunspace[$script:PSMutationRetiredRunspace.Count - 1]
+        $null = $parked.Stop.AsyncWaitHandle.WaitOne(15000)
+        Close-PSMutationWarmRunspacePool
+        $script:PSMutationRetiredRunspace.Contains($parked) | Should-BeFalse
+    }
+
+    It 'does nothing for a worker that has no runspace' {
+        $before = $script:PSMutationRetiredRunspace.Count
+        Stop-PSMutationWarmRunspace -WorkerId 99
+        $script:PSMutationRetiredRunspace.Count | Should-Be $before
+    }
+}

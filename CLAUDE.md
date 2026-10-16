@@ -292,7 +292,11 @@ Four things about it are easy to undo:
   pins the number for exactly that reason -- the boundary test is written in terms of the constant,
   so changing it would otherwise slide past.
 - **A timeout discards THAT WORKER'S runspace.** `Stop()` leaves it unusable, so handing it to the
-  next mutant would fail every subsequent one. Discarding the pool instead would make every other
+  next mutant would fail every subsequent one. And it is discarded WITHOUT WAITING (#250): `Stop()`
+  is synchronous and waits for a blocking .NET call to return -- 7.4s for an 8s `Thread.Sleep` --
+  while the single-threaded scheduler, and so every worker, waited with it. `BeginStop` parks the
+  runspace on a retired list that is disposed once its stop completes; one still stuck at the end of
+  the run is left for the process, because waiting for it is the thing this avoids. Discarding the pool instead would make every other
   worker pay a cold start for one mutant's overrun.
 - **A failed Pester import throws rather than yielding a shell.** A shell without Pester runs every
   covering suite into a command-not-found and returns no verdict -- which `Get-PSMutationVerdict`

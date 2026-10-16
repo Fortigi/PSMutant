@@ -803,6 +803,19 @@ Describe "a worker's child runspace" {
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 20   # cut off, not waited out
     }
 
+    It 'cuts off a child stuck in a BLOCKING .NET call without waiting for the call (#250)' {
+        # Start-Sleep above is a cmdlet, which a stop interrupts. Thread.Sleep is not: a synchronous
+        # Stop() waited the whole call out, and every other worker waited with it.
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [System.Threading.Thread]::Sleep(10000)' }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $outcome = (Invoke-ChildForTest -TimeoutSeconds 1).Result
+        $sw.Stop()
+        $outcome | Should-Be 'TimedOut'
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 6
+        foreach ($r in @($script:PSMutationRetiredRunspace)) { $null = $r.Stop.AsyncWaitHandle.WaitOne(15000) }
+        Clear-PSMutationRetiredRunspace
+    }
+
     It 'discards the worker whose child it had to stop' {
         # Stop() leaves a runspace unusable, so handing it to the next mutant would fail every
         # one of them -- and anything-but-Passed is a kill, so the run would report a perfect
