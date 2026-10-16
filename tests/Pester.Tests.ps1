@@ -512,13 +512,15 @@ Describe 'retiring a timed-out runspace without waiting for it (#250)' {
     }
     AfterEach {
         Close-PSMutationWarmRunspacePool
-        # Anything still stuck is waited out here, in the test, so no runspace outlives it.
+        # Anything still stuck is waited out here, in the test, so no runspace outlives it. The sleeps
+        # above are as short as still proves the point -- a waiting stop on the 2s one would blow the
+        # 1s assertion -- because this file covers Pester.ps1 and every mutant of it pays for them.
         foreach ($r in @($script:PSMutationRetiredRunspace)) { $null = $r.Stop.AsyncWaitHandle.WaitOne(15000) }
         Clear-PSMutationRetiredRunspace
     }
 
     It 'returns at once, takes the worker out of the pool, and parks the runspace' {
-        Invoke-StuckWorker -WorkerId 7 -Milliseconds 4000
+        Invoke-StuckWorker -WorkerId 7 -Milliseconds 2000
         $before = $script:PSMutationRetiredRunspace.Count
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         Stop-PSMutationWarmRunspace -WorkerId 7
@@ -530,7 +532,7 @@ Describe 'retiring a timed-out runspace without waiting for it (#250)' {
     }
 
     It 'disposes a parked runspace only once its stop has finished' {
-        Invoke-StuckWorker -WorkerId 8 -Milliseconds 2500
+        Invoke-StuckWorker -WorkerId 8 -Milliseconds 1000
         Stop-PSMutationWarmRunspace -WorkerId 8
         $parked = $script:PSMutationRetiredRunspace[$script:PSMutationRetiredRunspace.Count - 1]
         Clear-PSMutationRetiredRunspace

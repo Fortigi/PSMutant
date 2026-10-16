@@ -894,7 +894,10 @@ function New-PSMutationDecidedJob {
         Async = [pscustomobject]@{ IsCompleted = $true; AsyncWaitHandle = [System.Threading.ManualResetEvent]::new($true) }
         Candidate = $Candidate; Source = $Source; Index = $Index
         OriginalContent = $OriginalContent
-        Clock = [System.Diagnostics.Stopwatch]::new()
+        # RUNNING, though nothing runs: the sweep expires a job by its clock, so a decided job whose
+        # completion was ever lost would otherwise wait out no deadline at all. Measured in the self
+        # gate: a mutant forcing it incomplete hung its covering run to the 306s outer deadline.
+        Clock = [System.Diagnostics.Stopwatch]::StartNew()
         Verdict = [pscustomobject]@{ Status = $Status; Killers = @() }
     }
 }
