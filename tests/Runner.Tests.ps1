@@ -53,7 +53,7 @@ function Test-Fixture {
 
     function StubJob {
         param($Source, [int]$Index = 0, [double]$Seconds = 0, $Original = '', [bool]$Completed = $true,
-            [int]$WorkerId = 0)
+            [int]$WorkerId = 0, [int]$TimeoutSeconds = 5)
         return [pscustomobject]@{
             WorkerId        = $WorkerId
             Shell           = $null
@@ -66,6 +66,7 @@ function Test-Fixture {
             Index           = $Index
             OriginalContent = $Original
             Clock           = [pscustomobject]@{ Elapsed = [timespan]::FromSeconds($Seconds) }
+            TimeoutSeconds  = $TimeoutSeconds
         }
     }
 }
@@ -205,17 +206,23 @@ Describe 'Get-PSMutationWaitBudget' {
         # The least, not the average and not a fixed poll interval: a mutant is cut off on its own
         # budget, and one that expires while the scheduler is asleep on somebody else's clock has
         # overrun by however long the nap was.
-        Get-PSMutationWaitBudget -ElapsedSeconds @(1.0, 9.5, 3.0) -TimeoutSeconds 10 | Should-Be 500
+        Get-PSMutationWaitBudget -RemainingSeconds @(9.0, 0.5, 7.0) -TimeoutSeconds 10 | Should-Be 500
     }
 
     It 'never returns zero, however far past its budget a mutant is' {
         # A zero timeout makes WaitAny a non-blocking poll, so a mutant already past its budget
         # would spin the scheduler at full speed until the sweep reached it.
-        Get-PSMutationWaitBudget -ElapsedSeconds @(99) -TimeoutSeconds 10 | Should-Be 1
+        Get-PSMutationWaitBudget -RemainingSeconds @(-89) -TimeoutSeconds 10 | Should-Be 1
     }
 
     It 'falls back to the whole budget when nothing has started yet' {
-        Get-PSMutationWaitBudget -ElapsedSeconds @() -TimeoutSeconds 7 | Should-Be 7000
+        Get-PSMutationWaitBudget -RemainingSeconds @() -TimeoutSeconds 7 | Should-Be 7000
+    }
+
+    It 'is capped by the run-wide deadline when a per-file one is longer (#253)' {
+        # A longer per-file deadline only means the scheduler looks again sooner; it must never
+        # sleep past the run-wide one.
+        Get-PSMutationWaitBudget -RemainingSeconds @(40.0) -TimeoutSeconds 10 | Should-Be 10000
     }
 }
 
@@ -1748,7 +1755,10 @@ Describe 'the unmutated suite, in every worker, before any mutant' {
 
     It 'passes when every suite is green in every worker' {
         Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
-        Should-BeNull -Actual (Invoke-GreenForTest)
+        $seconds = Invoke-GreenForTest
+        # And it says how long each mutate file's suite took, which sizes its deadline (#253).
+        (@($seconds.Keys | Sort-Object | ForEach-Object { Split-Path $_ -Leaf }) -join ',') | Should-Be 'a.ps1,b.ps1'
+        foreach ($k in $seconds.Keys) { $seconds[$k] | Should-BeGreaterThan 0 }
     }
 
     It 'refuses a suite red in the PRIMARY worker, naming it and the failed tests' {
@@ -1787,8 +1797,8 @@ Describe 'the unmutated suite, in every worker, before any mutant' {
 
     It 'runs nothing for no candidates' {
         Mock Get-PSMutationSuiteShell { throw 'must not run' }
-        Should-BeNull -Actual (Assert-PSMutationWorkerGreen -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
-                -TimeoutSeconds 5 -SandboxRoot $script:primary)
+        (Assert-PSMutationWorkerGreen -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
+                -TimeoutSeconds 5 -SandboxRoot $script:primary).Count | Should-Be 0
     }
 }
 
@@ -1940,5 +1950,76 @@ Describe 'a mutant that does not parse (#252)' {
         (Complete-PSMutantEvaluation -Job $job).Status | Should-Be 'CompileError'
         # Expired or not, a decided job's verdict stands: there is nothing running to stop.
         (Complete-PSMutantEvaluation -Job $job -Expired).Status | Should-Be 'CompileError'
+    }
+}
+
+Describe 'each mutant runs under its own file''s deadline (#253)' {
+    BeforeEach {
+        $script:dlFile = Join-Path $TestDrive "dl-$([System.Guid]::NewGuid().ToString('N')).ps1"
+        Set-Content -LiteralPath $script:dlFile -Value 'function F { 1 -eq 1 }' -NoNewline
+        $script:dlCand = [pscustomobject]@{ Id = 1; File = $script:dlFile; Line = 1; Operator = 'BinaryOperator'; Function = 'F'
+            Description = '-eq -> -ne'; StartOffset = 15; EndOffset = 18; Mutated = '-ne' }
+        function script:New-DeadlineContext { param([hashtable]$ByFile)
+            [pscustomobject]@{ Candidates = @($script:dlCand); Originals = @{}; Roots = @($TestDrive); SandboxRoot = $TestDrive
+                TestsByFile = @{}; AllTests = @('t.ps1'); TimeoutSeconds = 3600; TimeoutByFile = $ByFile; RecordAllKillers = $false }
+        }
+    }
+
+    It 'gives a dispatched mutant <Name>' -ForEach @(
+        @{ Name = 'its file''s measured deadline'; ByFile = 'own'; Expected = 7 }
+        @{ Name = 'the run-wide deadline when its file was not measured'; ByFile = 'none'; Expected = 3600 }
+    ) {
+        Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        $map = ($ByFile -eq 'own') ? @{ $script:dlFile = 7 } : @{}
+        $job = Start-PSMutationWorkerJob -Schedule ([pscustomobject]@{ Next = 0 }) -Context (New-DeadlineContext -ByFile $map) -WorkerId 0
+        $job.TimeoutSeconds | Should-Be $Expected
+    }
+
+    It 'gives a mutant that does not parse a deadline too, so the sweep can read one' {
+        $broken = $script:dlCand.PSObject.Copy()
+        $broken.Mutated = '-ne ('
+        $ctx = New-DeadlineContext -ByFile @{ $script:dlFile = 7 }
+        $ctx.Candidates = @($broken)
+        (Start-PSMutationWorkerJob -Schedule ([pscustomobject]@{ Next = 0 }) -Context $ctx -WorkerId 0).TimeoutSeconds | Should-Be 7
+    }
+
+    It 'expires a mutant on ITS deadline, not the run-wide one' {
+        # 6 seconds in, under a 5-second deadline of its own and a run-wide one of an hour.
+        $job = StubJob -Source $script:dlCand -Index 0 -Completed $false -Seconds 6 -TimeoutSeconds 5
+        $sched = [pscustomobject]@{ InFlight = [object[]]@($job); Parked = @{}; Next = 1; Retired = 0 }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'TimedOut'; Killers = @() } }
+        Complete-PSMutationSweep -Schedule $sched -Context ([pscustomobject]@{ TimeoutSeconds = 3600; SandboxRoot = $TestDrive })
+        $sched.Parked.ContainsKey(0) | Should-BeTrue
+        Should-Invoke Complete-PSMutantEvaluation -Exactly 1 -ParameterFilter { $Expired }
+    }
+
+    It 'carries the deadline a finished mutant ran under, for the stall check' {
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $job = StubJob -Source $script:dlCand -Index 0 -TimeoutSeconds 9
+        (Get-PSMutationFinishedMutant -Job $job -State 'Complete' -SandboxRoot $TestDrive).TimeoutSeconds | Should-Be 9
+    }
+}
+
+Describe 'Get-PSMutationFileSecond (#253)' {
+    It 'gives each file its covering suite''s time, shared where files share a suite' {
+        $c = @([pscustomobject]@{ File = 'a.ps1' }, [pscustomobject]@{ File = 'b.ps1' }, [pscustomobject]@{ File = 'c.ps1' })
+        $map = @{ 'a.ps1' = @('x.Tests.ps1'); 'b.ps1' = @('x.Tests.ps1') }
+        $by = Get-PSMutationFileSecond -Candidates $c -TestsByFile $map -AllTests @('all.Tests.ps1', 'x.Tests.ps1') `
+            -SuiteSeconds @{ 'x.Tests.ps1' = 2.5; "all.Tests.ps1`nx.Tests.ps1" = 9.0 }
+        "$($by['a.ps1'])/$($by['b.ps1'])/$($by['c.ps1'])" | Should-Be '2.5/2.5/9'
+    }
+}
+
+Describe 'Wait-PSMutationWorker wakes for the soonest OWN deadline (#253)' {
+    It 'looks again when a mutant''s own deadline runs out, not after the run-wide one' {
+        # 0.9s into a 1s deadline of its own, under a run-wide one of 30s, and still running: the
+        # scheduler must be back within a fraction of a second to cut it off, not 30 -- or 1.9,
+        # which is what reading the deadline the wrong way round would give.
+        $cand = [pscustomobject]@{ File = $script:stubFile }
+        $job = StubJob -Source $cand -Completed $false -Seconds 0.9 -TimeoutSeconds 1
+        $sched = [pscustomobject]@{ InFlight = [object[]]@($job) }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Wait-PSMutationWorker -Schedule $sched -Context ([pscustomobject]@{ TimeoutSeconds = 30 })
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 0.8
     }
 }

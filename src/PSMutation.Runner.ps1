@@ -808,19 +808,19 @@ function Get-PSMutationWaitBudget {
     [OutputType([int])]
     [CmdletBinding()]
     param(
-        [Parameter(Mandatory)] [AllowEmptyCollection()] [double[]]$ElapsedSeconds,
+        # What each in-flight mutant has LEFT of its own deadline (#253). Deadlines differ per
+        # covering suite, so the soonest expiry is no longer simply the oldest job's.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [double[]]$RemainingSeconds,
+        # The run-wide deadline, which caps the wait: with nothing in flight it is the whole
+        # answer, and a longer per-file deadline only means the scheduler looks again sooner.
         [Parameter(Mandatory)] [int]$TimeoutSeconds
     )
-    # The OLDEST in-flight mutant has the least budget left, so this asks for a maximum rather
-    # than tracking a minimum in a loop -- and that is not tidiness. `if ($left -lt $least)` and
-    # `-le` produce identical output for every input, because assigning an equal value changes
-    # nothing: an equivalent mutant that would have to be argued for in the config rather than
-    # killed by a test. Asking for a maximum has no boundary to get wrong.
-    #
-    # The 0.0 is what makes an empty list answer the whole budget rather than $null, and it is
-    # observable: raise it and a scheduler with nothing in flight waits for less than it should.
-    $oldest = (@($ElapsedSeconds) + @(0.0) | Measure-Object -Maximum).Maximum
-    return [int][math]::Max(1, [math]::Ceiling(($TimeoutSeconds - $oldest) * 1000))
+    # A minimum asked of Measure-Object rather than tracked in a loop -- and that is not tidiness.
+    # `if ($left -lt $least)` and `-le` produce identical output for every input, because assigning
+    # an equal value changes nothing: an equivalent mutant that would have to be argued for in the
+    # config rather than killed by a test. Asking for a minimum has no boundary to get wrong.
+    $least = (@($RemainingSeconds) + @([double]$TimeoutSeconds) | Measure-Object -Minimum).Minimum
+    return [int][math]::Max(1, [math]::Ceiling($least * 1000))
 }
 
 function Wait-PSMutationWorker {
@@ -845,7 +845,7 @@ function Wait-PSMutationWorker {
     param([Parameter(Mandatory)] $Schedule, [Parameter(Mandatory)] $Context)
     $jobs = @($Schedule.InFlight | Where-Object { $null -ne $_ })
     $budget = Get-PSMutationWaitBudget -TimeoutSeconds $Context.TimeoutSeconds `
-        -ElapsedSeconds @($jobs | ForEach-Object { $_.Clock.Elapsed.TotalSeconds })
+        -RemainingSeconds @($jobs | ForEach-Object { $_.TimeoutSeconds - $_.Clock.Elapsed.TotalSeconds })
     [void][System.Threading.WaitHandle]::WaitAny(
         [System.Threading.WaitHandle[]]@($jobs | ForEach-Object { $_.Async.AsyncWaitHandle }), $budget)
 }
@@ -908,17 +908,24 @@ function Start-PSMutationWorkerJob {
     $tests = [string[]]@($covering | ForEach-Object {
             Get-PSMutationWorkerPath -Path $_ -SandboxRoot $Context.SandboxRoot -WorkerRoot $root
         })
+    # This mutant's OWN deadline (#253), sized from its covering suite; the run-wide one only
+    # where none was measured.
+    $timeout = $Context.TimeoutByFile.ContainsKey($c.File) ? $Context.TimeoutByFile[$c.File] : $Context.TimeoutSeconds
     $mutated = Set-PSMutationText -Content $content -Candidate $c
     # Parsed before it is written (#252). A mutant that does not parse is decided here, without a
     # test run, and goes through the same retirement as every other -- so the report keeps its
     # candidate order and the worker is free again on the next sweep.
-    if (-not (Test-PSMutationParsable -Content $mutated)) {
-        return New-PSMutationDecidedJob -Candidate $exec -Source $c -Index $Schedule.Next -WorkerId $WorkerId `
+    $job = if (-not (Test-PSMutationParsable -Content $mutated)) {
+        New-PSMutationDecidedJob -Candidate $exec -Source $c -Index $Schedule.Next -WorkerId $WorkerId `
             -OriginalContent $content -Status 'CompileError'
     }
-    return Start-PSMutantEvaluation -Candidate $exec -Source $c -Index $Schedule.Next `
-        -MutatedContent $mutated -OriginalContent $content `
-        -CoveringTests $tests -WorkerId $WorkerId -SandboxRoot $root -RecordAllKillers:$Context.RecordAllKillers
+    else {
+        Start-PSMutantEvaluation -Candidate $exec -Source $c -Index $Schedule.Next `
+            -MutatedContent $mutated -OriginalContent $content `
+            -CoveringTests $tests -WorkerId $WorkerId -SandboxRoot $root -RecordAllKillers:$Context.RecordAllKillers
+    }
+    $job | Add-Member -NotePropertyName TimeoutSeconds -NotePropertyValue $timeout -Force
+    return $job
 }
 
 function Start-PSMutationDispatch {
@@ -958,6 +965,9 @@ function Get-PSMutationFinishedMutant {
         Row = New-PSMutationResultRow -Candidate $Job.Source -Verdict $verdict `
             -DisplayFile (ConvertFrom-PSMutationSandboxPath -Path $Job.Source.File -SandboxRoot $SandboxRoot)
         Seconds = $Job.Clock.Elapsed.TotalSeconds
+        # The deadline it ran under, for the stall check, which asks whether THIS mutant's own
+        # bound failed to fire.
+        TimeoutSeconds = $Job.TimeoutSeconds
     }
 }
 
@@ -972,7 +982,7 @@ function Complete-PSMutationSweep {
     # output -- an equivalent mutant that would have to be argued for rather than killed.
     foreach ($job in @($Schedule.InFlight | Where-Object { $null -ne $_ })) {
         $state = Get-PSMutationJobState -Completed $job.Async.IsCompleted `
-            -ElapsedSeconds $job.Clock.Elapsed.TotalSeconds -TimeoutSeconds $Context.TimeoutSeconds
+            -ElapsedSeconds $job.Clock.Elapsed.TotalSeconds -TimeoutSeconds $job.TimeoutSeconds
         if ($state -eq 'Running') { continue }
         # Freed BEFORE collecting, so a collection that throws cannot leave a slot pointing at a
         # job nobody will ever wait on again.
@@ -1042,7 +1052,7 @@ function Complete-PSMutationRetirement {
         # everything it finished, so the partial report written on the way out says how far it
         # got -- which is the difference between a diagnosable stop and the zero-byte report an
         # overnight hang leaves.
-        $fault = Get-PSMutationLoopFault -MutantSeconds $done.Seconds -TimeoutSeconds $Context.TimeoutSeconds `
+        $fault = Get-PSMutationLoopFault -MutantSeconds $done.Seconds -TimeoutSeconds $done.TimeoutSeconds `
             -ElapsedSeconds $Context.RunClock.Elapsed.TotalSeconds -DeadlineSeconds $Context.DeadlineSeconds `
             -Index $Schedule.Retired -Total $Context.Total
         if ($fault) { throw $fault }
@@ -1253,7 +1263,7 @@ function Assert-PSMutationWorkerGreen {
         it. A throw inside the loop is an interruption to its callers, which write a partial report
         and say "Interrupted after 0 of N" -- the wrong account of a run that was refused.
     #>
-    [OutputType([void])]
+    [OutputType([hashtable])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
@@ -1265,7 +1275,12 @@ function Assert-PSMutationWorkerGreen {
         [AllowEmptyCollection()] [string[]]$WorkerSandbox = @()
     )
     $roots = [string[]]@(@($SandboxRoot) + @($WorkerSandbox))
+    $bySuite = @{}
     foreach ($suite in (Get-PSMutationSuiteGroup -Candidates $Candidates -TestsByFile $TestsByFile -AllTests $AllTests)) {
+        # Timed across ALL workers, so it is the slowest copy's time: the run waits for each job
+        # in turn, and the clock stops after the last. Measured under the same parallel load the
+        # mutants will run under, which is what makes it the right basis for their deadlines.
+        $clock = [System.Diagnostics.Stopwatch]::StartNew()
         $jobs = @(for ($w = 0; $w -lt $roots.Count; $w++) {
                 Start-PSMutationGreenJob -Suite $suite -WorkerId $w -WorkerRoot $roots[$w] -SandboxRoot $SandboxRoot
             })
@@ -1281,7 +1296,27 @@ function Assert-PSMutationWorkerGreen {
         # FAULT is asked for, not the first element.
         $first = @($faults | Where-Object { $_ })[0]
         if ($first) { throw $first }
+        $bySuite[$suite -join "`n"] = $clock.Elapsed.TotalSeconds
     }
+    return Get-PSMutationFileSecond -Candidates $Candidates -TestsByFile $TestsByFile -AllTests $AllTests -SuiteSeconds $bySuite
+}
+
+function Get-PSMutationFileSecond {
+    # Mutate file -> seconds its covering suite took in the unmutated check (#253). Pure. Keyed by
+    # FILE because that is what a candidate carries; several files sharing one suite share its time.
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
+        [Parameter(Mandatory)] [hashtable]$TestsByFile,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$AllTests,
+        [Parameter(Mandatory)] [hashtable]$SuiteSeconds
+    )
+    $out = @{}
+    foreach ($c in $Candidates) {
+        $out[$c.File] = $SuiteSeconds[(Get-PSMutationCoveringSuite -File $c.File -TestsByFile $TestsByFile -AllTests $AllTests) -join "`n"]
+    }
+    return $out
 }
 
 function Invoke-PSMutationLoop {
@@ -1310,6 +1345,9 @@ function Invoke-PSMutationLoop {
         [Parameter(Mandatory)] [hashtable]$TestsByFile,
         [Parameter(Mandatory)] [string[]]$AllTests,
         [Parameter(Mandatory)] [int]$TimeoutSeconds,
+        # Each mutate file's own deadline (#253), from its covering suite's time in the unmutated
+        # check. A file not in it gets TimeoutSeconds.
+        [hashtable]$TimeoutByFile = @{},
         # The caller's accumulator, so an INTERRUPTED run still has its rows.
         #
         # A run is long -- long enough that losing one to Ctrl-C or a cancelled CI job is an
@@ -1339,7 +1377,7 @@ function Invoke-PSMutationLoop {
     $roots = [string[]]@(@($SandboxRoot) + @($WorkerSandbox))
     $context = [pscustomobject]@{
         Candidates = $Candidates; Total = $Candidates.Count; Roots = $roots; SandboxRoot = $SandboxRoot
-        TestsByFile = $TestsByFile; AllTests = $AllTests; TimeoutSeconds = $TimeoutSeconds
+        TestsByFile = $TestsByFile; AllTests = $AllTests; TimeoutSeconds = $TimeoutSeconds; TimeoutByFile = $TimeoutByFile
         RecordAllKillers = [bool]$RecordAllKillers; Quiet = [bool]$Quiet
         DeadlineSeconds = $DeadlineSeconds; Originals = @{}; Sink = $Sink
         RunClock = [System.Diagnostics.Stopwatch]::StartNew()

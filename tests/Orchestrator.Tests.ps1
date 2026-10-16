@@ -36,7 +36,7 @@ BeforeAll {
     # The unmutated suite check (#248) runs real suites in real runspaces, and every run here is
     # driven with stub candidates and a mocked loop. Stubbed for the whole file; the tests that are
     # ABOUT it say so and assert it.
-    Mock Assert-PSMutationWorkerGreen { }
+    Mock Assert-PSMutationWorkerGreen { @{} }
     # And the reload refusal (#249), which parses real files and reads each candidate's File --
     # the candidates here are placeholder strings. Its own test below overrides this.
     Mock Get-PSMutationReloadFault { $null }
@@ -501,6 +501,18 @@ Describe 'Invoke-PSMutation' {
         # and put a warning on every correct config.
         $out = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root 6>&1
         ($out -join "`n") | Should-NotMatchString 'no tests entry'
+    }
+
+    It 'sizes each file''s deadline from the check''s timing, and records the largest (#253)' {
+        # 10s for x.ps1's suite, factor 4, one worker: 40s. The run-wide deadline here is the 15s
+        # floor, so the report's perMutantTimeoutSeconds moving to 40 is this wiring and nothing else.
+        Mock Assert-PSMutationWorkerGreen { @{ 'x.ps1' = 10.0; 'y.ps1' = 0.1 } }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter {
+            $TimeoutByFile['x.ps1'] -eq 40 -and $TimeoutByFile['y.ps1'] -eq 15 -and $TimeoutSeconds -eq 15
+        }
+        (Get-Content (Join-Path $script:root 'reports/run.json') -Raw | ConvertFrom-Json).durations.perMutantTimeoutSeconds |
+            Should-Be 40
     }
 
     It 'passes the resolved operator list and timeout down to the mutation loop' {

@@ -319,7 +319,7 @@ function Invoke-PSMutationRun {
         $provArgs = $ctx.ProvenanceArgs
         $provenance = { New-PSMutationProvenance @provArgs -TotalSeconds $runClock.Elapsed.TotalSeconds }
         if ($RecheckFrom) {
-            return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance -MergeIntoBaseline:$MergeIntoBaseline -WorkerSandbox $workerSandbox
+            return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance -Cfg $cfg -Workers $ctx.Workers -ProvenanceArgs $provArgs -MergeIntoBaseline:$MergeIntoBaseline -WorkerSandbox $workerSandbox
         }
 
         # Said before the loop, because that is when it can still be acted on -- the cost it
@@ -354,12 +354,17 @@ function Invoke-PSMutationRun {
         # candidates) and must write the ordinary empty report, not a partial one.
         # Before the try that writes a partial report, because a refusal is not an interruption:
         # nothing was evaluated, and "Interrupted after 0 of N" would say otherwise (#248).
-        Assert-PSMutationWorkerGreen -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests `
+        # The same check measures each covering suite where its mutants will run, and each mutate
+        # file's deadline is sized from that (#253). The report records the largest, which is
+        # what its perMutantTimeoutSeconds means; $provArgs is read when the provenance is built.
+        $fileSeconds = Assert-PSMutationWorkerGreen -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests `
             -TimeoutSeconds $ctx.TimeoutSeconds -SandboxRoot $sandbox -WorkerSandbox $workerSandbox
+        $timeoutByFile = Get-PSMutationTimeoutByFile -Cfg $cfg -FileSeconds $fileSeconds -Workers $ctx.Workers
+        $provArgs.PerMutantTimeoutSeconds = Get-PSMutationLargestTimeout -TimeoutByFile $timeoutByFile -Fallback $ctx.TimeoutSeconds
         $partial = [System.Collections.Generic.List[object]]::new()
         $done = $false
         try {
-            $results = Invoke-PSMutationLoop @exec -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial -RecordAllKillers:$($ctx.RecordAllKillers) -WorkerSandbox $workerSandbox -DeadlineSeconds (Get-PSMutationRunDeadlineBudget -Cfg $cfg -CandidateCount $cands.Count -TimeoutSeconds $ctx.TimeoutSeconds -BaselineSeconds $ctx.Baseline.DurationSeconds -Workers $ctx.Workers)
+            $results = Invoke-PSMutationLoop @exec -TimeoutByFile $timeoutByFile -TestsByFile $t.TestsByFile -AllTests $t.AllTests -Sink $partial -RecordAllKillers:$($ctx.RecordAllKillers) -WorkerSandbox $workerSandbox -DeadlineSeconds (Get-PSMutationRunDeadlineBudget -Cfg $cfg -CandidateCount $cands.Count -TimeoutSeconds $ctx.TimeoutSeconds -BaselineSeconds $ctx.Baseline.DurationSeconds -Workers $ctx.Workers)
             $done = $true
         }
         finally {

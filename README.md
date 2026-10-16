@@ -445,6 +445,14 @@ gate affordable would watch its score improve with no way to tell that from havi
 tests. The cost of the other direction is that a genuinely non-terminating mutant takes N times
 longer to cut off, bounded by the run deadline, which is patience rather than a wrong answer.
 
+**Each mutant's deadline comes from its own covering test file's time, not the whole suite's.** A
+mutant runs only the tests mapped to its file, so a deadline sized from the whole baseline -- which
+also pays for coverage instrumentation -- let a mutant looping forever run for minutes on a repo
+with many test files. Before the first mutant, each covering suite runs once, unmutated, in every
+worker (the same pass that refuses a suite green only in your session), and that time sets the
+deadline for the files it covers, by the same rule and floor. The report's
+`durations.perMutantTimeoutSeconds` is the largest deadline any mutant got.
+
 ## Operators
 
 | Name | Mutation |
@@ -507,7 +515,7 @@ schema cannot give.
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |
 | `workers` | How many mutants to evaluate at once, each in its own sandbox copy and its own Pester runspace. Default `1`; `0` means this machine (`ProcessorCount - 1`). See [Running mutants in parallel](#running-mutants-in-parallel) — it is opt-in for a reason. |
-| `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, baseline × factor × workers)` (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
+| `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, seconds × factor × workers)`, where `seconds` is how long the mutant's own covering tests took unmutated (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
 | `equivalents` | `file:function:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator. The run fails if a declaration is killed, matches nothing, **or matches more than one mutant** — a declaration argues about one mutant, so matching several is ambiguous rather than a broader claim. `description` is `<original> -> <mutated>`, taken from the source. `file:line:description` is still accepted, and is the only form available for code outside any function; prefer the function form, because a line number moves whenever anything above it is edited. |
 | `thresholds.high` / `thresholds.low` | Colour bands for the console score: green at or above `high`, yellow at or above `low`, red below (defaults 85 / 70). They affect the printed colour only, never the exit code. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |

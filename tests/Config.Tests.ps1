@@ -1538,3 +1538,25 @@ Describe 'Get-PSMutationInputFault' {
         Fault -Changed $true -Files @() | Should-MatchString 'empty list'
     }
 }
+
+Describe 'per-file deadlines (#253)' {
+    It 'sizes each file by the same rule as the run-wide deadline, from its own suite''s time' {
+        # Factor 4, one worker, floor 15: 10s -> 40, 0.2s -> the floor. The rule is not restated
+        # here; these are the same numbers Get-PSMutationTimeout gives for those baselines.
+        $map = Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{}) -FileSeconds @{ 'a.ps1' = 10.0; 'b.ps1' = 0.2 } -Workers 1
+        "$($map['a.ps1'])/$($map['b.ps1'])" | Should-Be '40/15'
+    }
+
+    It 'scales with the worker count, as the run-wide deadline does' {
+        (Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{}) -FileSeconds @{ 'a.ps1' = 10.0 } -Workers 3)['a.ps1'] | Should-Be 120
+    }
+
+    It 'is empty when nothing was measured' {
+        (Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{}) -FileSeconds @{} -Workers 1).Count | Should-Be 0
+    }
+
+    It 'reports the largest deadline given, or the run-wide one when no file was measured' {
+        Get-PSMutationLargestTimeout -TimeoutByFile @{ 'a.ps1' = 40; 'b.ps1' = 15; 'c.ps1' = 22 } -Fallback 99 | Should-Be 40
+        Get-PSMutationLargestTimeout -TimeoutByFile @{} -Fallback 99 | Should-Be 99
+    }
+}
