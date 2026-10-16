@@ -108,7 +108,17 @@ largest deadline given.
 mutants on lines no test ran, so it says how well the tests check the code they run and nothing
 about the code they never reach. `totalMutationScore` counts those uncovered mutants as not killed,
 as Stryker''s total does, and the summary prints it whenever the two differ. The thresholds still
-gate on `mutationScore`.'
+gate on `mutationScore`.
+
+**Code that defines a class or an enum can be mutation-tested.** Its baseline failed with "Index was
+out of range" -- Pester 6''s default coverage tracer cannot handle a class -- and the tests were
+blamed. Coverage is now measured with breakpoints, which also record a line the tracer missed, for
+about 6% more time. Behind that was a second fault: PowerShell keeps a compiled script by its text,
+and a type literal such as `[MyClass]` in an unchanged test file stays bound to the first class it
+saw, so every mutant inside a class was tested against the original and survived. When a mutate
+file defines a class or an enum, each covering test file in the sandbox now gets one comment line
+per mutant, restored afterwards, so it is recompiled against that mutant''s class. Measured: a class
+fixture went from 0 of 4 mutants killed to 3 of 4, the fourth an honest survivor.'
         }
     }
 }

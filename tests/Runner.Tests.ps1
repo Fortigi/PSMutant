@@ -583,6 +583,26 @@ Describe 'Invoke-PSMutationBaseline' {
         $r.DurationSeconds | Should-BeGreaterThanOrEqual 0
     }
 
+    It 'measures coverage with breakpoints, which survive a class where the tracer does not (#270)' {
+        Mock Invoke-Pester {
+            [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
+        }
+        Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) `
+            -SandboxRoot $script:coverageDir -Coverage | Out-Null
+        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter { $Configuration.CodeCoverage.UseBreakpoints.Value -eq $true }
+    }
+
+    It 'leaves the setting alone on a Pester that does not have it' {
+        # Pester 5.2.2 has no UseBreakpoints (measured): it only ever had breakpoints, and
+        # assigning a property that is not there would fail the run for nothing.
+        $old = [pscustomobject]@{ Enabled = $true }
+        Set-PSMutationCoverageBreakpoint -CodeCoverage $old
+        $old.PSObject.Properties['UseBreakpoints'] | Should-BeNull
+        $new = [pscustomobject]@{ Enabled = $true; UseBreakpoints = $false }
+        Set-PSMutationCoverageBreakpoint -CodeCoverage $new
+        $new.UseBreakpoints | Should-BeTrue
+    }
+
     It 'asks Pester for the result object and for coverage' {
         # Both flags are invisible to a mocked test unless the configuration itself is
         # asserted, and both are load-bearing: without PassThru there is no result
@@ -2028,5 +2048,101 @@ Describe 'Wait-PSMutationWorker wakes for the soonest OWN deadline (#253)' {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         Wait-PSMutationWorker -Schedule $sched -Context ([pscustomobject]@{ TimeoutSeconds = 30 })
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 0.8
+    }
+}
+
+Describe 'covering tests marked per mutant where a class is under test (#270)' {
+    # PowerShell caches a compiled script by its TEXT, and a type literal in it stays bound to the
+    # first class it saw. Marking each covering test file per mutant changes the text, so the test
+    # is recompiled against the class that mutant defines.
+    BeforeEach {
+        $script:mk = Join-Path $TestDrive "mk-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path $script:mk | Out-Null
+        function script:Put { param([string]$Name, [string]$Text)
+            $p = Join-Path $script:mk $Name; [System.IO.File]::WriteAllText($p, $Text); return $p }
+    }
+
+    It 'knows a run that defines <Name>' -ForEach @(
+        @{ Name = 'a class'; Code = 'class K { }'; Expected = $true }
+        @{ Name = 'an enum'; Code = 'enum E { A }'; Expected = $true }
+        @{ Name = 'a class inside a function body'; Code = 'function F { class N { } }'; Expected = $true }
+        @{ Name = 'functions only'; Code = 'function F { 1 }'; Expected = $false }
+    ) {
+        $f = Put 'm.ps1' $Code
+        Test-PSMutationDefinesType -Path @((Put 'other.ps1' 'function G { 2 }'), $f) | Should-Be $Expected
+    }
+
+    It 'is false for no files, and for a file that is not there' {
+        Test-PSMutationDefinesType -Path @() | Should-BeFalse
+        Test-PSMutationDefinesType -Path @((Join-Path $script:mk 'missing.ps1')) | Should-BeFalse
+    }
+
+    It 'appends the marker at the END, on its own line, and keeps the original bytes' {
+        $t = Put 'a.Tests.ps1' "Describe 'a' {`n  It 'x' { 1 }`n}"
+        $kept = Set-PSMutationTestMarker -Tests @($t) -Id '42'
+        $now = [System.IO.File]::ReadAllText($t)
+        $now | Should-BeLikeString "Describe 'a' {*  It 'x' { 1 }*}*# psmutant mutant 42 -- appended so PowerShell recompiles this file*"
+        # Every original line is where it was, so no failure message points at another line.
+        ($now -split "`n")[0..2] -join "`n" | Should-Be "Describe 'a' {`n  It 'x' { 1 }`n}"
+        @($kept).Count | Should-Be 1
+        $kept[0].Path | Should-Be $t
+        [System.Text.Encoding]::UTF8.GetString($kept[0].Bytes) | Should-Be "Describe 'a' {`n  It 'x' { 1 }`n}"
+    }
+
+    It 'marks every covering file, each with the mutant''s own id' {
+        $one = Put 'one.Tests.ps1' 'x'
+        $two = Put 'two.Tests.ps1' 'y'
+        $kept = Set-PSMutationTestMarker -Tests @($one, $two) -Id '7'
+        @($kept).Count | Should-Be 2
+        foreach ($p in $one, $two) { [System.IO.File]::ReadAllText($p) | Should-BeLikeString '*# psmutant mutant 7 *' }
+    }
+
+    It 'restores a marked test file byte for byte when the mutant is collected, even if it threw' {
+        # A byte-order mark and no final newline: what ReadAllText/WriteAllText would not round-trip.
+        $t = Join-Path $script:mk 'bom.Tests.ps1'
+        $orig = [byte[]](@(0xEF, 0xBB, 0xBF) + [System.Text.Encoding]::ASCII.GetBytes("Describe 'b' { }"))
+        [System.IO.File]::WriteAllBytes($t, $orig)
+        $kept = Set-PSMutationTestMarker -Tests @($t) -Id '1'
+        $src = Put 'src.ps1' 'function F { 1 }'
+        $job = [pscustomobject]@{ WorkerId = 0; Shell = $null; Async = $null
+            Candidate = [pscustomobject]@{ File = $src }; Source = $null; Index = 0; OriginalContent = 'function F { 1 }'
+            Clock = $null; TestOriginals = @($kept) }
+        Mock Receive-PSMutationJob { throw 'child exploded' }
+        { Complete-PSMutantEvaluation -Job $job } | Should-Throw
+        ([System.IO.File]::ReadAllBytes($t) -join ',') | Should-Be ($orig -join ',')
+    }
+
+    It 'marks the tests a dispatched mutant runs only when the run asks for it' -ForEach @(
+        @{ Mark = $true }
+        @{ Mark = $false }
+    ) {
+        $t = Put 'c.Tests.ps1' 'Describe c { }'
+        $f = Put 'c.ps1' 'function F { 1 -eq 1 }'
+        $cand = [pscustomobject]@{ Id = 3; File = $f; Line = 1; Operator = 'BinaryOperator'; Function = 'F'
+            Description = '-eq -> -ne'; StartOffset = 15; EndOffset = 18; Mutated = '-ne' }
+        $script:seenTest = $null
+        Mock Start-PSMutantEvaluation { $script:seenTest = [System.IO.File]::ReadAllText($CoveringTests[0]); StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        $ctx = [pscustomobject]@{ Candidates = @($cand); Originals = @{}; Roots = @($script:mk); SandboxRoot = $script:mk
+            TestsByFile = @{ $f = @($t) }; AllTests = @($t); TimeoutSeconds = 30; TimeoutByFile = @{}; RecordAllKillers = $false; MarkTests = $Mark }
+        $job = Start-PSMutationWorkerJob -Schedule ([pscustomobject]@{ Next = 0 }) -Context $ctx -WorkerId 0
+        if ($Mark) {
+            $script:seenTest | Should-BeLikeString '*# psmutant mutant 3 *'
+            @($job.TestOriginals).Count | Should-Be 1
+        }
+        else {
+            $script:seenTest | Should-Be 'Describe c { }'
+            @($job.TestOriginals).Count | Should-Be 0
+        }
+    }
+
+    It 'decides to mark from the candidates the loop is given' {
+        $cls = Put 'cls.ps1' 'class Q { [int] V() { return 1 -eq 1 } }'
+        $cand = [pscustomobject]@{ Id = 1; File = $cls; Line = 1; Operator = 'BinaryOperator'; Function = 'V'
+            Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = 'c' }
+        Mock Start-PSMutationWorkerJob { $script:ctxSeen = $Context; StubJob -Source $cand -Index 0 }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $null = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) `
+            -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot $script:mk -Quiet
+        $script:ctxSeen.MarkTests | Should-BeTrue
     }
 }

@@ -338,6 +338,17 @@ first version through `Remove-Module`, a fresh runspace and a touched test file,
 type cannot be compiled twice in the process. A fresh runspace per mutant was the obvious answer and
 is wrong for both -- the cache is the PROCESS's, which is what separate worker processes would buy.
 
+**A type literal is bound by a TEXT-keyed, process-wide cache, so class code needs its tests marked**
+(#270). `ScriptBlock.s_cachedScripts` keeps a compiled script by its text, and `[MyClass]` in it stays
+bound to the first class it saw -- measured: the same command text after redefining a class used the
+old one, the same text plus a comment used the new one. The consumer's test file never changes and the
+baseline compiles it first, so every class mutant survived. `Set-PSMutationTestMarker` appends one
+comment line per mutant to each covering test in the worker's sandbox and the job restores the BYTES
+afterwards; it runs only when `Test-PSMutationDefinesType` finds a class or enum. Separate worker
+processes would NOT fix this on their own -- a reused process has the same cache -- and clearing the
+cache needs a non-public method (`ScriptBlock.ClearScriptBlockCache`). Coverage uses breakpoints for the
+same issue: Pester 6's tracer fails any test touching a class.
+
 **`Get-PSMutationRunspaceError` lives in `PSMutation.Pester.ps1`, not `PSMutation.Runner.ps1`.**
 Reading a child runspace's error stream is this file's domain. The first draft of the warm runspace
 left it in Runner and called upward, making a cycle -- and coverage, the suite and the mutation gate
