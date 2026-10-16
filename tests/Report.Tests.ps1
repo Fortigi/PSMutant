@@ -2217,3 +2217,18 @@ Describe 'the total score beside the covered-code one (#264)' {
         finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }
 }
+
+Describe 'one mutant declared twice (#262)' {
+
+    It 'is refused, naming the key that excludes it, rather than calling the other one stale' {
+        $r = [pscustomobject]@{ File = 'a.ps1'; Line = 3; Function = 'F'; Description = '0 -> 1'; Status = 'Survived' }
+        $eq = [pscustomobject]@{ 'a.ps1:F:0 -> 1' = 'in config'; 'a.ps1:3:0 -> 1' = 'in code' }
+        $faults = @(Get-PSMutationDeclarationCoverageFault -Results @($r) -Equivalents $eq)
+        $faults | Should-BeCollection @('a.ps1:3:0 -> 1 -- declares the same mutant as a.ps1:F:0 -> 1; two arguments for one mutant drift apart, so keep one')
+    }
+
+    It 'still judges a single declaration by its hits' {
+        $r = [pscustomobject]@{ File = 'a.ps1'; Line = 3; Function = 'F'; Description = '0 -> 1'; Status = 'Survived' }
+        @(Get-PSMutationDeclarationCoverageFault -Results @($r) -Equivalents ([pscustomobject]@{ 'a.ps1:3:0 -> 1' = 'x' })).Count | Should-Be 0
+    }
+}

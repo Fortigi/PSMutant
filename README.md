@@ -341,6 +341,28 @@ The declaration is a **claim that gets checked**, not a mute button:
 The number of exclusions is printed next to the score and stored as `declaredEquivalent`, so
 a 100% resting on a dozen declarations can never be mistaken for one that killed everything.
 
+**A declaration can also sit in the code**, on the line directly above the mutated one:
+
+```powershell
+    # PSMutant-Equivalent: 0 -> 1: -Path is the only positional parameter
+    [Parameter(Mandatory, Position = 0)]
+    [string[]]$Path,
+```
+
+The comment is `<original> -> <mutated>: <reason>`, the description exactly as the survivor list
+prints it, because a line often holds several mutants and the declaration argues about one. It
+becomes the config key `file:line:description` for the line below it, so it faces every check above
+unchanged -- and it moves with the code, where a line-keyed config entry goes stale on any edit
+above it.
+
+- **Directly above** means through any comment lines that follow it, with no blank line in between.
+- **A declaration that cannot become a key is refused** before anything is mutated: a blank line
+  below it, code before it on its own line, nothing below it, no `->` in it, or no reason.
+- **One mutant declared both in the code and in the config is refused**, naming both keys: two
+  arguments for one mutant drift apart, and one of them silently does nothing. The same goes for a
+  config that declares one mutant under both its function form and its line form.
+- Only the `mutate` files are read for declarations.
+
 ## How it works
 
 1. **Baseline** — runs your tests once (must be green) with Pester code coverage over the

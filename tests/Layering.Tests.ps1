@@ -25,6 +25,9 @@ BeforeAll {
         # The composition root. It owns most of the graph on purpose: it is wiring, so it
         # is allowed to know about everything, and nothing is allowed to know about it.
         'Invoke-PSMutation.ps1 -> PSMutation.Config.ps1'
+        # Equivalence declarations written in the code (#262): read once at start-up and merged
+        # into the config's. Pure apart from parsing the mutated files; reaches no other file.
+        'Invoke-PSMutation.ps1 -> PSMutation.Inline.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Operators.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Output.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Pester.ps1'

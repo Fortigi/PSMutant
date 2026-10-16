@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.7.0'
+    ModuleVersion     = '0.8.0'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -40,85 +40,15 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = '**The report format is version 3: a mutant''s `Status` can be `TimedOut`, `CompileError` or
-`RuntimeError`, and the version 2 schema rejected the first of those already.** A timed-out mutant
-has always been written with `Status: TimedOut`, and `schemas/v2` allowed only `Killed` and
-`Survived` -- so any report with a timeout in it failed the schema this module shipped. Version 3
-defines all five. `TimedOut` still counts as killed. A mutant whose mutated source does not parse is
-now recorded `CompileError` without running any test, where before it was run and scored a kill;
-every operator works on the syntax tree, so one is a PSMutant defect -- please report it.
-`RuntimeError` is defined for a run that ends without a verdict. Both are left out of the score and
-counted in the new `compileErrors` and `runtimeErrors`, which, with `timedOut`, are now required
-beside a score. `durations.perMutantTimeoutSeconds` is defined as the largest deadline any mutant got,
-which is today''s only one. **A reader validating against `schemas/v2` must move to `schemas/v3`;**
-v2 and v1 still ship, to validate archived reports.
-
-**Two runs starting at once on one machine no longer kill each other at startup.** Every run
-sweeps temp for sandboxes left by killed runs. Two sweeps at the same moment found the same leftover
-and both removed it, and the loser''s `Remove-Item` threw "An object at the specified path ... does
-not exist" -- a terminating error, which the sweep''s `-ErrorAction SilentlyContinue` does not
-contain -- so a run died before it did anything. A removal that fails because the item is already
-gone is now the outcome the sweep wanted; one that fails while the item remains is still an error.
-
-It mattered to this module''s own gate too: with several workers, mutants of the sandbox code ran
-the sweep''s tests side by side, and a covering run that failed on the race scored its mutant Killed.
-
-**A suite that is green only because of your session is refused, instead of scoring 100%.**
-The baseline runs your suite in the session you call `Invoke-PSMutation` from, with whatever that
-session has loaded: modules, global functions and variables, `$ErrorActionPreference`, strict mode,
-`$PSDefaultParameterValues`. Each mutant runs in a fresh runspace that has only Pester. A test that
-leaned on the session passed the baseline and failed for every mutant, for a reason that had nothing
-to do with the mutant, and every mutant was scored Killed: a perfect score with nothing to flag it.
-
-Before the first mutant, every covering suite the run will use now runs once, unmutated, in every
-worker''s runspace and sandbox -- the same shell and script a mutant gets. A suite that fails there,
-returns nothing, or overruns the per-mutant timeout refuses the run, naming the suite, the worker and
-the failed tests. The workers check in parallel, so the cost is about one pass over the covering
-suites. A `-RecheckFrom` run checks only the suites its survivors use. If a run of yours is now
-refused, make the failing test load what it needs itself, in its own `BeforeAll`.
-
-**A suite that imports the code under test is judged on each mutant''s own code.** A worker reuses
-its runspace for many mutants, and `Import-Module` without `-Force` returns a module that is already
-loaded -- so a test importing the file under test ran later mutants against an earlier mutant''s code,
-producing kills and survivals about code that was not running. Every module loaded from the sandbox
-is now unloaded before each mutant, so the next import reads the file as it is; a module defining a
-class reloads the same way. Dot-sourcing was never affected.
-
-Two things PowerShell keeps for the life of the process are refused instead, naming file and line:
-`using module <path>` of the code under test, which stays at the first version loaded even in a
-fresh runspace, and a mutant inside an `Add-Type` call, whose type cannot be compiled twice. The
-README''s new "How your tests should load the code under test" says what works.
-
-**A mutant stuck in a blocking call no longer stalls every other worker.** Stopping a timed-out
-mutant waited for the call it was stuck in to return -- 7.4 seconds for an 8-second
-`Thread.Sleep`, and longer for a runaway regex -- and the scheduler waited with it, so every worker
-stood idle and the stall check could abort the run blaming a machine that had slept. The stop is now
-requested without waiting, and the worker carries on with a fresh runspace at once.
-
-**Each mutant''s deadline comes from its own test file, so a mutant looping forever is cut off in
-seconds rather than minutes.** The deadline was the whole baseline -- every test file, with
-coverage instrumentation -- times the factor and the worker count, while each mutant runs only the
-tests mapped to its own file. On a repo with many test files that let a non-terminating mutant run
-for minutes before it was stopped. Each covering suite''s time is now measured once, unmutated, in
-the worker runspaces before the first mutant, and sizes the deadline of the files it covers, with
-the same factor, worker multiplier and floor. `durations.perMutantTimeoutSeconds` reports the
-largest deadline given.
-
-**The report carries a total score beside the covered-code score.** `mutationScore` leaves out
-mutants on lines no test ran, so it says how well the tests check the code they run and nothing
-about the code they never reach. `totalMutationScore` counts those uncovered mutants as not killed,
-as Stryker''s total does, and the summary prints it whenever the two differ. The thresholds still
-gate on `mutationScore`.
-
-**Code that defines a class or an enum can be mutation-tested.** Its baseline failed with "Index was
-out of range" -- Pester 6''s default coverage tracer cannot handle a class -- and the tests were
-blamed. Coverage is now measured with breakpoints, which also record a line the tracer missed, for
-about 6% more time. Behind that was a second fault: PowerShell keeps a compiled script by its text,
-and a type literal such as `[MyClass]` in an unchanged test file stays bound to the first class it
-saw, so every mutant inside a class was tested against the original and survived. When a mutate
-file defines a class or an enum, each covering test file in the sandbox now gets one comment line
-per mutant, restored afterwards, so it is recompiled against that mutant''s class. Measured: a class
-fixture went from 0 of 4 mutants killed to 3 of 4, the fourth an honest survivor.'
+            ReleaseNotes = '**An equivalent mutant can be declared in the code.** A `# PSMutant-Equivalent: <original> ->
+<mutated>: <reason>` comment on the line directly above a mutated line declares that mutant
+equivalent. It becomes the same `file:line:description` key a config entry would, so it faces the
+same checks -- it must match exactly one mutant, and the run fails if the suite kills it -- and it
+moves with the code instead of going stale on an edit above it. A declaration that cannot become a
+key (a blank line below it, code beside it, no description or no reason) is refused before anything
+is mutated. One mutant declared twice -- in the code and in the config, or under both of a config''s
+key forms -- is now refused by name, where before the second key was reported as matching no
+mutant.'
         }
     }
 }

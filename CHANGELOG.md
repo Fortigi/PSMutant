@@ -1,3 +1,17 @@
+## [0.8.0] - 2026-10-16
+
+### For consumers
+
+**An equivalent mutant can be declared in the code.** A `# PSMutant-Equivalent: <original> ->
+<mutated>: <reason>` comment on the line directly above a mutated line declares that mutant
+equivalent. It becomes the same `file:line:description` key a config entry would, so it faces the
+same checks -- it must match exactly one mutant, and the run fails if the suite kills it -- and it
+moves with the code instead of going stale on an edit above it. A declaration that cannot become a
+key (a blank line below it, code beside it, no description or no reason) is refused before anything
+is mutated. One mutant declared twice -- in the code and in the config, or under both of a config's
+key forms -- is now refused by name, where before the second key was reported as matching no
+mutant.
+
 ## [0.7.0] - 2026-10-15
 
 ### For consumers

@@ -1679,3 +1679,55 @@ Describe 'Get-Msg' { It 'joins' { Get-Msg | Should -Be 'abc' } }
         $script:lines.Contains(2) | Should-BeFalse
     }
 }
+
+Describe 'an equivalent mutant declared in the code, end to end (#262)' {
+    BeforeAll {
+        $script:inl = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-inl-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:inl 'src'), (Join-Path $script:inl 'tests') -Force | Out-Null
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'b.ps1') }
+Describe 'b' { It 'runs' { { Get-Flag 2 } | Should -Not -Throw } }
+'@ | Set-Content (Join-Path $script:inl 'tests/b.Tests.ps1') -Encoding utf8
+        $script:inlConfig = Join-Path $script:inl 'c.json'
+        [ordered]@{
+            sandboxSubtrees  = @('src', 'tests')
+            mutate           = @('src/b.ps1')
+            tests            = @{ 'src/b.ps1' = @('tests/b.Tests.ps1') }
+            coveredLinesOnly = $true
+            operators        = @('BinaryOperator')
+            thresholds       = @{ high = 85; low = 70; break = 50 }
+            reportPath       = 'reports/r.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $script:inlConfig -Encoding utf8
+        function script:Write-Flag([string]$Above) {
+            "$Above`nfunction Get-Flag { param(`$n) if (`$n -gt 1) { return `$true } else { return `$false } }" |
+                Set-Content (Join-Path $script:inl 'src/b.ps1') -Encoding utf8
+        }
+    }
+
+    AfterAll { Remove-Item $script:inl -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'excludes the surviving mutant it names, exactly as a config entry would' {
+        # The suite only checks that Get-Flag does not throw, so `-gt -> -le` survives.
+        Write-Flag '# PSMutant-Equivalent: -gt -> -le: this test fixture says so'
+        $r = Invoke-PSMutation -ConfigFile $script:inlConfig -SourceRoot $script:inl -Quiet
+        $r.DeclaredEquivalent | Should-Be 1
+        $r.Survived | Should-Be 0
+        $r.StaleEquivalents | Should-BeCollection @()
+        # Not 'None': excluding the fixture's only mutant leaves nothing to score, which is
+        # below any threshold. What matters is that the declaration was not called stale.
+        $r.FailureReason | Should-NotBe 'StaleEquivalents'
+    }
+
+    It 'goes stale like a config entry when it names no mutant' {
+        Write-Flag '# PSMutant-Equivalent: -gt -> -ge: there is no such mutation'
+        $r = Invoke-PSMutation -ConfigFile $script:inlConfig -SourceRoot $script:inl -Quiet
+        $r.StaleEquivalents | Should-BeCollection @('src/b.ps1:2:-gt -> -ge -- declared equivalent but no such mutant exists')
+        $r.FailureReason | Should-Be 'StaleEquivalents'
+    }
+
+    It 'refuses a declaration that excuses nothing, before mutating anything' {
+        Write-Flag "# PSMutant-Equivalent: -gt -> -le: drifted`n"
+        { Invoke-PSMutation -ConfigFile $script:inlConfig -SourceRoot $script:inl -Quiet } |
+            Should-Throw -ExceptionMessage '*src/b.ps1:1 declares an equivalent mutant, but a blank line separates it*'
+    }
+}
