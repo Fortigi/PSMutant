@@ -707,8 +707,20 @@ Describe 'Invoke-PSMutationBaseline' {
 
 Describe 'Get-PSMutationVerdict' {
     It 'reports Survived only when the suite still fully passes' {
-        (Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Passed'; Killers = @() })).Status |
+        (Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Passed'; Ran = 1; Killers = @() })).Status |
             Should-Be 'Survived'
+    }
+
+    It 'reports RuntimeError, with no killers, for a pass over no test at all (#251)' {
+        # A mutant that ended the tests' discovery: nothing looked at it, so it neither survived
+        # nor was killed.
+        $v = Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Passed'; Ran = 0; Killers = @('x') })
+        $v.Status | Should-Be 'RuntimeError'
+        @($v.Killers).Count | Should-Be 0
+    }
+
+    It 'still reports Killed for a failing run, whatever its count' {
+        (Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Failed'; Ran = 0; Killers = @() })).Status | Should-Be 'Killed'
     }
 
     It 'reports TimedOut apart from Killed, because a hang is not evidence' {
@@ -729,7 +741,7 @@ Describe 'Get-PSMutationVerdict' {
     It 'carries an EMPTY killer list for a survivor and a timeout, never none' {
         # "Nothing killed it" and "we did not look" must not be the same value, and they differ
         # most at exactly these two verdicts.
-        @((Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Passed'; Killers = @('x') })).Killers).Count | Should-Be 0
+        @((Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Passed'; Ran = 1; Killers = @('x') })).Killers).Count | Should-Be 0
         @((Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'TimedOut'; Killers = @('x') })).Killers).Count | Should-Be 0
     }
 
@@ -765,7 +777,7 @@ Describe 'one mutant, started and completed' {
         # The restore is what lets the next mutant on this worker start from clean source. Miss
         # it and every later mutant is evaluated against an accumulating pile of earlier ones.
         # Split across the pair now, so both halves are asserted where they happen.
-        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Ran = 1; Killers = @() }' }
 
         $job = Start-PSMutantEvaluation -Candidate $script:candidate -Source $script:candidate -Index 0 `
             -MutatedContent 'MUTATED' -OriginalContent $script:before -CoveringTests @('t.Tests.ps1') -WorkerId 0 -SandboxRoot $TestDrive
@@ -818,8 +830,11 @@ Describe "a worker's child runspace" {
     }
 
     It 'hands back the verdict the child produced' {
-        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
-        (Invoke-ChildForTest).Result | Should-Be 'Passed'
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Ran = 4; Killers = @() }' }
+        $r = Invoke-ChildForTest
+        $r.Result | Should-Be 'Passed'
+        # And how many tests it ran, which is what tells a pass from a pass over nothing (#251).
+        $r.Ran | Should-Be 4
     }
 
     It 'fails loudly when the child returns no verdict, and says what the child said' {
@@ -1745,8 +1760,14 @@ Describe 'Get-PSMutationSuiteGroup' {
 
 Describe 'Get-PSMutationWorkerGreenFault' {
     It 'says nothing about a suite that passed' {
-        Should-BeNull -Actual (Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Passed'; Killers = @() }) `
+        Should-BeNull -Actual (Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Passed'; Ran = 1; Killers = @() }) `
                 -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5)
+    }
+
+    It 'refuses a suite that passed by running no test (#251)' {
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Passed'; Ran = 0; Killers = @() }) `
+            -Suite @('tests/a.Tests.ps1') -WorkerId 1 -TimeoutSeconds 5
+        $f | Should-Be 'The unmutated covering suite ran no test in a clean runspace: tests/a.Tests.ps1 in worker 1. Every test in it was skipped or never discovered, so it cannot pass a verdict on any mutant it covers.'
     }
 
     It 'names the suite, the worker and the failed tests, and what the session may have provided' {
@@ -1814,7 +1835,7 @@ Describe 'the unmutated suite, in every worker, before any mutant' {
     AfterEach { Close-PSMutationWarmRunspacePool }
 
     It 'passes when every suite is green in every worker' {
-        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Killers = @() }' }
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Ran = 1; Killers = @() }' }
         $seconds = Invoke-GreenForTest
         # And it says how long each mutate file's suite took, which sizes its deadline (#253).
         (@($seconds.Keys | Sort-Object | ForEach-Object { Split-Path $_ -Leaf }) -join ',') | Should-Be 'a.ps1,b.ps1'
@@ -1823,7 +1844,7 @@ Describe 'the unmutated suite, in every worker, before any mutant' {
 
     It 'refuses a suite red in the PRIMARY worker, naming it and the failed tests' {
         Mock Get-PSMutationWarmPesterScript {
-            'param($tests, $recordAllKillers) [pscustomobject]@{ Result = ($tests -like "*primary*b.Tests.ps1") ? "Failed" : "Passed"; Killers = @("B.needs the session") }'
+            'param($tests, $recordAllKillers) [pscustomobject]@{ Result = ($tests -like "*primary*b.Tests.ps1") ? "Failed" : "Passed"; Ran = 1; Killers = @("B.needs the session") }'
         }
         # Relative to the source root, as the report names files -- not the temp sandbox path.
         { Invoke-GreenForTest } | Should-Throw -ExceptionMessage '*runs: tests/b.Tests.ps1 in worker 0. Failed: B.needs the session.*'
@@ -1834,7 +1855,7 @@ Describe 'the unmutated suite, in every worker, before any mutant' {
         # fault comes from the SECOND job, after a passing first -- so the first fault is found
         # past the empty answer a green worker gives.
         Mock Get-PSMutationWarmPesterScript {
-            'param($tests, $recordAllKillers) [pscustomobject]@{ Result = ($tests -like "*second*a.Tests.ps1") ? "Failed" : "Passed"; Killers = @("A.copy") }'
+            'param($tests, $recordAllKillers) [pscustomobject]@{ Result = ($tests -like "*second*a.Tests.ps1") ? "Failed" : "Passed"; Ran = 1; Killers = @("A.copy") }'
         }
         # Named as the PRIMARY copy is: which sandbox a worker ran is scheduling, and the worker
         # number says it.

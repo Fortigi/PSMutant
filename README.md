@@ -383,7 +383,9 @@ above it.
    Before the first mutant, each covering suite runs once, unmutated, where the mutants will
    run: a fresh runspace per worker that has only Pester, not your session's modules, global
    functions or preferences. A suite green in your session but not there is refused, named with
-   its failing tests, because every mutant would otherwise be scored Killed by that failure.
+   its failing tests, because every mutant would otherwise be scored Killed by that failure. So is
+   one that runs no test there, every test skipped or never discovered: it can say nothing about
+   any mutant it covers.
 4. **Score** — `killed / total`, written to the JSON report. A mutant that hits the
    per-mutant timeout counts toward `killed`, because a mutant that hangs your suite is a
    fault -- but it is also reported on its own as `timedOut`, in the JSON and on the
@@ -391,9 +393,20 @@ above it.
    assumed so" are different claims, and a rising `timedOut` means your timeout is too
    tight or a covering suite too slow, not that your tests got better.
 
+   A mutant whose covering tests "passed" without running a single test is a `RuntimeError`, not
+   a survivor: it ended their discovery -- an `exit` reached while a test file was loading, say in
+   a function a `BeforeDiscovery` calls for its cases -- so nothing was asked about it. It is left
+   out of the score and counted as `runtimeErrors`, and the summary line says how many.
+
 A **loop-condition guard** drops any candidate inside a `while`/`for`/`do` condition, so a
 flipped comparison can never spin an infinite loop — which is what makes in-process
 execution safe and fast.
+
+**Mutated code that reaches `exit`** cannot end the run. Reached inside a test, or a `BeforeAll`,
+it fails that test and the mutant is killed; reached while tests are being discovered, it is a
+`RuntimeError` as above; at the top of a file a test dot-sources, it ends only that file.
+`[Environment]::Exit()` is different: it ends the whole PowerShell process, run and all, and nothing
+running inside the process can stop it. Leave code that calls it out of `mutate`.
 
 ### Running mutants in parallel
 

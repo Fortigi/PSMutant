@@ -59,6 +59,28 @@ Describe 'one mutant, evaluated' {
     }
 }
 
+Describe 'a mutant that ends its tests'' discovery (#251)' {
+    It 'is a RuntimeError, not a survivor, and the next mutant on the worker still runs' {
+        # The tests take their cases from the code AT DISCOVERY. An `exit` reached in a function
+        # ends the script that called it -- here the test file, before any test is found -- and
+        # Pester calls a run of nothing Passed. (An `exit` at the top of a dot-sourced file ends
+        # only that file, so it cannot do this.)
+        $code = Join-Path $script:proj 'cases.ps1'
+        $original = 'function Get-Case { if ($false) { exit 3 }; 1, 2 }'
+        Set-Content $code $original -Encoding utf8
+        $disc = Join-Path $script:proj 'cases.Tests.ps1'
+        @"
+BeforeDiscovery { . '$code'; `$cases = Get-Case }
+Describe 'd' { It 'is positive' -ForEach `$cases { `$_ | Should -BeGreaterThan 0 } }
+"@ | Set-Content $disc -Encoding utf8
+        $cand = [pscustomobject]@{ File = $code }
+        Invoke-TestMutant -Candidate $cand -MutatedContent ($original -replace '\$false', '$true') -OriginalContent $original `
+            -CoveringTests @($disc) -TimeoutSeconds 30 | Select-Object -ExpandProperty Status | Should-Be 'RuntimeError'
+        Invoke-TestMutant -Candidate $cand -MutatedContent ($original -replace '1, 2', '1, -2') -OriginalContent $original `
+            -CoveringTests @($disc) -TimeoutSeconds 30 | Select-Object -ExpandProperty Status | Should-Be 'Killed'
+    }
+}
+
 Describe 'one mutant, isolated' {
     It 'restores the original file after evaluating a mutant' {
         $mutated = $script:original -replace '\$n \* 2', '$n + 2'
