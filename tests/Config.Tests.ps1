@@ -425,6 +425,34 @@ Describe 'Get-PSMutationCoveredLinesOnly' {
     }
 }
 
+Describe 'Get-PSMutationTimeoutRule' {
+    It 'is the factor and the floor a config sets, or 4 and 15' {
+        $r = Get-PSMutationTimeoutRule -Cfg ('{}' | ConvertFrom-Json)
+        $r.Factor | Should-Be 4
+        $r.Floor | Should-Be 15
+        $r = Get-PSMutationTimeoutRule -Cfg ('{ "timeoutFactor": 2, "timeoutFloorSeconds": 9 }' | ConvertFrom-Json)
+        $r.Factor | Should-Be 2
+        $r.Floor | Should-Be 9
+    }
+}
+
+Describe 'Get-PSMutationKillersFirst' {
+    It 'is <Expected> for <Why>' -ForEach @(
+        @{ Why = 'a config that omits it'; Json = '{ "mutate": ["a"] }'; Expected = $true }
+        @{ Why = 'an explicit false'; Json = '{ "killersFirst": false }'; Expected = $false }
+        @{ Why = 'an explicit true'; Json = '{ "killersFirst": true }'; Expected = $true }
+    ) {
+        (Get-PSMutationKillersFirst -Cfg ($Json | ConvertFrom-Json)) | Should-Be $Expected
+    }
+
+    It 'is a key the config accepts, and refuses a string for it' {
+        # A string is truthy whatever it says, so "no" would mean yes.
+        Should-BeNull -Actual (Get-PSMutationConfigTypeFault -Cfg ('{ "mutate": ["a.ps1"], "tests": {}, "killersFirst": false }' | ConvertFrom-Json))
+        Get-PSMutationConfigTypeFault -Cfg ('{ "mutate": ["a.ps1"], "tests": {}, "killersFirst": "no" }' | ConvertFrom-Json) |
+            Should-BeLikeString '*killersFirst*'
+    }
+}
+
 Describe 'the defaults the README documents' {
     BeforeAll {
         # Set HERE rather than at file level. A top-level $script: assignment runs during

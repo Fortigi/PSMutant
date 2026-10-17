@@ -29,7 +29,7 @@ BeforeAll {
     # write to a variable somebody else is reading.
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
-        'PSMutation.Config.ps1', 'PSMutation.Output.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
+        'PSMutation.Config.ps1', 'PSMutation.Output.ps1', 'PSMutation.Killers.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
         'PSMutation.Sarif.ps1', 'PSMutation.Recheck.ps1', 'PSMutation.Inline.ps1', 'PSMutation.Glob.ps1', 'Invoke-PSMutation.ps1') {
         . (Join-Path $src $f)
     }

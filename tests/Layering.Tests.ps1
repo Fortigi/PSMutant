@@ -64,6 +64,9 @@ BeforeAll {
 
         'PSMutation.Runner.ps1 -> PSMutation.Operators.ps1'
         'PSMutation.Runner.ps1 -> PSMutation.Pester.ps1'
+        # Which tests a mutant tries first (#254): what the runner learns from finished mutants,
+        # kept pure and apart so its mutants pay for a cheap suite rather than the runner's.
+        'PSMutation.Runner.ps1 -> PSMutation.Killers.ps1'
         'PSMutation.Runner.ps1 -> PSMutation.Sandbox.ps1'
         # The SARIF log is a projection of the report's rows: it addresses a mutant with the
         # report's equivalence key, so an alert and the declaration that retires it agree.

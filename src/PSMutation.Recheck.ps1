@@ -620,7 +620,8 @@ function Invoke-PSMutationRecheckRun {
     $timeoutByFile = Get-PSMutationTimeoutByFile -Cfg $Cfg -FileSeconds $fileSeconds -Workers $Workers
     $ProvenanceArgs.PerMutantTimeoutSeconds = Get-PSMutationLargestTimeout -TimeoutByFile $timeoutByFile -Fallback $TimeoutSeconds
     $results = Invoke-PSMutationLoop -Candidates $targets -Sink $rows -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
-        -TimeoutByFile $timeoutByFile -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox -Quiet:$Quiet
+        -TimeoutByFile $timeoutByFile -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox -Quiet:$Quiet `
+        -KillersFirst (Get-PSMutationKillersFirst -Cfg $Cfg) -TimeoutRule (Get-PSMutationTimeoutRule -Cfg $Cfg)
     $recheckPath = Get-PSMutationRecheckReportPath -ReportPath $ReportPath
     # The prior report's own hashes and operator set travel with the new one, so the next
     # round can validate against them. Recomputing here would describe the CURRENT source

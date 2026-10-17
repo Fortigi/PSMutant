@@ -408,6 +408,33 @@ it fails that test and the mutant is killed; reached while tests are being disco
 `[Environment]::Exit()` is different: it ends the whole PowerShell process, run and all, and nothing
 running inside the process can stop it. Leave code that calls it out of `mutate`.
 
+### Tests that killed a neighbour run first
+
+Most of a run's time goes to killed mutants, and a killed mutant runs its covering files until the
+first test fails -- the whole of a slow file, when that test is near the end. But the mutants in one
+function are mostly killed by the same few tests. So once a mutant is killed, its killing tests are
+remembered, and each later mutant in the same function, then the same file, first runs up to three of
+them alone. If one fails, the mutant is killed and nothing else runs. If none does, the whole files
+run as they always did, so a survivor pays one short extra run. The first pass has its own
+deadline, by the same rule as every other -- `max(floor, seconds × factor × workers)` -- with
+`seconds` the slowest of its tests run alone, and never longer than the whole files' deadline. When
+it runs out, the whole files run; a mutant that hangs the first pass is still judged by them.
+
+Measured on this repo's own runner file, interleaved, two rounds each way with three workers: 307
+mutants in about 22% less wall clock (931 and 924 seconds off, 703 and 729 on), every one killed
+both ways. CPU time fell only about 4%: the saving is mostly time a worker spent waiting on a slow
+file, not work it did.
+
+**A test is only tried first once it has passed alone, against unmutated source.** A test that
+depends on what an earlier test left behind fails alone whatever the code is, and trusted blindly it
+would kill every mutant it was tried on. Each learned test is run once on its own, on an idle worker
+between mutants, before any mutant relies on it; one that fails there is never tried first.
+
+So a verdict is the same either way: a test failing against a mutant, having passed alone without
+it, is a failure the whole files would show too. What can differ is **which test the report names in
+`KilledBy`**, and with several workers it can differ between two runs, since what has been learned
+depends on which mutants finished first. Set `killersFirst` to `false` for the old timing.
+
 ### Running mutants in parallel
 
 Wall-clock is `mutants × suite`, and that is the reason mutation testing gets set off and walked
@@ -549,6 +576,7 @@ schema cannot give.
 | `testsByConvention` | Pair a mutate file that has no `tests` entry with `tests/<Name>.Tests.ps1`, when that file exists (default `false`). An explicit entry always wins, every pair made this way is printed at start-up, and `tests` may then be `{}`. A file with neither still runs the whole suite, as before. |
 | `operators` | Operator classes to inject. Default is the four expression operators; `StringLiteral`, `ConditionalBoundary`, `ConditionForcing` and `ReturnValue` are opt-in. |
 | `coveredLinesOnly` | Restrict mutants to lines the baseline executed (default `true`). |
+| `killersFirst` | Before running a mutant's whole covering files, run only the tests that already killed a mutant in the same function or file (default `true`). See [Tests that killed a neighbour run first](#tests-that-killed-a-neighbour-run-first). `false` runs the whole files for every mutant; `recordAllKillers` turns it off too. |
 | `ignoreCalls` | Commands whose arguments are never mutated. Default: the logging commands `Write-Verbose`, `Write-Debug`, `Write-Information`, `Write-Host` and `Write-Progress`, whose text rarely says anything about your tests. `[]` mutates inside every call. Every mutant inside such a call is skipped, from any operator, and the number is printed beside the score and written to the report as `skippedAsIgnoredCall`, with the list as `ignoreCalls`. Matched by name, ignoring case and a module qualifier. `Write-Warning`, `Write-Error` and `throw` are not in the default, because tests often assert those messages. |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |
 | `workers` | How many mutants to evaluate at once, each in its own sandbox copy and its own Pester runspace. Default `1`; `0` means this machine (`ProcessorCount - 1`). See [Running mutants in parallel](#running-mutants-in-parallel) — it is opt-in for a reason. |
