@@ -256,6 +256,9 @@ function Invoke-PSMutationRun {
     $root = (Resolve-Path $SourceRoot).Path
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
     Assert-PSMutationConfig -Cfg $cfg
+    # The declarations the mutated files make in their code (#262) join the config's, here and
+    # once, so every later reader -- the score, the stale check, a recheck -- sees one set.
+    $cfg | Add-Member -NotePropertyName equivalents -NotePropertyValue (Get-PSMutationAllEquivalent -Cfg $cfg -SourceRoot $root) -Force
     Assert-PSMutationPester
     Clear-PSMutationStaleSandbox
 

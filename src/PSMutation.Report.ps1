@@ -1070,9 +1070,16 @@ function Get-PSMutationDeclarationCoverageFault {
     # A count, not a set: "matched something" and "matched exactly one" are different
     # claims, and only the second is the one a declaration makes.
     $matched = @{}
+    # A mutant answering to TWO declared keys -- a config's function-keyed entry beside a
+    # line-keyed one, or beside a declaration in the code (#262) -- is declared twice. The first
+    # key is the one that excludes it; the other matched nothing on its own, and saying "no such
+    # mutant exists" about it would send somebody looking for a mutant that is right there.
+    $twice = @{}
     foreach ($r in $Results) {
-        $key = Get-PSMutationDeclaredKey -Result $r -Declared $declared
-        if ($null -ne $key) { $matched[$key] = 1 + [int]$matched[$key] }
+        $keys = @(Get-PSMutationEquivalentKey -Result $r | Where-Object { $declared.ContainsKey($_) })
+        if ($keys.Count -eq 0) { continue }
+        $matched[$keys[0]] = 1 + [int]$matched[$keys[0]]
+        foreach ($extra in @($keys | Select-Object -Skip 1)) { $twice[$extra] = $keys[0] }
     }
 
     # Filtered once at the end rather than guarded per key. `if ($fault)` looks like it
@@ -1091,6 +1098,7 @@ function Get-PSMutationDeclarationCoverageFault {
             [System.StringComparer]::OrdinalIgnoreCase)
     $faults = foreach ($k in $declared.Keys) {
         if ($scope -and -not $scope.Contains((Get-PSMutationDeclarationFile -Key $k))) { continue }
+        if ($twice.ContainsKey($k)) { "$k -- declares the same mutant as $($twice[$k]); two arguments for one mutant drift apart, so keep one"; continue }
         Get-PSMutationDeclarationFault -Key $k -Hits ([int]$matched[$k])
     }
     # No comma-wrap: the caller concatenates this with another array.
