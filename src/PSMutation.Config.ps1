@@ -256,8 +256,10 @@ function Assert-PSMutationConfig {
     # .Where({ $_ }) rather than a bare .Count: with no `tests` key at all, .PSObject
     # yields $null and @($null) is an array of ONE, so a plain count reads a missing map
     # as a populated one.
-    if (@($Cfg.tests.PSObject.Properties).Where({ $_ }).Count -eq 0) {
-        throw "Config must set 'tests' to a map of mutate file -> the test file(s) covering it."
+    #
+    #    An empty map is enough under testsByConvention (#265), which fills it in by name.
+    if (@($Cfg.tests.PSObject.Properties).Where({ $_ }).Count -eq 0 -and -not [bool]$Cfg.testsByConvention) {
+        throw "Config must set 'tests' to a map of mutate file -> the test file(s) covering it, or {} with testsByConvention."
     }
 
     # 3. Everything about shape and type, decided by the schema alone.

@@ -17,6 +17,7 @@
     "src/PSMutation.Pester.ps1",
     "src/PSMutation.Config.ps1",
     "src/PSMutation.Inline.ps1",
+    "src/PSMutation.Glob.ps1",
     "src/PSMutation.Output.ps1",
     "src/PSMutation.Runner.ps1",
     "src/Invoke-PSMutation.ps1",
@@ -43,6 +44,9 @@
     ],
     "src/PSMutation.Inline.ps1": [
       "tests/Inline.Tests.ps1"
+    ],
+    "src/PSMutation.Glob.ps1": [
+      "tests/Glob.Tests.ps1"
     ],
     "src/PSMutation.Output.ps1": [
       "tests/Output.Tests.ps1"

@@ -390,6 +390,21 @@ Describe 'Get-PSMutationIgnoreCall (#263)' {
     }
 }
 
+Describe 'testsByConvention (#265)' {
+    It 'lets tests be empty when it is on, and only then' {
+        Assert-PSMutationConfig -Cfg ('{ "mutate": ["a"], "tests": {}, "testsByConvention": true }' | ConvertFrom-Json)
+        foreach ($json in '{ "mutate": ["a"], "tests": {} }', '{ "mutate": ["a"], "tests": {}, "testsByConvention": false }') {
+            { Assert-PSMutationConfig -Cfg ($json | ConvertFrom-Json) } |
+                Should-Throw -ExceptionMessage "Config must set 'tests'*or {} with testsByConvention."
+        }
+    }
+
+    It 'refuses a value that is not a boolean' {
+        { Assert-PSMutationConfig -Cfg ('{ "mutate": ["a"], "tests": { "a": ["t"] }, "testsByConvention": "yes" }' | ConvertFrom-Json) } |
+            Should-Throw -ExceptionMessage '*schema*'
+    }
+}
+
 Describe 'Get-PSMutationCoveredLinesOnly' {
     It 'defaults to true when the config omits it' {
         # The #25 defect. There was no resolver at all: the orchestrator cast the raw
