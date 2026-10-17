@@ -257,6 +257,12 @@ function Invoke-PSMutationRun {
     $root = (Resolve-Path $SourceRoot).Path
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
     Assert-PSMutationConfig -Cfg $cfg
+    # Patterns and pairing by name (#265), expanded here and once into the plain lists everything
+    # below reads, and said out loud: the run still names exactly the files it covers.
+    $resolved = Resolve-PSMutationConfigPattern -Cfg $cfg -Root $root
+    $cfg = $resolved.Cfg
+    $patternLines = foreach ($text in $resolved.Lines) { New-PSMutationLine -Role 'Muted' -Text $text }
+    Write-PSMutationOutput -Quiet:$Quiet -Lines @($patternLines)
     # The declarations the mutated files make in their code (#262) join the config's, here and
     # once, so every later reader -- the score, the stale check, a recheck -- sees one set.
     $cfg | Add-Member -NotePropertyName equivalents -NotePropertyValue (Get-PSMutationAllEquivalent -Cfg $cfg -SourceRoot $root) -Force

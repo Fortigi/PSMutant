@@ -30,7 +30,7 @@ BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
         'PSMutation.Config.ps1', 'PSMutation.Output.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
-        'PSMutation.Sarif.ps1', 'PSMutation.Recheck.ps1', 'PSMutation.Inline.ps1', 'Invoke-PSMutation.ps1') {
+        'PSMutation.Sarif.ps1', 'PSMutation.Recheck.ps1', 'PSMutation.Inline.ps1', 'PSMutation.Glob.ps1', 'Invoke-PSMutation.ps1') {
         . (Join-Path $src $f)
     }
     # The unmutated suite check (#248) runs real suites in real runspaces, and every run here is
@@ -124,6 +124,26 @@ Describe 'Invoke-PSMutation' {
         $r.Survived | Should-Be 1
         $r.Score    | Should-Be 50
         $r.ExitCode | Should-Be 0
+    }
+
+    It 'expands a pattern in mutate before anything reads the list, and says what it became (#265)' {
+        New-Item -ItemType Directory -Path (Join-Path $script:root 'src') -Force | Out-Null
+        Set-Content -LiteralPath (Join-Path $script:root 'src/a.ps1') -Value '1' -Encoding utf8
+        [ordered]@{
+            mutate     = @('src/*.ps1')
+            tests      = @{ 'src/a.ps1' = @('tests/a.Tests.ps1') }
+            operators  = @('BinaryOperator')
+            thresholds = @{ high = 85; low = 70; break = $null }
+            reportPath = 'reports/run.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        Mock Write-PSMutationOutput { }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root | Out-Null
+        Should-Invoke Select-PSMutationCandidate -Exactly 1 -ParameterFilter {
+            @($MutateFiles).Count -eq 1 -and $MutateFiles[0] -like '*a.ps1'
+        }
+        Should-Invoke Write-PSMutationOutput -ParameterFilter {
+            @($Lines | Where-Object { $_.Text -eq "  mutate 'src/*.ps1' -> src/a.ps1" }).Count -eq 1
+        }
     }
 
     It 'writes the report where the config asked for it' {

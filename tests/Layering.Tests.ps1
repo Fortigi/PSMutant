@@ -28,6 +28,9 @@ BeforeAll {
         # Equivalence declarations written in the code (#262): read once at start-up and merged
         # into the config's. Pure apart from parsing the mutated files; reaches no other file.
         'Invoke-PSMutation.ps1 -> PSMutation.Inline.ps1'
+        # Patterns in mutate and tests, and pairing by name (#265): expanded once at start-up
+        # into the plain lists the rest reads. Reaches no other file.
+        'Invoke-PSMutation.ps1 -> PSMutation.Glob.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Operators.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Output.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Pester.ps1'

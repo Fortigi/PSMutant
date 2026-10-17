@@ -59,7 +59,17 @@ list applied as `ignoreCalls`; neither is counted in `total` or either score. Mu
 change, so a recheck still matches. **This can lower your mutant count after upgrading** -- a run
 that mutated inside logging calls before will now skip those mutants; set `"ignoreCalls": []` to
 keep the old behaviour. `Write-Warning`, `Write-Error` and `throw` are not in the default, because
-tests often assert those messages. A `-ListOnly` result carries the count as `Ignored`.'
+tests often assert those messages. A `-ListOnly` result carries the count as `Ignored`.
+
+**Patterns in `mutate` and `tests`, and pairing by name.** An entry holding `*` or `?` is a pattern,
+read as PSComplexity reads its config''s `exclude`: `*` and `?` stay within one path segment, `**`
+spans any number of them, and a pattern also matches everything below what it names. Patterns are
+expanded once at start-up, before anything else reads the lists, and the files each matched are
+printed, so the run still names exactly what it covers. A pattern matching no file is refused,
+naming every such pattern at once. The new `testsByConvention` switch pairs a mutate file that has no
+`tests` entry with `tests/<Name>.Tests.ps1` when that exists; an explicit entry always wins, each
+pair is printed, and `tests` may then be `{}`. Off by default, so upgrading changes no mapping.
+Matched without regard to case on every platform, as every other path here is.'
         }
     }
 }
