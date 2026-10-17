@@ -1050,6 +1050,44 @@ Describe 'the per-file AST index' {
     }
 }
 
+Describe 'ignored calls (#263)' {
+    BeforeAll {
+        $script:calls = Join-Path $TestDrive 'calls.ps1'
+        # Line 1: ignored, written plainly. Line 2: ignored, qualified and in another case.
+        # Line 3: not ignored. Line 4: a name that is not written out.
+        [System.IO.File]::WriteAllText($script:calls, ((@(
+                        'Write-Verbose (1 + 2)'
+                        'microsoft.powershell.utility\write-verbose -Message 3'
+                        'Write-Output 4'
+                        '& $cmd 5'
+                    ) -join "`n") + "`n"))
+        $script:text = [System.IO.File]::ReadAllText($script:calls)
+    }
+
+    It 'gives the arguments of each call to a listed command, by name, qualifier and case aside' {
+        $r = Get-PSMutationIgnoredCallRange -Path $script:calls -Command @('Write-Verbose', 'Write-Debug')
+        $r.Count | Should-Be 2
+        $script:text.Substring($r[0].Start, $r[0].End - $r[0].Start) | Should-Be ' (1 + 2)'
+        $script:text.Substring($r[1].Start, $r[1].End - $r[1].Start) | Should-Be ' -Message 3'
+    }
+
+    It 'gives nothing for an empty list, and an array either way' {
+        $r = Get-PSMutationIgnoredCallRange -Path $script:calls -Command @()
+        Should-BeTrue -Actual ($r -is [object[]])
+        $r.Count | Should-Be 0
+        $none = Get-PSMutationIgnoredCallRange -Path $script:calls -Command @('Write-Host')
+        Should-BeTrue -Actual ($none -is [object[]])
+    }
+
+    It 'reads a candidate as inside a range from its start up to, not including, the end' {
+        $ranges = @([pscustomobject]@{ Start = 10; End = 20 }, [pscustomobject]@{ Start = 30; End = 40 })
+        foreach ($case in @(@(9, $false), @(10, $true), @(19, $true), @(20, $false), @(35, $true), @(40, $false))) {
+            Test-PSMutationInIgnoredCall -Candidate ([pscustomobject]@{ StartOffset = $case[0] }) -Ranges $ranges | Should-Be $case[1]
+        }
+        Test-PSMutationInIgnoredCall -Candidate ([pscustomobject]@{ StartOffset = 15 }) -Ranges @() | Should-BeFalse
+    }
+}
+
 Describe 'Test-PSMutationParsable (#252)' {
     It 'is true for source that parses, including none at all' {
         Test-PSMutationParsable -Content 'function F { if ($a -eq 1) { 2 } }' | Should-BeTrue

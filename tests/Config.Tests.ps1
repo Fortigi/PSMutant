@@ -365,6 +365,31 @@ Describe 'Assert-PSMutationConfig' {
     }
 }
 
+Describe 'Get-PSMutationIgnoreCall (#263)' {
+    It 'is the logging commands when the config sets nothing' {
+        # Assigned first: the comma-wrap that keeps an empty list whole nests when piped straight on.
+        foreach ($json in '{}', '{ "ignoreCalls": null }') {
+            $list = Get-PSMutationIgnoreCall -Cfg ($json | ConvertFrom-Json)
+            $list | Should-BeCollection @('Write-Verbose', 'Write-Debug', 'Write-Information', 'Write-Host', 'Write-Progress')
+        }
+    }
+
+    It 'is the list the config sets, and an empty list for []' {
+        $list = Get-PSMutationIgnoreCall -Cfg ('{ "ignoreCalls": ["Write-Log"] }' | ConvertFrom-Json)
+        $list | Should-BeCollection @('Write-Log')
+        $none = Get-PSMutationIgnoreCall -Cfg ('{ "ignoreCalls": [] }' | ConvertFrom-Json)
+        Should-BeTrue -Actual ($none -is [string[]])
+        $none.Count | Should-Be 0
+    }
+
+    It 'refuses a list holding something other than a command name' {
+        foreach ($bad in '[1]', '[""]', '"Write-Host"') {
+            { Assert-PSMutationConfig -Cfg ("{ ""mutate"": [""a""], ""tests"": { ""a"": [""t""] }, ""ignoreCalls"": $bad }" | ConvertFrom-Json) } |
+                Should-Throw -ExceptionMessage '*schema*'
+        }
+    }
+}
+
 Describe 'Get-PSMutationCoveredLinesOnly' {
     It 'defaults to true when the config omits it' {
         # The #25 defect. There was no resolver at all: the orchestrator cast the raw

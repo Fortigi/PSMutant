@@ -282,6 +282,24 @@ function Get-PSMutationCoveredLinesOnly {
     return [bool]$Cfg.coveredLinesOnly
 }
 
+# The commands whose arguments are not mutated when a config says nothing (#263): logging only.
+# Their text rarely tells anyone anything about the tests. Write-Warning, Write-Error and throw are
+# NOT here: tests assert those messages, so their mutants are signal.
+$script:PSMutationDefaultIgnoreCalls = @('Write-Verbose', 'Write-Debug', 'Write-Information', 'Write-Host', 'Write-Progress')
+
+function Get-PSMutationIgnoreCall {
+    # The commands whose arguments this run does not mutate: the config's list, or the logging
+    # commands when it sets none. An empty list is an answer, not an absence -- `[]` mutates inside
+    # every call -- which is why this tests for $null rather than for truth, unlike operators.
+    #
+    # Comma-wrapped so the empty list survives the return; both types declared for that wrap.
+    [OutputType([string[]], [object[]])]
+    [CmdletBinding()]
+    param($Cfg)
+    if ($null -eq $Cfg.ignoreCalls) { return , [string[]]$script:PSMutationDefaultIgnoreCalls }
+    return , [string[]]@($Cfg.ignoreCalls)
+}
+
 function Test-PSMutationBaselineNeeded {
     <#
     .SYNOPSIS

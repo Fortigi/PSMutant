@@ -524,6 +524,10 @@ Describe 'Invoke-PSMutation' {
         Should-Invoke Select-PSMutationCandidate -Exactly 1 -ParameterFilter {
             @($Operators).Count -eq 1 -and $Operators -contains 'BinaryOperator'
         }
+        # The config sets no ignoreCalls, so the logging commands (#263).
+        Should-Invoke Select-PSMutationCandidate -Exactly 1 -ParameterFilter {
+            @($IgnoreCall).Count -eq 5 -and $IgnoreCall -contains 'Write-Verbose'
+        }
     }
 }
 
