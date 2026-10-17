@@ -2,6 +2,19 @@
 
 ### For consumers
 
+**Killed mutants are much cheaper: the tests that killed a neighbour run first.** Once a mutant is
+killed, its killing tests are remembered, and each later mutant in the same function, then the same
+file, first runs up to three of them alone; only if none fails do its whole covering files run. A test
+is trusted for this only after it has passed on its own against unmutated source, checked once on an
+idle worker -- so a test that depends on an earlier test's state is never tried alone, and verdicts
+are unchanged. On by default; the new `killersFirst` config key turns it off, and `recordAllKillers`
+does too. **The test a report names in `KilledBy` can change**, and with several workers can differ
+between two runs of the same config. Measured interleaved on this repo's own runner file, 307
+mutants with three workers over two rounds each way: wall clock 931 and 924 seconds off, 703 and 729
+on -- about 22% less -- every mutant killed both ways. A first pass gets its own short deadline,
+sized from how long its tests took alone, so a mutant that hangs them is not held for the whole
+files' deadline before they run.
+
 **A mutant that stops the tests from being found is no longer a survivor.** When mutated code
 reaches `exit` while a test file is being discovered -- in a function a `BeforeDiscovery` calls for
 its cases, say -- the file's tests are never found, and Pester calls a run of no test `Passed`.

@@ -19,6 +19,7 @@ BeforeAll {
     . (Join-Path $src 'PSMutation.Sandbox.ps1')
     . (Join-Path $src 'PSMutation.Pester.ps1')     # Get-PSMutationPesterPath, mocked below
     . (Join-Path $src 'PSMutation.Output.ps1')
+    . (Join-Path $src 'PSMutation.Killers.ps1')
     . (Join-Path $src 'PSMutation.Runner.ps1')
 
     $script:fixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-runner-$PID-$($script:tag).ps1"
@@ -401,7 +402,7 @@ Describe 'Invoke-PSMutationLoop' {
         # Reachable two ways: a mutate file with no covered candidates, and a
         # -RecheckFrom run whose previous survivors are all dead. Both are ordinary
         # outcomes, so neither may throw.
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
         @($r).Count | Should-Be 0
     }
@@ -419,7 +420,7 @@ Describe 'Invoke-PSMutationLoop' {
         }
         $map = @{ $script:fixture = @('specific.Tests.ps1') }
 
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile $map -AllTests @('all-tests.ps1') `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile $map -AllTests @('all-tests.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
 
         $script:seenTests | Should-BeCollection @('specific.Tests.ps1')
@@ -436,7 +437,7 @@ Describe 'Invoke-PSMutationLoop' {
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
         }
 
-        Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
+        Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) | Out-Null
 
         # [[]1/1] escapes the bracket: in a wildcard a bare [1/1] is a character class.
@@ -457,7 +458,7 @@ Describe 'Invoke-PSMutationLoop' {
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
         }
 
-        Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
+        Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet | Out-Null
 
         Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter { $Quiet }
@@ -478,7 +479,7 @@ Describe 'Invoke-PSMutationLoop' {
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = ' '
         }
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('all-tests.ps1') `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('all-tests.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
         $script:seenTests | Should-BeCollection @('all-tests.ps1')
         $r[0].Status     | Should-Be 'Killed'
@@ -1305,7 +1306,7 @@ Describe 'the mutant row the report publishes' {
             Description = '-eq -> -ne'; StartOffset = 0; EndOffset = 1; Mutated = ' '
             Original = '-eq'
         }
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
 
         # Function joined this list in #3, deliberately: an equivalence declaration keyed on
@@ -1337,7 +1338,7 @@ Describe 'the mutate file is read once per FILE, not twice per mutant' {
                 Description = "m$_"; StartOffset = 0; EndOffset = 1; Mutated = ' '
             }
         }
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
             -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
 
         @($r).Count | Should-Be 5
@@ -1375,7 +1376,7 @@ Describe 'the mutate file is read once per FILE, not twice per mutant' {
             }
         }
         try {
-            $null = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
+            $null = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) -TestsByFile @{} -AllTests @('t.Tests.ps1') `
                 -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
             # The second mutant must have been handed the original, not what was on disk by then.
             @($script:seenOriginals).Count | Should-Be 2
@@ -1432,7 +1433,7 @@ Describe 'the loop is bounded as a whole' {
         # something that only happens once there is nothing left to do.
         Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
         Mock Complete-PSMutantEvaluation { Start-Sleep -Milliseconds 600; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
-        { Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) `
+        { Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) `
                 -Candidates @($script:dCand, $script:dCand, $script:dCand) -TestsByFile @{} -AllTests @('t.ps1') `
                 -TimeoutSeconds 5 -SandboxRoot $TestDrive -Quiet -DeadlineSeconds 1 } |
             Should-Throw -ExceptionMessage '*passed its wall-clock budget*'
@@ -1446,7 +1447,7 @@ Describe 'the loop is bounded as a whole' {
         Mock Complete-PSMutantEvaluation { Start-Sleep -Milliseconds 600; [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $sink = [System.Collections.Generic.List[object]]::new()
         try {
-            Invoke-PSMutationLoop -Sink $sink -Candidates @($script:dCand, $script:dCand, $script:dCand) `
+            Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink $sink -Candidates @($script:dCand, $script:dCand, $script:dCand) `
                 -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot $TestDrive `
                 -Quiet -DeadlineSeconds 1
         }
@@ -1468,7 +1469,7 @@ Describe 'the loop is bounded as a whole' {
         Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         Mock Get-PSMutationStalledFault { 'the handle never came back' }
         $sink = [System.Collections.Generic.List[object]]::new()
-        { Invoke-PSMutationLoop -Sink $sink -Candidates @($script:dCand, $script:dCand) `
+        { Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink $sink -Candidates @($script:dCand, $script:dCand) `
                 -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot $TestDrive `
                 -Quiet -DeadlineSeconds 0 } | Should-Throw -ExceptionMessage '*handle never came back*'
         # Checked AFTER the first mutant, so the row it finished is already recorded -- which is
@@ -1481,7 +1482,7 @@ Describe 'the loop is bounded as a whole' {
         # a caller who does not want the bound would have to invent a number they do not care about.
         Mock Start-PSMutantEvaluation { StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
         Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) `
             -Candidates @($script:dCand, $script:dCand) -TestsByFile @{} -AllTests @('t.ps1') `
             -TimeoutSeconds 5 -SandboxRoot $TestDrive -Quiet -DeadlineSeconds 0
         $r.Count | Should-Be 2
@@ -1698,7 +1699,7 @@ Describe 'the worker pool the loop is given' {
         $w1 = Join-Path $root 'psmut-w1'
         $w2 = Join-Path $root 'psmut-w2'
 
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) `
             -TestsByFile @{} -AllTests @((Join-Path $root 'all.Tests.ps1')) -TimeoutSeconds 5 `
             -SandboxRoot $root -WorkerSandbox @($w1, $w2) -Quiet
 
@@ -1724,7 +1725,7 @@ Describe 'the worker pool the loop is given' {
                 Description = "m$_"; StartOffset = 0; EndOffset = 1; Mutated = ' '
             }
         }
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cands) `
             -TestsByFile @{} -AllTests @((Join-Path $root 'all.Tests.ps1')) -TimeoutSeconds 5 `
             -SandboxRoot $root -WorkerSandbox @((Join-Path $root 'psmut-w1')) -Quiet
 
@@ -2001,7 +2002,7 @@ Describe 'a mutant that does not parse (#252)' {
     It 'is recorded CompileError, with no test run and the file never written' {
         Mock Start-PSMutantEvaluation { throw 'a mutant that does not parse must not be run' }
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($script:brokenCand) `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($script:brokenCand) `
             -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
         $r[0].Status | Should-Be 'CompileError'
         # Collected AT ONCE, not when its 5s budget runs out: a decided job is complete when it is
@@ -2018,7 +2019,7 @@ Describe 'a mutant that does not parse (#252)' {
         Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $ok = $script:brokenCand.PSObject.Copy()
         $ok.Mutated = ' }'
-        $r = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($ok) `
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($ok) `
             -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot ([System.IO.Path]::GetTempPath()) -Quiet
         $r[0].Status | Should-Be 'Killed'
         Should-Invoke Start-PSMutantEvaluation -Exactly 1
@@ -2046,7 +2047,8 @@ Describe 'each mutant runs under its own file''s deadline (#253)' {
             Description = '-eq -> -ne'; StartOffset = 15; EndOffset = 18; Mutated = '-ne' }
         function script:New-DeadlineContext { param([hashtable]$ByFile)
             [pscustomobject]@{ Candidates = @($script:dlCand); Originals = @{}; Roots = @($TestDrive); SandboxRoot = $TestDrive
-                TestsByFile = @{}; AllTests = @('t.ps1'); TimeoutSeconds = 3600; TimeoutByFile = $ByFile; RecordAllKillers = $false }
+                TestsByFile = @{}; AllTests = @('t.ps1'); TimeoutSeconds = 3600; TimeoutByFile = $ByFile; RecordAllKillers = $false
+                Killers = New-PSMutationKillerMemory }
         }
     }
 
@@ -2181,7 +2183,8 @@ Describe 'covering tests marked per mutant where a class is under test (#270)' {
         $script:seenTest = $null
         Mock Start-PSMutantEvaluation { $script:seenTest = [System.IO.File]::ReadAllText($CoveringTests[0]); StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
         $ctx = [pscustomobject]@{ Candidates = @($cand); Originals = @{}; Roots = @($script:mk); SandboxRoot = $script:mk
-            TestsByFile = @{ $f = @($t) }; AllTests = @($t); TimeoutSeconds = 30; TimeoutByFile = @{}; RecordAllKillers = $false; MarkTests = $Mark }
+            TestsByFile = @{ $f = @($t) }; AllTests = @($t); TimeoutSeconds = 30; TimeoutByFile = @{}; RecordAllKillers = $false; MarkTests = $Mark
+            Killers = New-PSMutationKillerMemory }
         $job = Start-PSMutationWorkerJob -Schedule ([pscustomobject]@{ Next = 0 }) -Context $ctx -WorkerId 0
         if ($Mark) {
             $script:seenTest | Should-BeLikeString '*# psmutant mutant 3 *'
@@ -2199,8 +2202,111 @@ Describe 'covering tests marked per mutant where a class is under test (#270)' {
             Description = 'x'; StartOffset = 0; EndOffset = 1; Mutated = 'c' }
         Mock Start-PSMutationWorkerJob { $script:ctxSeen = $Context; StubJob -Source $cand -Index 0 }
         Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
-        $null = Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) `
+        $null = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates @($cand) `
             -TestsByFile @{} -AllTests @('t.ps1') -TimeoutSeconds 5 -SandboxRoot $script:mk -Quiet
         $script:ctxSeen.MarkTests | Should-BeTrue
+    }
+}
+
+Describe 'the tests that killed a neighbour run first (#254)' {
+    # Real worker runspaces running a stub child. The stub logs whether every killer was asked for
+    # ('all' -- a proof, here), the names it was told to run, and the source it saw; and answers by
+    # name: 'D.alone' passes alone, 'D.needs' fails alone (it depends on another test), a mutant
+    # spelled with a K is killed by both in a whole run and by any name tried first, one with an H
+    # hangs a first pass, and one with a Q is killed by 'D.alone' alone.
+    BeforeEach {
+        $script:kfSrc = Join-Path $TestDrive "kf-$([System.Guid]::NewGuid().ToString('N')).ps1"
+        $script:kfLog = "$script:kfSrc.log"
+        Set-Content -LiteralPath $script:kfSrc -Value 'x' -NoNewline
+        $script:kfStub = @"
+param(`$tests, `$recordAllKillers, `$sandboxRoot, `$filter)
+`$src = [System.IO.File]::ReadAllText('$script:kfSrc')
+`$named = @(`$filter).Count -gt 0
+Add-Content -LiteralPath '$script:kfLog' -Value ('{0}|{1}|{2}' -f (`$recordAllKillers ? 'all' : 'one'), (@(`$filter) -join ','), `$src)
+if (`$named -and `$recordAllKillers) {
+    if (`$src -eq 'slow') { Start-Sleep -Seconds 30 }
+    return [pscustomobject]@{ Result = 'Failed'; Ran = 2; Killers = @(); FailedPath = @('D.needs'); PassedPath = @('D.alone') }
+}
+if (`$named -and `$src -like '*H*') { Start-Sleep -Seconds 30 }
+if (`$named -and `$src -like '*K*') {
+    return [pscustomobject]@{ Result = 'Failed'; Ran = 1; Killers = @('alone'); FailedPath = @(`$filter)[0]; PassedPath = @() }
+}
+if (`$named) { return [pscustomobject]@{ Result = 'Passed'; Ran = 1; Killers = @(); FailedPath = @(); PassedPath = @(`$filter) } }
+if (`$src -like '*Q*') {
+    return [pscustomobject]@{ Result = 'Failed'; Ran = 1; Killers = @('alone'); FailedPath = @('D.alone'); PassedPath = @() }
+}
+if (`$src -like '*K*') {
+    return [pscustomobject]@{ Result = 'Failed'; Ran = 2; Killers = @('alone', 'needs'); FailedPath = @('D.alone', 'D.needs'); PassedPath = @() }
+}
+[pscustomobject]@{ Result = 'Passed'; Ran = 2; Killers = @(); FailedPath = @(); PassedPath = @('D.alone', 'D.needs') }
+"@
+        Mock Get-PSMutationWarmPesterScript { $script:kfStub }
+        function script:KfCand { param([int]$Id, [string]$Text, [string]$Function = 'F')
+            [pscustomobject]@{ Id = $Id; Function = $Function; File = $script:kfSrc; Line = 1; Operator = 'BinaryOperator'
+                Description = "x -> $Text"; StartOffset = 0; EndOffset = 1; Mutated = $Text }
+        }
+        function script:KfLoop { param([object[]]$Cands, [int]$Timeout = 30, [switch]$All, [bool]$On = $true, $Rule = [pscustomobject]@{ Factor = 4; Floor = 15 })
+            Invoke-PSMutationLoop -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates $Cands `
+                -TestsByFile @{} -AllTests @((Join-Path $TestDrive 'all.Tests.ps1')) -TimeoutSeconds $Timeout `
+                -SandboxRoot $TestDrive -Quiet -RecordAllKillers:$All -KillersFirst $On -TimeoutRule $Rule
+        }
+        function script:KfLog { @(Get-Content -LiteralPath $script:kfLog) }
+    }
+    AfterEach { Close-PSMutationWarmRunspacePool }
+
+    It 'proves what a kill taught on unmutated source, then tries only the proven test first' {
+        $r = KfLoop @((KfCand 1 'K1'), (KfCand 2 'K2'), (KfCand 3 'S'))
+        @($r | ForEach-Object Status) | Should-BeCollection @('Killed', 'Killed', 'Survived')
+        # The second kill came from the first test alone, and is named by it.
+        @($r[1].KilledBy) | Should-BeCollection @('alone')
+        # Proved between mutants, against the source as it was before any of them; 'D.needs' failed
+        # alone and is never tried; the survivor's first test passed, so its whole files ran after.
+        KfLog | Should-BeCollection @('one||K1', 'all|D.alone,D.needs|x', 'one|D.alone|K2', 'one|D.alone|S', 'one||S')
+    }
+
+    It 'proves a single learned name too' {
+        # One killer is one name waiting, and a proof starts for it.
+        $null = KfLoop @((KfCand 1 'Q1'), (KfCand 2 'K2'))
+        KfLog | Should-BeCollection @('one||Q1', 'all|D.alone|x', 'one|D.alone|K2')
+    }
+
+    It 'proves a name once, however many mutants it kills' {
+        $null = KfLoop @((KfCand 1 'K1'), (KfCand 2 'K2'), (KfCand 3 'K3'))
+        @(KfLog | Where-Object { $_ -like 'all*' }).Count | Should-Be 1
+    }
+
+    It 'does none of it when <Why>' -ForEach @(
+        @{ Why = 'every killer is recorded'; All = $true; On = $true; Kind = 'all' }
+        @{ Why = 'the config turns it off'; All = $false; On = $false; Kind = 'one' }
+    ) {
+        $r = KfLoop @((KfCand 1 'K1'), (KfCand 2 'K2')) -All:$All -On $On
+        @($r | ForEach-Object Status) | Should-BeCollection @('Killed', 'Killed')
+        KfLog | Should-BeCollection @("$Kind||K1", "$Kind||K2")
+    }
+
+    It 'trusts nothing from a proof that ran out of time, and still finishes the run' {
+        # The source reads 'slow' between mutants here, so the proof hangs and is cut off.
+        Set-Content -LiteralPath $script:kfSrc -Value 'slow' -NoNewline
+        $c1 = KfCand 1 'K1'; $c1.EndOffset = 4
+        $c2 = KfCand 2 'K2'; $c2.EndOffset = 4
+        $r = KfLoop @($c1, $c2) -Timeout 2
+        @($r | ForEach-Object Status) | Should-BeCollection @('Killed', 'Killed')
+        KfLog | Should-BeCollection @('one||K1', 'all|D.alone,D.needs|slow', 'one||K2')
+    }
+
+    It 'cuts off a first pass that hangs, on its own short deadline, and lets the whole files decide' {
+        # The first pass is sized from the proof -- here the floor, one second -- not from the
+        # mutant's own deadline, and its expiry is not a TimedOut verdict: the whole run kills it.
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $r = KfLoop @((KfCand 1 'K1'), (KfCand 2 'KH2')) -Rule ([pscustomobject]@{ Factor = 1; Floor = 1 })
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 20
+        @($r | ForEach-Object Status) | Should-BeCollection @('Killed', 'Killed')
+        KfLog | Should-BeCollection @('one||K1', 'all|D.alone,D.needs|x', 'one|D.alone|KH2', 'one||KH2')
+    }
+
+    It 'stops proving once every mutant has been dispatched' {
+        # The last mutant's kill teaches something nobody is left to use.
+        $null = KfLoop @((KfCand 1 'K1'))
+        KfLog | Should-BeCollection @('one||K1')
     }
 }

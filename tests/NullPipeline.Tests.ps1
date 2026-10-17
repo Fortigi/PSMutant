@@ -36,12 +36,6 @@ BeforeAll {
         # A PSDataCollection on a live runspace. It is created with the runspace and is empty
         # rather than absent when nothing was written to it.
         'PSMutation.Pester.ps1 -> $Runspace.Streams.Error'
-
-        # Pester's own result object. MEASURED on 6.1.0: a green run reports .Failed as an empty
-        # collection, not $null, so the pipeline yields nothing. This is the property that sits
-        # beside the one that DID come back null -- .CodeCoverage with the tracer off -- which is
-        # why neither is assumed.
-        'PSMutation.Pester.ps1 -> $r.Failed'
     )
 
     function Get-PropertyPipeline {

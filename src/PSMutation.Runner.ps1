@@ -463,12 +463,15 @@ function Get-PSMutationSuiteShell {
         [Parameter(Mandatory)] [string[]]$Tests,
         # The worker's own sandbox: modules loaded from it are removed before each run (#249).
         [Parameter(Mandatory)] [string]$SandboxRoot,
-        [switch]$RecordAllKillers
+        [switch]$RecordAllKillers,
+        # Run only the tests by these names (#254); empty runs the whole files.
+        [AllowEmptyCollection()] [string[]]$Filter = @()
     )
     $ps = Get-PSMutationWarmShell -WorkerId $WorkerId
     $ps.Commands.Clear()
     [void]$ps.AddScript((Get-PSMutationWarmPesterScript).ToString()).AddParameter('tests', $Tests).
-        AddParameter('recordAllKillers', [bool]$RecordAllKillers).AddParameter('sandboxRoot', $SandboxRoot)
+        AddParameter('recordAllKillers', [bool]$RecordAllKillers).AddParameter('sandboxRoot', $SandboxRoot).
+        AddParameter('filter', $Filter)
     return $ps
 }
 
@@ -512,9 +515,11 @@ function Start-PSMutantEvaluation {
         [Parameter(Mandatory)] [int]$WorkerId,
         # The sandbox this worker mutates, whose modules the child unloads before running.
         [Parameter(Mandatory)] [string]$SandboxRoot,
-        [switch]$RecordAllKillers
+        [switch]$RecordAllKillers,
+        # Run only the tests by these names -- a mutant's first pass (#254). Empty runs them all.
+        [AllowEmptyCollection()] [string[]]$Filter = @()
     )
-    $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $CoveringTests -SandboxRoot $SandboxRoot -RecordAllKillers:$RecordAllKillers
+    $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $CoveringTests -SandboxRoot $SandboxRoot -RecordAllKillers:$RecordAllKillers -Filter $Filter
     [System.IO.File]::WriteAllText($Candidate.File, $MutatedContent)
     # The clock starts at BeginInvoke rather than when the candidate was queued, so a mutant's
     # measured seconds are what it spent running and not what it spent waiting for a worker.
@@ -565,7 +570,10 @@ function Receive-PSMutationJob {
         Close-PSMutationWarmRunspace -WorkerId $Job.WorkerId
         throw "The covering tests produced no result: $why"
     }
-    return [pscustomobject]@{ Result = $outcome; Ran = [int]$result.Ran; Killers = @($result.Killers) }
+    return [pscustomobject]@{
+        Result = $outcome; Ran = [int]$result.Ran; Killers = @($result.Killers)
+        FailedPath = @($result.FailedPath); PassedPath = @($result.PassedPath)
+    }
 }
 
 function Get-PSMutationVerdict {
@@ -608,7 +616,9 @@ function Get-PSMutationVerdict {
             "model: '$outcome'. Known outcomes are $($script:PSMutationKnownOutcomes -join ', '). " +
             "Scoring it would guess, and the guess flatters the score.")
     }
-    return [pscustomobject]@{ Status = 'Killed'; Killers = @($Run.Killers) }
+    # And the killers by the name a filter matches, which the runner tries first on the mutants
+    # after it (#254). Not published: the row carries Killers alone.
+    return [pscustomobject]@{ Status = 'Killed'; Killers = @($Run.Killers); KillerPath = @($Run.FailedPath) }
 }
 
 function Complete-PSMutantEvaluation {
@@ -1016,9 +1026,25 @@ function Start-PSMutationWorkerJob {
         # Marked before the run and restored when it is collected (#270), only in a run whose
         # mutate files define a class or enum.
         $marked = $Context.MarkTests ? (Set-PSMutationTestMarker -Tests $tests -Id "$($c.Id)") : @()
+        # The tests that killed this mutant's neighbours, proven to pass alone (#254), run first and
+        # on their own. Nothing is learned with the feature off, so this is then empty and the whole
+        # files run at once, as before.
+        # Wrapped: an empty answer unrolls to $null, and the child would be handed one name.
+        $first = @(Get-PSMutationFirstTest -Memory $Context.Killers -File $c.File -Function ([string]$c.Function))
         Start-PSMutantEvaluation -Candidate $exec -Source $c -Index $Schedule.Next `
-            -MutatedContent $mutated -OriginalContent $content `
+            -MutatedContent $mutated -OriginalContent $content -Filter $first `
             -CoveringTests $tests -WorkerId $WorkerId -SandboxRoot $root -RecordAllKillers:$Context.RecordAllKillers
+    }
+    # A first pass gets its own, shorter deadline, from what those tests took alone in their proof:
+    # one that hangs on this mutant is cut off in seconds and the whole files run after it, rather
+    # than the hang costing the mutant its whole budget. What the whole run needs to start is kept.
+    if ($first.Count -gt 0) {
+        $job | Add-Member -NotePropertyName Phase -NotePropertyValue 'First'
+        $job | Add-Member -NotePropertyName WholeTimeout -NotePropertyValue $timeout
+        $job | Add-Member -NotePropertyName Tests -NotePropertyValue $tests
+        $job | Add-Member -NotePropertyName Root -NotePropertyValue $root
+        $timeout = Get-PSMutationFirstPassTimeout -Memory $Context.Killers -Name $first -Rule $Context.TimeoutRule `
+            -Workers $Context.Roots.Count -Cap $timeout
     }
     $job | Add-Member -NotePropertyName TimeoutSeconds -NotePropertyValue $timeout -Force
     $job | Add-Member -NotePropertyName TestOriginals -NotePropertyValue @($marked) -Force
@@ -1035,9 +1061,86 @@ function Start-PSMutationDispatch {
     while ($Schedule.Next -lt $Context.Total) {
         $w = Get-PSMutationFreeWorker -InFlight $Schedule.InFlight
         if ($w -lt 0) { break }
+        # A proof before the next mutant, so a learned name is trusted as early as it can be. Only
+        # while mutants remain: with none left to try a name on, proving it buys nothing.
+        if ($Context.Killers.Pending.Count -gt 0) {
+            $Schedule.InFlight[$w] = Start-PSMutationProofJob -Context $Context -WorkerId $w
+            continue
+        }
         $Schedule.InFlight[$w] = Start-PSMutationWorkerJob -Schedule $Schedule -Context $Context -WorkerId $w
         $Schedule.Next++
     }
+}
+
+function Start-PSMutationProofJob {
+    # Prove the next batch of learned test names on one idle worker (#254): only those tests, every
+    # failure recorded, against the worker's sandbox as it is between mutants -- unmutated, because
+    # every mutant's file is put back when it is collected.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Starts an in-process pipeline on unmutated source; nothing is written.')]
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Context, [Parameter(Mandatory)] [int]$WorkerId)
+    $batch = Get-PSMutationProofBatch -Memory $Context.Killers
+    $root = $Context.Roots[$WorkerId]
+    $tests = [string[]]@(foreach ($t in $batch.Suite) {
+            Get-PSMutationWorkerPath -Path $t -SandboxRoot $Context.SandboxRoot -WorkerRoot $root
+        })
+    $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $tests -SandboxRoot $root -RecordAllKillers -Filter $batch.Name
+    # Proof marks the job, and carries the names: the sweep collects it apart from the mutants,
+    # and nothing about it reaches the report.
+    return [pscustomobject]@{
+        Proof = $batch.Name; WorkerId = $WorkerId; Shell = $ps; Async = $ps.BeginInvoke()
+        Clock = [System.Diagnostics.Stopwatch]::StartNew(); TimeoutSeconds = $Context.TimeoutSeconds
+    }
+}
+
+function Complete-PSMutationProofJob {
+    # Collect one proof. One that ran out of time proves nothing, and its names stay untried.
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Job, [Parameter(Mandatory)] [string]$State, [Parameter(Mandatory)] $Context)
+    if ($State -eq 'Expired') {
+        [void](Stop-PSMutationJob -Job $Job)
+        return
+    }
+    $run = Receive-PSMutationJob -Job $Job
+    # The proof's time is kept per name: it sizes the first-pass deadline of every mutant that tries
+    # these names. The whole batch's time, which can only overstate one name's.
+    Complete-PSMutationProof -Memory $Context.Killers -Name $Job.Proof -PassedPath $run.PassedPath -FailedPath $run.FailedPath `
+        -Seconds $Job.Clock.Elapsed.TotalSeconds
+}
+
+function Step-PSMutationFirstPass {
+    <#
+    .SYNOPSIS
+        Collect a mutant's first pass (#254): either the job carries the verdict, or it has become
+        the whole-files run -- Phase 'Whole' -- and is in flight again.
+    .DESCRIPTION
+        A failing first test kills the mutant, and the verdict rides on the job the way a decided
+        job's does, so the ordinary collection restores the file and records it. Anything else --
+        the names passed, matched nothing, or ran out of their short deadline -- says nothing about
+        the mutant, and the whole files run against it as they would have without a first pass. A
+        timed-out pass is not a TimedOut verdict: a test that hangs alone may be reached after an
+        earlier one fails in the whole run, which is what the verdict must agree with.
+    #>
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Job, [Parameter(Mandatory)] [string]$State, [Parameter(Mandatory)] $Context)
+    if ($State -eq 'Complete') {
+        $run = Receive-PSMutationJob -Job $Job
+        if ($run.Result -eq 'Failed') {
+            $Job | Add-Member -NotePropertyName Verdict -NotePropertyValue (Get-PSMutationVerdict -Run $run)
+            return
+        }
+    }
+    else { [void](Stop-PSMutationJob -Job $Job) }
+    # The mutant is still in the file: nothing is restored until the job is collected for good.
+    $Job.Shell = Get-PSMutationSuiteShell -WorkerId $Job.WorkerId -Tests $Job.Tests -SandboxRoot $Job.Root -RecordAllKillers:$Context.RecordAllKillers
+    $Job.Async = $Job.Shell.BeginInvoke()
+    $Job.Clock.Restart()
+    $Job.TimeoutSeconds = $Job.WholeTimeout
+    $Job.Phase = 'Whole'
 }
 
 function Get-PSMutationFinishedMutant {
@@ -1065,6 +1168,9 @@ function Get-PSMutationFinishedMutant {
         # The deadline it ran under, for the stall check, which asks whether THIS mutant's own
         # bound failed to fire.
         TimeoutSeconds = $Job.TimeoutSeconds
+        # What the runner learns from it (#254): the killers by the name a filter matches.
+        # Filtered, not cast: only a kill carries any, and @($null) would be one empty name.
+        KillerPath = [string[]]@($verdict.KillerPath | Where-Object { $_ })
     }
 }
 
@@ -1084,7 +1190,25 @@ function Complete-PSMutationSweep {
         # Freed BEFORE collecting, so a collection that throws cannot leave a slot pointing at a
         # job nobody will ever wait on again.
         $Schedule.InFlight[$job.WorkerId] = $null
-        $Schedule.Parked[$job.Index] = Get-PSMutationFinishedMutant -Job $job -State $state -SandboxRoot $Context.SandboxRoot
+        if ($job.Proof) {
+            Complete-PSMutationProofJob -Job $job -State $state -Context $Context
+            continue
+        }
+        # A first pass that decided nothing turns the job into the whole-files run, back in flight;
+        # judged in a later sweep by its own state, like any other job.
+        if ($job.Phase -eq 'First') {
+            Step-PSMutationFirstPass -Job $job -State $state -Context $Context
+            if ($job.Phase -eq 'Whole') {
+                $Schedule.InFlight[$job.WorkerId] = $job
+                continue
+            }
+        }
+        $finished = Get-PSMutationFinishedMutant -Job $job -State $state -SandboxRoot $Context.SandboxRoot
+        $Schedule.Parked[$job.Index] = $finished
+        if ($Context.KillersFirst) {
+            Add-PSMutationKiller -Memory $Context.Killers -File $job.Source.File -Function ([string]$job.Source.Function) `
+                -Name $finished.KillerPath -Suite (Get-PSMutationCoveringSuite -File $job.Source.File -TestsByFile $Context.TestsByFile -AllTests $Context.AllTests)
+        }
     }
 }
 
@@ -1470,6 +1594,13 @@ function Invoke-PSMutationLoop {
         [AllowEmptyCollection()] [string[]]$WorkerSandbox = @(),
         [switch]$Quiet,
         [switch]$RecordAllKillers,
+        # Try the tests that killed a mutant's neighbours before its whole covering files (#254).
+        # Off under -RecordAllKillers, which has to run every test anyway.
+        [bool]$KillersFirst = $true,
+        # How a first pass's deadline is sized from its tests' proof time: the run's timeoutFactor
+        # and timeoutFloorSeconds, as every other deadline is. MANDATORY: a default here would be a
+        # second copy of the config's defaults, which nothing could tell from the first.
+        [Parameter(Mandatory)] $TimeoutRule,
         # Wall-clock budget for the whole loop. Zero disables it. Checked as a mutant is RETIRED,
         # never inside one, so the mutant it stops after has already had its file restored. Other
         # workers may still be mid-flight with a file spliced -- their sandboxes are removed by
@@ -1484,6 +1615,7 @@ function Invoke-PSMutationLoop {
         DeadlineSeconds = $DeadlineSeconds; Originals = @{}; Sink = $Sink
         RunClock = [System.Diagnostics.Stopwatch]::StartNew()
         MarkTests = Test-PSMutationDefinesType -Path @($Candidates | ForEach-Object { $_.File } | Select-Object -Unique)
+        KillersFirst = $KillersFirst -and -not $RecordAllKillers; Killers = New-PSMutationKillerMemory; TimeoutRule = $TimeoutRule
     }
     # Mutable, and a pscustomobject rather than a hashtable so the four fields are named at every
     # use. The counters have to live here rather than in locals: dispatch, sweep and retirement
