@@ -565,7 +565,7 @@ function Receive-PSMutationJob {
         Close-PSMutationWarmRunspace -WorkerId $Job.WorkerId
         throw "The covering tests produced no result: $why"
     }
-    return [pscustomobject]@{ Result = $outcome; Killers = @($result.Killers) }
+    return [pscustomobject]@{ Result = $outcome; Ran = [int]$result.Ran; Killers = @($result.Killers) }
 }
 
 function Get-PSMutationVerdict {
@@ -586,6 +586,11 @@ function Get-PSMutationVerdict {
     # The verdict and the killers travel together from here, so a caller cannot record one
     # without the other. Survived and TimedOut carry an empty list rather than none, because
     # "nothing killed it" and "we did not look" must not be the same value.
+    # A pass over NO test is not a pass (#251): the mutant ended the tests' discovery -- an `exit`
+    # reached while a test file loads -- and nothing was asked about it. Survived would claim the
+    # tests looked and missed it; RuntimeError says the run ended without a verdict, and leaves it
+    # out of the score. The unmutated suite ran tests in this same shell, or the run was refused.
+    if ($outcome -eq 'Passed' -and $Run.Ran -eq 0) { return [pscustomobject]@{ Status = 'RuntimeError'; Killers = @() } }
     if ($outcome -eq 'Passed') { return [pscustomobject]@{ Status = 'Survived'; Killers = @() } }
     if ($outcome -eq 'TimedOut') { return [pscustomobject]@{ Status = 'TimedOut'; Killers = @() } }
     # A CLOSED vocabulary. Everything above is a value this module understands; anything
@@ -1287,8 +1292,13 @@ function Get-PSMutationWorkerGreenFault {
         [Parameter(Mandatory)] [int]$WorkerId,
         [Parameter(Mandatory)] [int]$TimeoutSeconds
     )
-    if ($Run.Result -eq 'Passed') { return $null }
     $where = "$($Suite -join ', ') in worker $WorkerId"
+    # Before the pass, so a suite that runs nothing is refused rather than waved through: every
+    # mutant it covers would be a RuntimeError, for a reason no mutant caused.
+    if ($Run.Result -eq 'Passed' -and $Run.Ran -eq 0) {
+        return "The unmutated covering suite ran no test in a clean runspace: $where. Every test in it was skipped or never discovered, so it cannot pass a verdict on any mutant it covers."
+    }
+    if ($Run.Result -eq 'Passed') { return $null }
     if ($Run.Result -eq 'TimedOut') {
         return "The unmutated covering suite did not finish within the per-mutant timeout of $TimeoutSeconds s: $where. Every mutant it covers would time out, and a timeout scores with the kills."
     }

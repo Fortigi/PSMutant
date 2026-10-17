@@ -2,6 +2,18 @@
 
 ### For consumers
 
+**A mutant that stops the tests from being found is no longer a survivor.** When mutated code
+reaches `exit` while a test file is being discovered -- in a function a `BeforeDiscovery` calls for
+its cases, say -- the file's tests are never found, and Pester calls a run of no test `Passed`.
+Such a mutant was scored Survived, as though the tests had looked and missed it. It is now a
+`RuntimeError`: left out of the score, counted in `runtimeErrors`, and named on the summary line.
+For the same reason, an unmutated covering suite that runs no test in a worker -- every test
+skipped or never discovered -- now refuses the run before any mutant, naming the suite, where its
+mutants used to be scored as survivors over tests that never ran. A mutant reaching `exit` anywhere
+else was already contained: inside a test it fails that test, and at the top of a dot-sourced file
+it ends only that file. `[Environment]::Exit()` ends the process and still cannot be contained; the
+README says to leave code that calls it out of `mutate`.
+
 **An equivalent mutant can be declared in the code.** A `# PSMutant-Equivalent: <original> ->
 <mutated>: <reason>` comment on the line directly above a mutated line declares that mutant
 equivalent. It becomes the same `file:line:description` key a config entry would, so it faces the

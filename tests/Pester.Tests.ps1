@@ -398,6 +398,9 @@ Describe 'fixture' {
         # And the second is exactly what the expensive mode buys.
         if ($All) { ($out.Killers -join ' ') | Should-MatchString 'fails second' }
         else { ($out.Killers -join ' ') | Should-NotMatchString 'fails second' }
+        # Every test that reached a verdict, and no skipped one: the early stop leaves the second
+        # failure unrun.
+        $out.Ran | Should-Be ($All ? 3 : 2)
     }
 
     It 'answers Passed with no killers when nothing notices' {
@@ -410,6 +413,18 @@ Describe 'fixture' {
         $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $false -sandboxRoot $TestDrive
         $out.Result | Should-Be 'Passed'
         @($out.Killers) | Should-BeCollection -Count 0
+        $out.Ran | Should-Be 1
+    }
+
+    It 'answers Passed having run NO test when a file''s discovery is ended (#251)' {
+        # What a mutant that reaches `exit` while a test file loads looks like: Pester calls the
+        # run Passed, and only the count says nothing was asked.
+        $fixture = Join-Path $TestDrive "gone-$([System.Guid]::NewGuid().ToString('N')).Tests.ps1"
+        "exit 3; Describe 'g' { It 'passes' { 1 | Should-Be 1 } }" | Set-Content -LiteralPath $fixture -Encoding utf8
+
+        $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $false -sandboxRoot $TestDrive
+        $out.Result | Should-Be 'Passed'
+        $out.Ran | Should-Be 0
     }
 
     It 'declares the two parameters the runner binds by name' {

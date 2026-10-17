@@ -401,7 +401,13 @@ function Get-PSMutationWarmPesterScript {
         $r = Invoke-Pester -Configuration $c
         # ExpandedName, not Name: a -ForEach case is one name and many tests, and a killer nobody
         # can tell apart from its siblings is not an answer to "which test killed this".
-        [pscustomobject]@{ Result = [string]$r.Result; Killers = @($r.Failed | ForEach-Object { $_.ExpandedName }) }
+        # Ran is how many tests reached a verdict (#251). A file whose discovery a mutant ended --
+        # `exit`, `break` or `return` reached at the top of it, or in a Describe body -- loses its
+        # tests silently, and Pester calls a run of none 'Passed'.
+        [pscustomobject]@{
+            Result = [string]$r.Result; Ran = $r.PassedCount + $r.FailedCount
+            Killers = @($r.Failed | ForEach-Object { $_.ExpandedName })
+        }
     }
     # Returned as a SCRIPTBLOCK; the runner stringifies at the boundary where the runspace needs
     # text. Handing back .ToString() here looked equivalent and is not: a caller can only get the
