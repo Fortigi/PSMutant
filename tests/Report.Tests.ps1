@@ -1770,6 +1770,12 @@ Describe 'what ignored calls took out (#263)' {
         Get-PSMutationExclusionLine -Exclusion $x | Should-Be ''
     }
 
+    It 'is an empty string, not nothing, when ignored calls took nothing out' {
+        $note = Get-PSMutationIgnoredCallNote -Exclusion ([pscustomobject]@{ Ignored = 0; IgnoreCall = @('Write-Host') })
+        Should-BeTrue -Actual ($note -is [string])
+        $note | Should-Be ''
+    }
+
     It 'records the count and the commands in the report' {
         $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-ign-$([guid]::NewGuid())"
         try {
