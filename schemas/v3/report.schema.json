@@ -157,6 +157,18 @@
       "type": "integer",
       "description": "Full runs only. Candidates the covered-lines filter removed before any test ran. Beside declaredEquivalent because it answers the same question -- how much of what the config asked for is NOT behind the score -- and this one usually removes far more."
     },
+    "skippedAsIgnoredCall": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Full runs only. Candidates inside the arguments of a call to a command in ignoreCalls, taken out before the covered-lines filter and never evaluated. Excluded from total and from both scores, as a declared equivalent is, so it is reported beside them."
+    },
+    "ignoreCalls": {
+      "type": "array",
+      "items": {
+        "type": "string"
+      },
+      "description": "Full runs only. The commands whose arguments the run did not mutate: the config's ignoreCalls, or the logging commands when it set none. Empty when the config set []."
+    },
     "filesWithNoMutants": {
       "type": "array",
       "items": {

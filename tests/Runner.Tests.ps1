@@ -94,7 +94,7 @@ Describe 'Test-PSMutantCovered' {
 
 Describe 'Select-PSMutationCandidate' {
     It 'returns all candidates when coverage filtering is off' {
-        $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+        $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() `
             -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false -CoveredLines @{}).Candidates
         $c.Count | Should-BeGreaterThan 0
     }
@@ -104,7 +104,7 @@ Describe 'Select-PSMutationCandidate' {
         # still listed and still hashed into the report either way.
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
-        $sel = Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() `
             -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
         $sel.PerFile.Count | Should-Be 1
         # Discriminating: Produced must exceed Kept here, or the fixture proves nothing about
@@ -116,9 +116,46 @@ Describe 'Select-PSMutationCandidate' {
     It 'keeps only candidates on covered lines when filtering is on' {
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
-        $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+        $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() `
             -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered).Candidates
         ($c | ForEach-Object Line | Sort-Object -Unique) | Should-Be 3
+    }
+}
+
+Describe 'Select-PSMutationCandidate and ignored calls (#263)' {
+    BeforeAll {
+        $script:loud = Join-Path $TestDrive 'loud.ps1'
+        Set-Content -LiteralPath $script:loud -Encoding utf8 -Value @(
+            'function Get-Loud {'
+            '    Write-Verbose ("{0}" -f (1 + 2))'
+            '    return 3 + 4'
+            '}'
+        )
+    }
+
+    It 'takes out the mutants inside an ignored call, counts them, and leaves every id where it was' {
+        $all = Select-PSMutationCandidate -MutateFiles @($script:loud) -Operators @('BinaryOperator', 'NumberLiteral') -IgnoreCall @() -CoveredLinesOnly $false
+        $some = Select-PSMutationCandidate -MutateFiles @($script:loud) -Operators @('BinaryOperator', 'NumberLiteral') -IgnoreCall @('write-verbose') -CoveredLinesOnly $false
+        $inside = @($all.Candidates | Where-Object Line -EQ 2)
+        $inside.Count | Should-BeGreaterThan 0
+        @($some.Candidates | Where-Object Line -EQ 2).Count | Should-Be 0
+        $some.PerFile[0].Ignored | Should-Be $inside.Count
+        $some.PerFile[0].Produced | Should-Be ($all.PerFile[0].Produced - $inside.Count)
+        $some.PerFile[0].Kept | Should-Be $some.Candidates.Count
+        $all.PerFile[0].Ignored | Should-Be 0
+        # Numbered over everything, so a mutant keeps its id whatever the list says.
+        @($some.Candidates.Id) | Should-BeCollection @($all.Candidates | Where-Object Line -NE 2 | ForEach-Object Id)
+    }
+
+    It 'takes them out before the coverage filter, so none is also counted as uncovered' {
+        $covered = @{ ([System.IO.Path]::GetFullPath($script:loud)) = [System.Collections.Generic.HashSet[int]]@(3) }
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:loud) -Operators @('BinaryOperator', 'NumberLiteral') -IgnoreCall @('Write-Verbose') -CoveredLinesOnly $true -CoveredLines $covered
+        $sel.PerFile[0].Produced | Should-Be $sel.PerFile[0].Kept
+    }
+
+    It 'carries the count into the display tally' {
+        $tally = ConvertTo-PSMutationDisplayPerFile -PerFile @([pscustomobject]@{ File = $script:loud; Produced = 3; Kept = 2; Ignored = 4; ByOperator = @{} }) -SandboxRoot (Split-Path $script:loud)
+        $tally[0].Ignored | Should-Be 4
     }
 }
 
@@ -1219,7 +1256,7 @@ Describe 'ids are assigned before the coverage filter, not after' {
         # Assigned directly, NOT wrapped in @(). Select-PSMutationCandidate comma-wraps its
         # return to preserve a single-element array, so @(...) hands back one item that IS
         # the array and every count below reads 1 (see the convention note in #38).
-        $all = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+        $all = (Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() `
             -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false).Candidates
         $all.Count | Should-BeGreaterThan 1
 
@@ -1227,7 +1264,7 @@ Describe 'ids are assigned before the coverage filter, not after' {
         $full = [System.IO.Path]::GetFullPath($script:fixture)
         $last = $all[-1]
         $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@($last.Line) }
-        $filtered = (Select-PSMutationCandidate -MutateFiles @($script:fixture) `
+        $filtered = (Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() `
             -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered).Candidates
 
         $filtered.Count | Should-BeLessThan $all.Count
@@ -1540,7 +1577,7 @@ Describe 'Select-PSMutationCandidate per-operator tally' {
     It 'carries the breakdown on every per-file row' {
         # Through the real selection, not the helper alone: the tally is only useful if the
         # thing that builds the rows actually attaches it.
-        $sel = Select-PSMutationCandidate -MutateFiles @($script:fixture) -Operators @('BinaryOperator') `
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() -Operators @('BinaryOperator') `
             -CoveredLinesOnly $false
         $sel.PerFile[0].ByOperator['BinaryOperator'].Produced | Should-Be $sel.PerFile[0].Produced
         $sel.PerFile[0].ByOperator['BinaryOperator'].Kept | Should-Be $sel.PerFile[0].Kept

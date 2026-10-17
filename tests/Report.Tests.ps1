@@ -573,7 +573,7 @@ Describe 'the contract a consumer actually depends on' {
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
                     'mutationScore', 'totalMutationScore', 'total', 'killed', 'survived', 'timedOut', 'compileErrors', 'runtimeErrors',
-                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'testFiles', 'perFile', 'skippedAsUncovered', 'filesWithNoMutants',
+                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'testFiles', 'perFile', 'skippedAsUncovered', 'skippedAsIgnoredCall', 'ignoreCalls', 'filesWithNoMutants',
                     'filesWithNoCandidate', 'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
@@ -1745,6 +1745,66 @@ Describe 'Get-PSMutationExclusionLine with a no-candidate file' {
         $line = Get-PSMutationExclusionLine -Exclusion $ex
         $line | Should-MatchString '4 mutant\(s\) skipped as uncovered'
         $line | Should-MatchString 'src/nothing\.ps1'
+    }
+}
+
+Describe 'what ignored calls took out (#263)' {
+    It 'sums the files and carries the commands, apart from what coverage removed' {
+        $perFile = @(
+            [pscustomobject]@{ File = 'a.ps1'; Produced = 4; Kept = 3; Ignored = 2 }
+            [pscustomobject]@{ File = 'b.ps1'; Produced = 1; Kept = 1; Ignored = 5 }
+        )
+        $x = Get-PSMutationCoverageExclusion -PerFile $perFile -IgnoreCall @('Write-Verbose', 'Write-Host')
+        $x.Ignored | Should-Be 7
+        $x.Skipped | Should-Be 1
+        $x.IgnoreCall | Should-BeCollection @('Write-Verbose', 'Write-Host')
+        (Get-PSMutationCoverageExclusion -PerFile $perFile).IgnoreCall.Count | Should-Be 0
+    }
+
+    It 'says how many and which commands, first, and nothing when none' {
+        $x = [pscustomobject]@{ Skipped = 8; Ignored = 3; IgnoreCall = @('Write-Verbose', 'Write-Host'); FilesWithNoMutants = @(); FilesWithNoCandidate = @() }
+        Get-PSMutationExclusionLine -Exclusion $x | Should-Be "  3 mutant(s) skipped inside calls to ignored commands (Write-Verbose, Write-Host)`n  8 mutant(s) skipped as uncovered"
+        $x.Skipped = 0
+        Get-PSMutationExclusionLine -Exclusion $x | Should-Be '  3 mutant(s) skipped inside calls to ignored commands (Write-Verbose, Write-Host)'
+        $x.Ignored = 0
+        Get-PSMutationExclusionLine -Exclusion $x | Should-Be ''
+    }
+
+    It 'records the count and the commands in the report' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-ign-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            $excl = [pscustomobject]@{ Skipped = 0; Ignored = 6; IgnoreCall = @('Write-Verbose'); FilesWithNoMutants = @(); FilesWithNoCandidate = @() }
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Exclusion $excl | Out-Null
+            $raw = [System.IO.File]::ReadAllText($out)
+            $doc = $raw | ConvertFrom-Json
+            $doc.skippedAsIgnoredCall | Should-Be 6
+            @($doc.ignoreCalls) | Should-BeCollection @('Write-Verbose')
+            $excl.IgnoreCall = @()
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Exclusion $excl | Out-Null
+            [System.IO.File]::ReadAllText($out).Contains('"ignoreCalls": []') | Should-BeTrue
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'says in the preview how many more ignored calls took out, and only when any did' {
+        $rows = @([pscustomobject]@{ File = 'a.ps1'; Produced = 2; Kept = 2; Ignored = 3; ByOperator = [ordered]@{} })
+        $text = (Get-PSMutationMutantListLine -PerFile $rows -CoveredLinesOnly $false -BaselineMeasured $false | ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString ([regex]::Escape('3 more inside calls to ignored commands are not counted above.'))
+        $rows[0].Ignored = 0
+        $text = (Get-PSMutationMutantListLine -PerFile $rows -CoveredLinesOnly $false -BaselineMeasured $false | ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-NotMatchString 'ignored commands'
+        $rows[0].Ignored = 1
+        $text = (Get-PSMutationMutantListLine -PerFile $rows -CoveredLinesOnly $false -BaselineMeasured $false | ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString ([regex]::Escape('1 more inside'))
+    }
+
+    It 'counts them on the preview result' {
+        $rows = @(
+            [pscustomobject]@{ File = 'a.ps1'; Produced = 2; Kept = 2; Ignored = 3 }
+            [pscustomobject]@{ File = 'b.ps1'; Produced = 1; Kept = 1; Ignored = 1 }
+        )
+        (ConvertTo-PSMutationListResult -PerFile $rows -BaselineMeasured $true).Ignored | Should-Be 4
     }
 }
 

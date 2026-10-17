@@ -504,12 +504,21 @@ function Get-PSMutationCoverageExclusion {
     #>
     [OutputType([pscustomobject])]
     [CmdletBinding()]
-    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile)
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile,
+        # The commands whose arguments the run did not mutate (#263), carried so the caveat and
+        # the report can name them beside the count.
+        [AllowEmptyCollection()] [string[]]$IgnoreCall = @()
+    )
     # `declaredEquivalent` is already reported for exactly this reason -- a reader who cannot
     # see how many mutants were excluded cannot tell a real 100% from an excluded one. The
     # coverage filter removes far more than declarations do and said nothing at all.
     $skipped = 0
-    foreach ($f in $PerFile) { $skipped += $f.Produced - $f.Kept }
+    $ignored = 0
+    foreach ($f in $PerFile) {
+        $skipped += $f.Produced - $f.Kept
+        $ignored += $f.Ignored
+    }
     # FilesWithNoMutants is file-level and not just a count for the dangerous case: the file is
     # still listed in `mutate` and still hashed into the report, so nothing downstream can tell
     # it contributed nothing. A per-file score would read 0/0 and look fine.
@@ -518,6 +527,9 @@ function Get-PSMutationCoverageExclusion {
     # copies at one point, which is two more than can be kept in step.
     return [pscustomobject]@{
         Skipped              = $skipped
+        # Taken out inside ignored calls before the coverage filter, so never also in Skipped.
+        Ignored              = $ignored
+        IgnoreCall           = [string[]]@($IgnoreCall)
         FilesWithNoMutants   = Get-PSMutationFileEmptiedByCoverage -PerFile $PerFile
         # The OTHER vacuous 100%, and it used to be reported by nobody. This field's sibling is
         # named for what coverage removed; a file no operator matched was removed by nothing and
@@ -541,6 +553,32 @@ function Get-PSMutationExclusionLine {
     # $null reaches here from the direct callers in tests, which do no filtering at all --
     # for them "nothing was skipped" is the true answer, not a guess.
     if ($null -eq $Exclusion) { return '' }
+    # First, because it is the one exclusion a reader chose rather than one the run found.
+    $ignoredNote = Get-PSMutationIgnoredCallNote -Exclusion $Exclusion
+    $rest = Get-PSMutationCoverageLine -Exclusion $Exclusion
+    return (@($ignoredNote, $rest) | Where-Object { $_ }) -join "`n"
+}
+
+function Get-PSMutationIgnoredCallNote {
+    <#
+    .SYNOPSIS
+        The caveat naming how many mutants ignored calls took out (#263), or nothing.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Exclusion)
+    if ([int]$Exclusion.Ignored -eq 0) { return '' }
+    return ("  {0} mutant(s) skipped inside calls to ignored commands ({1})" -f $Exclusion.Ignored, ($Exclusion.IgnoreCall -join ', '))
+}
+
+function Get-PSMutationCoverageLine {
+    <#
+    .SYNOPSIS
+        The caveat about what coverage removed, and the files no operator matched, or nothing.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Exclusion)
     # Reported even when NOTHING was skipped, because it does not depend on the filter at all:
     # a file no operator matched contributes 0 of 0 whether or not coveredLinesOnly is set, and
     # a caveat that only prints alongside a coverage skip would stay silent on exactly the
@@ -688,6 +726,10 @@ function Get-PSMutationMutantListLine {
     $lines.Add((New-PSMutationLine -Role 'Rule' -Text ''))
     $total = ($PerFile | Measure-Object -Property Kept -Sum).Sum
     $lines.Add((New-PSMutationLine -Role 'Detail' -Text ("  {0} mutant(s) over {1} file(s) would be evaluated." -f [int]$total, @($PerFile).Count)))
+    $ignored = [int]($PerFile | Measure-Object -Property Ignored -Sum).Sum
+    if ($ignored -gt 0) {
+        $lines.Add((New-PSMutationLine -Role 'Muted' -Text ("  {0} more inside calls to ignored commands are not counted above." -f $ignored)))
+    }
     # Said only when it is true, and it is the reason the number above may be the wrong one to
     # act on: a preview that skipped coverage is an UPPER bound on what a run would evaluate.
     if ($CoveredLinesOnly -and -not $BaselineMeasured) {
@@ -729,6 +771,8 @@ function ConvertTo-PSMutationListResult {
         Files                  = @($PerFile).Count
         Produced               = [int](($PerFile | Measure-Object -Property Produced -Sum).Sum)
         Total                  = [int](($PerFile | Measure-Object -Property Kept -Sum).Sum)
+        # Taken out inside ignored calls (#263), and not in Produced.
+        Ignored                = [int](($PerFile | Measure-Object -Property Ignored -Sum).Sum)
         # Always arrays, never $null, for the reason ConvertTo-PSMutationRunResult gives about
         # StaleEquivalents: a caller iterating this must not have to tell "none" from "the
         # module stopped reporting it".
@@ -910,6 +954,10 @@ function Write-PSMutationReport {
         # two-file run, and $r.Count is 2.
         perFile = Get-PSMutationPerFileScore -Results $Results -Equivalents $Equivalents
         skippedAsUncovered = [int]$Exclusion.Skipped
+        # Mutants inside calls to the commands ignoreCalls names (#263), and the commands: excluded
+        # from total and from both scores, like a declared equivalent, so it is said here.
+        skippedAsIgnoredCall = [int]$Exclusion.Ignored
+        ignoreCalls = ConvertTo-PSMutationList -Value $Exclusion.IgnoreCall
         filesWithNoMutants = ConvertTo-PSMutationList -Value $Exclusion.FilesWithNoMutants
         filesWithNoCandidate = ConvertTo-PSMutationList -Value $Exclusion.FilesWithNoCandidate
         # Recorded beside the other disclosures: a run that took twice as long for a reason

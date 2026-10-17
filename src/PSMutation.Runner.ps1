@@ -369,6 +369,7 @@ function ConvertTo-PSMutationDisplayPerFile {
                 File       = (ConvertFrom-PSMutationSandboxPath -Path $_.File -SandboxRoot $SandboxRoot)
                 Produced   = $_.Produced
                 Kept       = $_.Kept
+                Ignored    = $_.Ignored
                 ByOperator = $_.ByOperator
             }
         })
@@ -419,16 +420,24 @@ function Select-PSMutationCandidate {
         # binding failure. It yields no candidates, which is the true answer.
         [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$MutateFiles,
         [Parameter(Mandatory)] [string[]]$Operators,
+        # Commands whose arguments are not mutated (#263); empty to mutate inside every call.
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$IgnoreCall,
         [bool]$CoveredLinesOnly,
         $CoveredLines
     )
     $out = [System.Collections.Generic.List[object]]::new()
     $perFile = [System.Collections.Generic.List[object]]::new()
     foreach ($file in $MutateFiles) {
-        $produced = @(Get-PSMutationCandidate -Path $file -Operators $Operators)
+        # Ignored calls are taken out AFTER numbering, like the coverage filter and for the same
+        # reason: an id must not move when the list changes. Produced counts what is left, so the
+        # coverage arithmetic and both vacuous-100% checks read exactly as before; Ignored is the
+        # number taken out, reported beside them.
+        $all = @(Get-PSMutationCandidate -Path $file -Operators $Operators)
+        $ignored = Get-PSMutationIgnoredCallRange -Path $file -Command $IgnoreCall
+        $produced = @($all | Where-Object { -not (Test-PSMutationInIgnoredCall -Candidate $_ -Ranges $ignored) })
         $kept = @($produced | Where-Object { -not $CoveredLinesOnly -or (Test-PSMutantCovered -Candidate $_ -CoveredLines $CoveredLines) })
         foreach ($c in $kept) { $out.Add($c) }
-        $perFile.Add([pscustomobject]@{ File = $file; Produced = $produced.Count; Kept = $kept.Count
+        $perFile.Add([pscustomobject]@{ File = $file; Produced = $produced.Count; Kept = $kept.Count; Ignored = $all.Count - $produced.Count
                 ByOperator = (Get-PSMutationCandidateByOperator -Produced $produced -Kept $kept)
             })
     }

@@ -212,6 +212,45 @@ function Get-PSMutationEnclosingFunction {
     return $best
 }
 
+function Get-PSMutationIgnoredCallRange {
+    # Offset ranges of the arguments of every call to an ignored command (#263): from the end of
+    # the command name to the end of the call. A mutant starting inside one is skipped.
+    #
+    # By the name the call is written with, ignoring case and a module qualifier --
+    # `Microsoft.PowerShell.Utility\Write-Verbose` is Write-Verbose. A call whose name is not
+    # written out (`& $command`) names nothing and is never ignored.
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Command
+    )
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+    $names = [System.Collections.Generic.HashSet[string]]::new([string[]]$Command, [System.StringComparer]::OrdinalIgnoreCase)
+    $calls = @(Get-PSMutationNodeByKind -Ast $ast -Type ([System.Management.Automation.Language.CommandAst]))
+    # Comma operator so an empty result stays an array, as Get-PSMutationLoopRange does.
+    return , @(foreach ($call in $calls) {
+            $name = [string]$call.GetCommandName()
+            if ($names.Contains($name.Substring($name.LastIndexOf('\') + 1))) {
+                [pscustomobject]@{ Start = $call.CommandElements[0].Extent.EndOffset; End = $call.Extent.EndOffset }
+            }
+        })
+}
+
+function Test-PSMutationInIgnoredCall {
+    # True if a candidate starts inside any ignored call's arguments. Pure.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Candidate,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Ranges
+    )
+    foreach ($r in $Ranges) {
+        if ($Candidate.StartOffset -ge $r.Start -and $Candidate.StartOffset -lt $r.End) { return $true }
+    }
+    return $false
+}
+
 function Test-PSMutationInLoop {
     # True if an extent sits inside any loop-condition range. Pure.
     [OutputType([bool])]

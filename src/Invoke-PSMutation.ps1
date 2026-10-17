@@ -146,7 +146,8 @@ function Get-PSMutationRunContext {
     }
 
     $ops = Get-PSMutationOperatorList -Cfg $Cfg
-    $selection = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops `
+    $ignoreCalls = Get-PSMutationIgnoreCall -Cfg $Cfg
+    $selection = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -IgnoreCall $ignoreCalls `
         -CoveredLinesOnly $coverageNeeded -CoveredLines $baseline.CoveredLines
     # Locals first, because two of these appear both as their own field and inside Doc. Spelled
     # twice they would be COMPUTED twice -- a second hash of every mutate file -- and the copies
@@ -181,7 +182,7 @@ function Get-PSMutationRunContext {
         PerFile          = $perFile
         # Derived here in the wiring and carried, because the pre-filter counts exist only
         # inside the selection; recomputing them later means parsing every file again.
-        Exclusion        = Get-PSMutationCoverageExclusion -PerFile $perFile
+        Exclusion        = Get-PSMutationCoverageExclusion -PerFile $perFile -IgnoreCall $ignoreCalls
         SourceHashes     = $hashes
         ReportPath       = $reportPath
         # $null when the config asks for no SARIF. Scoped beside the report, for the reason
@@ -580,7 +581,7 @@ function Invoke-PSMutation {
                         StaleEquivalents; DeclaredEquivalent }
             recheck  @{ Mode='Recheck'; PriorSurvivors; Rechecked; NowKilled; StillSurviving;
                         ExitCode; FailureReason }
-            list     @{ Mode='List'; Files; Produced; Total; FilesWithNoCandidate;
+            list     @{ Mode='List'; Files; Produced; Total; Ignored; FilesWithNoCandidate;
                         FilesEmptiedByCoverage; BaselineMeasured; ExitCode; FailureReason }
 
         ONE object per config. Configs piped in are processed as they arrive rather than

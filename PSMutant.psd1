@@ -48,7 +48,18 @@ moves with the code instead of going stale on an edit above it. A declaration th
 key (a blank line below it, code beside it, no description or no reason) is refused before anything
 is mutated. One mutant declared twice -- in the code and in the config, or under both of a config''s
 key forms -- is now refused by name, where before the second key was reported as matching no
-mutant.'
+mutant.
+
+**Logging calls are no longer mutated.** Mutants inside the arguments of `Write-Verbose`,
+`Write-Debug`, `Write-Information`, `Write-Host` and `Write-Progress` are skipped, because the text
+of a log line rarely tells you anything about your tests. The new `ignoreCalls` config key replaces
+that list, and `[]` turns it off. Every operator''s mutants inside such a call are skipped, and the
+number is printed beside the score and written to the report as `skippedAsIgnoredCall`, with the
+list applied as `ignoreCalls`; neither is counted in `total` or either score. Mutant ids do not
+change, so a recheck still matches. **This can lower your mutant count after upgrading** -- a run
+that mutated inside logging calls before will now skip those mutants; set `"ignoreCalls": []` to
+keep the old behaviour. `Write-Warning`, `Write-Error` and `throw` are not in the default, because
+tests often assert those messages. A `-ListOnly` result carries the count as `Ignored`.'
         }
     }
 }

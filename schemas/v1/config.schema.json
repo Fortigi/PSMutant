@@ -56,6 +56,17 @@
         ]
       }
     },
+    "ignoreCalls": {
+      "type": [
+        "array",
+        "null"
+      ],
+      "description": "Commands whose arguments are never mutated: every mutant inside a call to one of them is skipped, and the number skipped is reported. Omit it for the logging commands (Write-Verbose, Write-Debug, Write-Information, Write-Host, Write-Progress); [] mutates inside every call. Matched by command name, ignoring case and any module qualifier.",
+      "items": {
+        "type": "string",
+        "minLength": 1
+      }
+    },
     "coveredLinesOnly": {
       "type": [
         "boolean",
