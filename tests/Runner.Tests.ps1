@@ -237,6 +237,12 @@ Describe 'Get-PSMutationJobState' {
     It 'leaves a child inside its budget running' {
         Get-PSMutationJobState -Completed $false -ElapsedSeconds 4.9 -TimeoutSeconds 5 | Should-Be 'Running'
     }
+
+    It 'calls a job whose worker process died Crashed, whatever its clock, unless it finished (#256)' {
+        Get-PSMutationJobState -Completed $false -Exited $true -ElapsedSeconds 1 -TimeoutSeconds 5 | Should-Be 'Crashed'
+        Get-PSMutationJobState -Completed $false -Exited $true -ElapsedSeconds 99 -TimeoutSeconds 5 | Should-Be 'Crashed'
+        Get-PSMutationJobState -Completed $true -Exited $true -ElapsedSeconds 1 -TimeoutSeconds 5 | Should-Be 'Complete'
+    }
 }
 
 Describe 'Get-PSMutationWaitBudget' {
@@ -377,7 +383,7 @@ Describe 'the scheduler sweep' {
         # A finished job is collected for its verdict, never stopped. Reversed, every completed
         # mutant would be scored TimedOut -- which counts with the kills, so the run would look
         # fine and the report would say the suite never finished.
-        Should-Invoke Complete-PSMutantEvaluation -Exactly 1 -ParameterFilter { -not $Expired }
+        Should-Invoke Complete-PSMutantEvaluation -Exactly 1 -ParameterFilter { -not $Expired -and -not $Crashed }
     }
 
     It 'EXPIRES a worker whose mutant outlived its budget' {
@@ -392,7 +398,23 @@ Describe 'the scheduler sweep' {
         Complete-PSMutationSweep -Schedule $sched -Context ([pscustomobject]@{ TimeoutSeconds = 5
                 SandboxRoot = [System.IO.Path]::GetTempPath() })
         $sched.Parked.ContainsKey(0) | Should-BeTrue
-        Should-Invoke Complete-PSMutantEvaluation -Exactly 1 -ParameterFilter { $Expired }
+        Should-Invoke Complete-PSMutantEvaluation -Exactly 1 -ParameterFilter { $Expired -and -not $Crashed }
+    }
+
+    It 'collects a job whose worker PROCESS died as crashed, well inside its budget (#256)' {
+        $cand = [pscustomobject]@{ Id = 1; Function = 'F'; Line = 1
+            Operator = 'BinaryOperator'; Description = 'x'
+            File = (Join-Path ([System.IO.Path]::GetTempPath()) 'a.ps1') }
+        Mock Test-PSMutationWorkerExited { $WorkerId -eq 1 }
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $sched = [pscustomobject]@{
+            InFlight = [object[]]@($null, (StubJob -Source $cand -Index 0 -WorkerId 1 -Seconds 1 -Completed $false))
+            Parked = @{}; Next = 1; Retired = 0
+        }
+        Complete-PSMutationSweep -Schedule $sched -Context ([pscustomobject]@{ TimeoutSeconds = 3600
+                SandboxRoot = [System.IO.Path]::GetTempPath() })
+        $sched.Parked.ContainsKey(0) | Should-BeTrue
+        Should-Invoke Complete-PSMutantEvaluation -Exactly 1 -ParameterFilter { $Crashed -and -not $Expired }
     }
 }
 
@@ -412,7 +434,7 @@ Describe 'Invoke-PSMutationLoop' {
         # being honoured -- get it wrong and every mutant runs the entire suite,
         # which is correct but turns a minutes-long run into an hours-long one.
         $script:seenTests = $null
-        Mock Start-PSMutantEvaluation { $script:seenTests = $CoveringTests; StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
+        Mock Start-PSMutantEvaluation { $script:seenTests = $CoveringTests; $script:seenOneProcess = [bool]$Process; StubJob -Source $Source -Index $Index -WorkerId $WorkerId }
         Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
         $cand = [pscustomobject]@{
             Id = 1; File = $script:fixture; Line = 3; Operator = 'BinaryOperator'
@@ -425,6 +447,8 @@ Describe 'Invoke-PSMutationLoop' {
 
         $script:seenTests | Should-BeCollection @('specific.Tests.ps1')
         $r[0].Status | Should-Be 'Killed'
+        # One worker runs in this process (#256).
+        Should-BeFalse -Actual $script:seenOneProcess
     }
 
     It 'renders a progress line naming the mutant it just finished' {
@@ -746,6 +770,13 @@ Describe 'Get-PSMutationVerdict' {
         @((Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'TimedOut'; Killers = @('x') })).Killers).Count | Should-Be 0
     }
 
+    It 'reports Killed, naming no test, for a mutant that ended its worker process (#256)' {
+        $v = Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Crashed'; Killers = @() })
+        $v.Status | Should-Be 'Killed'
+        @($v.Killers).Count | Should-Be 0
+        @($v.KillerPath | Where-Object { $_ }).Count | Should-Be 0
+    }
+
     It 'refuses an outcome it does not model rather than scoring it' {
         # The collapse below is toward the FLATTERING answer: an unmodelled value would be
         # scored Killed, so a Pester that grew a third run-level state would report a perfect
@@ -807,6 +838,41 @@ Describe 'one mutant, started and completed' {
         Mock Receive-PSMutationJob { throw 'must not be asked' }
         (Complete-PSMutantEvaluation -Job $script:stub -Expired).Status | Should-Be 'TimedOut'
         Should-Invoke Stop-PSMutationJob -Exactly 1
+    }
+
+    It 'collects a job whose worker died by ending the worker, scores it Killed, and restores the file (#256)' {
+        [System.IO.File]::WriteAllText($script:target, 'MUTATED')
+        Mock Stop-PSMutationJob { [pscustomobject]@{ Result = $Outcome; Killers = @() } }
+        Mock Receive-PSMutationJob { throw 'must not be asked' }
+        (Complete-PSMutantEvaluation -Job $script:stub -Crashed).Status | Should-Be 'Killed'
+        Should-Invoke Stop-PSMutationJob -Exactly 1 -ParameterFilter { $Outcome -eq 'Crashed' }
+        [System.IO.File]::ReadAllText($script:target) | Should-Be $script:before
+    }
+
+    It 'stops a job as TimedOut unless told its worker died, and ends that worker either way (#256)' {
+        Mock Stop-PSMutationWarmRunspace { }
+        (Stop-PSMutationJob -Job ([pscustomobject]@{ WorkerId = 3 })).Result | Should-Be 'TimedOut'
+        (Stop-PSMutationJob -Job ([pscustomobject]@{ WorkerId = 3 }) -Outcome Crashed).Result | Should-Be 'Crashed'
+        Should-Invoke Stop-PSMutationWarmRunspace -Exactly 2 -ParameterFilter { $WorkerId -eq 3 }
+    }
+}
+
+Describe 'a proof or a first pass whose worker died (#256)' {
+    It 'proves nothing from a crashed proof, and ends its worker' {
+        Mock Stop-PSMutationJob { [pscustomobject]@{ Result = $Outcome; Killers = @() } }
+        Mock Receive-PSMutationJob { throw 'must not be asked' }
+        $ctx = [pscustomobject]@{ Killers = (New-PSMutationKillerMemory) }
+        Complete-PSMutationProofJob -Job ([pscustomobject]@{ WorkerId = 0; Proof = @('D.a') }) -State 'Crashed' -Context $ctx
+        $ctx.Killers.Proven.Count | Should-Be 0
+        Should-Invoke Stop-PSMutationJob -Exactly 1
+    }
+
+    It 'collects a finished mutant as crashed only when it crashed' {
+        Mock Complete-PSMutantEvaluation { [pscustomobject]@{ Status = 'Killed'; Killers = @() } }
+        $cand = [pscustomobject]@{ Id = 1; Function = 'F'; Line = 1; Operator = 'BinaryOperator'; Description = 'x'
+            File = (Join-Path ([System.IO.Path]::GetTempPath()) 'a.ps1') }
+        $null = Get-PSMutationFinishedMutant -Job (StubJob -Source $cand) -State 'Crashed' -SandboxRoot ([System.IO.Path]::GetTempPath())
+        Should-Invoke Complete-PSMutantEvaluation -Exactly 1 -ParameterFilter { $Crashed -and -not $Expired }
     }
 }
 
@@ -1683,7 +1749,9 @@ Describe 'the worker pool the loop is given' {
         $script:seenWorkers = @()
         $script:seenFiles = @()
         $script:seenSuites = @()
+        $script:seenProcess = @()
         Mock Start-PSMutantEvaluation {
+            $script:seenProcess += [bool]$Process
             $script:seenWorkers += $WorkerId
             $script:seenFiles += $Candidate.File
             $script:seenSuites += $CoveringTests[0]
@@ -1705,6 +1773,8 @@ Describe 'the worker pool the loop is given' {
 
         @($r).Count | Should-Be 3
         @($script:seenWorkers | Sort-Object) | Should-BeCollection @(0, 1, 2)
+        # Three workers: each runs in a process of its own (#256).
+        @($script:seenProcess | Sort-Object -Unique) | Should-BeCollection @($true)
         # Worker 0 mutates the PRIMARY sandbox -- that identity is what keeps a serial run
         # byte-identical to what it was before workers existed -- and the other two do not.
         $script:seenFiles[0] | Should-Be $script:fixture
@@ -1803,6 +1873,12 @@ Describe 'Get-PSMutationWorkerGreenFault' {
         $f | Should-BeLikeString '*in worker 0. No test carried the error, so a BeforeAll failed: run the file alone in a new session to see it. It depends on*'
     }
 
+    It 'says an unmutated suite that ended its worker process would kill every mutant (#256)' {
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Crashed'; Killers = @() }) `
+            -Suite @('a.Tests.ps1') -WorkerId 1 -TimeoutSeconds 7
+        $f | Should-Be 'The unmutated covering suite ended the worker process running it: a.Tests.ps1 in worker 1. Something in it calls [Environment]::Exit or overflows the stack, and every mutant it covers would be scored Killed by that rather than by a test.'
+    }
+
     It 'says an unmutated suite that overran would time out every mutant' {
         $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'TimedOut'; Killers = @() }) `
             -Suite @('a.Tests.ps1') -WorkerId 1 -TimeoutSeconds 7
@@ -1833,7 +1909,9 @@ Describe 'the unmutated suite, in every worker, before any mutant' {
                 -TimeoutSeconds $TimeoutSeconds -SandboxRoot $script:primary -WorkerSandbox $extra
         }
     }
-    AfterEach { Close-PSMutationWarmRunspacePool }
+    # Closed once, after the block, not after every test: with two workers each is a process (#256),
+    # and starting two per test cost every mutant of Runner.ps1 about twenty seconds.
+    AfterAll { Close-PSMutationWarmRunspacePool }
 
     It 'passes when every suite is green in every worker' {
         Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Passed"; Ran = 1; Killers = @() }' }
@@ -1863,6 +1941,13 @@ Describe 'the unmutated suite, in every worker, before any mutant' {
         { Invoke-GreenForTest } | Should-Throw -ExceptionMessage '*runs: tests/a.Tests.ps1 in worker 1. Failed: A.copy.*'
     }
 
+    It 'refuses a suite that ends its worker PROCESS, without waiting out the timeout (#256)' {
+        Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [System.Environment]::Exit(3)' }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        { Invoke-GreenForTest -TimeoutSeconds 60 } | Should-Throw -ExceptionMessage '*ended the worker process running it: tests/a.Tests.ps1 in worker 0.*'
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 20
+    }
+
     It 'asks for EVERY failing test, not the first' {
         # Paid once per run, and read by a person who has to act on it.
         Mock Get-PSMutationWarmPesterScript { 'param($tests, $recordAllKillers) [pscustomobject]@{ Result = "Failed"; Killers = @("all=$recordAllKillers") }' }
@@ -1877,10 +1962,95 @@ Describe 'the unmutated suite, in every worker, before any mutant' {
         $script:PSMutationWarmShell.ContainsKey(0) | Should-BeFalse
     }
 
+    It 'runs the suites in worker processes when there is more than one worker, and in this one otherwise (#256)' {
+        $script:greenProcess = @()
+        Mock Start-PSMutationGreenJob { $script:greenProcess += [bool]$Process; [pscustomobject]@{ WorkerId = $WorkerId } }
+        Mock Wait-PSMutationGreenJob { [pscustomobject]@{ Result = 'Passed'; Ran = 1; Killers = @() } }
+        $null = Invoke-GreenForTest
+        @($script:greenProcess | Sort-Object -Unique) | Should-BeCollection @($true)
+        $script:greenProcess = @()
+        $null = Invoke-GreenForTest -OneWorker
+        @($script:greenProcess | Sort-Object -Unique) | Should-BeCollection @($false)
+    }
+
     It 'runs nothing for no candidates' {
         Mock Get-PSMutationSuiteShell { throw 'must not run' }
         (Assert-PSMutationWorkerGreen -Candidates @() -TestsByFile @{} -AllTests @('t.ps1') `
                 -TimeoutSeconds 5 -SandboxRoot $script:primary).Count | Should-Be 0
+    }
+}
+
+Describe 'Wait-PSMutationGreenJob (#256)' {
+    BeforeAll {
+        function script:GreenStub { param([bool]$Done) [pscustomobject]@{ WorkerId = 4; Async = [pscustomobject]@{ AsyncWaitHandle = [System.Threading.ManualResetEvent]::new($Done) } } }
+    }
+
+    It 'hands back what a finished job said' {
+        Mock Receive-PSMutationJob { [pscustomobject]@{ Result = 'Passed' } }
+        Mock Stop-PSMutationJob { throw 'must not be asked' }
+        (Wait-PSMutationGreenJob -Job (GreenStub $true) -TimeoutSeconds 5).Result | Should-Be 'Passed'
+    }
+
+    It 'keeps waiting, slice after slice, for a job that is still running inside its timeout' {
+        # Finishes 1.3s in: after the first one-second slice, before the timeout.
+        Mock Test-PSMutationWorkerExited { $false }
+        Mock Receive-PSMutationJob { [pscustomobject]@{ Result = 'Passed' } }
+        Mock Stop-PSMutationJob { throw 'must not be stopped' }
+        $late = [System.Threading.Tasks.Task]::Delay(1300)
+        $job = [pscustomobject]@{ WorkerId = 4; Async = [pscustomobject]@{ AsyncWaitHandle = ([System.IAsyncResult]$late).AsyncWaitHandle } }
+        (Wait-PSMutationGreenJob -Job $job -TimeoutSeconds 10).Result | Should-Be 'Passed'
+    }
+
+    It 'says Crashed for a job whose worker died, at the next slice rather than at the timeout' {
+        Mock Test-PSMutationWorkerExited { $WorkerId -eq 4 }
+        Mock Stop-PSMutationJob { [pscustomobject]@{ Result = $Outcome } }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        (Wait-PSMutationGreenJob -Job (GreenStub $false) -TimeoutSeconds 60).Result | Should-Be 'Crashed'
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 2
+    }
+
+    It 'says TimedOut for a job still running at its timeout, and no sooner' {
+        Mock Test-PSMutationWorkerExited { $false }
+        Mock Stop-PSMutationJob { [pscustomobject]@{ Result = $Outcome } }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        (Wait-PSMutationGreenJob -Job (GreenStub $false) -TimeoutSeconds 1).Result | Should-Be 'TimedOut'
+        $sw.Elapsed.TotalSeconds | Should-BeGreaterThan 0.9
+    }
+}
+
+Describe 'a mutant that ends its worker process (#256)' {
+    # Two real worker processes. The stub child reads its worker's copy of the mutated file and
+    # ends its own process when the mutant asks it to -- as [Environment]::Exit in a mutant, or a
+    # stack overflow, would.
+    BeforeAll {
+        $script:crashPrimary = Join-Path $TestDrive 'crash-primary'
+        $script:crashSecond = Join-Path $TestDrive 'crash-second'
+        foreach ($r in $script:crashPrimary, $script:crashSecond) {
+            New-Item -ItemType Directory -Path (Join-Path $r 'src') -Force | Out-Null
+            Set-Content -LiteralPath (Join-Path $r 'src/a.ps1') -Value 'function F { 1 }' -NoNewline
+        }
+    }
+    AfterEach { Close-PSMutationWarmRunspacePool }
+
+    It 'is scored Killed, its file is put back, and the run goes on in a new worker' {
+        Mock Get-PSMutationWarmPesterScript {
+            'param($tests, $recordAllKillers, $sandboxRoot) if ((Get-Content -Raw -LiteralPath (Join-Path $sandboxRoot "src/a.ps1")) -match "EXIT") { [System.Environment]::Exit(3) }; [pscustomobject]@{ Result = "Passed"; Ran = 1; Killers = @() }'
+        }
+        $file = Join-Path $script:crashPrimary 'src/a.ps1'
+        $cands = @(1, 2, 3) | ForEach-Object {
+            [pscustomobject]@{ Id = $_; Function = 'F'; File = $file; Line = 1; Operator = 'NumberLiteral'
+                Description = "m$_"; StartOffset = 13; EndOffset = 14; Mutated = (($_ -eq 2) ? 'EXIT' : '2') }
+        }
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $rows = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) `
+            -Candidates $cands -TestsByFile @{} -AllTests @((Join-Path $script:crashPrimary 'a.Tests.ps1')) -TimeoutSeconds 60 `
+            -SandboxRoot $script:crashPrimary -WorkerSandbox @($script:crashSecond) -Quiet
+        @($rows | ForEach-Object { $_.Status }) | Should-BeCollection @('Survived', 'Killed', 'Survived')
+        @($rows[1].KilledBy).Count | Should-Be 0
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 30
+        foreach ($r in $script:crashPrimary, $script:crashSecond) {
+            Get-Content -Raw -LiteralPath (Join-Path $r 'src/a.ps1') | Should-Be 'function F { 1 }'
+        }
     }
 }
 
@@ -1909,7 +2079,7 @@ Describe 'Get-PSMutationReloadFault (#249)' {
     ) {
         $t = Put 'tests/a.Tests.ps1' "# header`nusing module $Spelling`nDescribe 'a' { }"
         $f = Get-PSMutationReloadFault -MutateFiles @($script:mod) -TestFiles @($t) -Candidates @() -SandboxRoot $script:box
-        $f | Should-BeLikeString 'PSMutant evaluates every mutant in this one process, and PowerShell keeps these for its whole life*'
+        $f | Should-BeLikeString 'PSMutant evaluates many mutants in each PowerShell process, and PowerShell keeps these for a process''s whole life*'
         # ? for each backtick: in a -like pattern a backtick is the escape character. And ${Spelling}
         # braced, because PowerShell 7 allows ? in a variable name: "$Spelling?" names another variable.
         $f | Should-BeLikeString "*`n  tests/a.Tests.ps1:2 loads the code under test with ?using module ${Spelling}?, which the process keeps*Import it with Import-Module, or dot-source it, in a BeforeAll."
@@ -2108,6 +2278,23 @@ Describe 'Wait-PSMutationWorker wakes for the soonest OWN deadline (#253)' {
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
         Wait-PSMutationWorker -Schedule $sched -Context ([pscustomobject]@{ TimeoutSeconds = 30 })
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 0.8
+    }
+
+    It 'waits out the soonest deadline when its one worker runs in this process' {
+        $job = StubJob -Source ([pscustomobject]@{ File = $script:stubFile }) -Completed $false -Seconds 0.5 -TimeoutSeconds 2
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Wait-PSMutationWorker -Schedule ([pscustomobject]@{ InFlight = [object[]]@($job) }) `
+            -Context ([pscustomobject]@{ TimeoutSeconds = 30; Process = $false })
+        $sw.Elapsed.TotalSeconds | Should-BeGreaterThan 1.3
+    }
+
+    It 'looks again within a second when its workers are processes, whose death signals nothing (#256)' {
+        $job = StubJob -Source ([pscustomobject]@{ File = $script:stubFile }) -Completed $false -Seconds 0 -TimeoutSeconds 5
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Wait-PSMutationWorker -Schedule ([pscustomobject]@{ InFlight = [object[]]@($job) }) `
+            -Context ([pscustomobject]@{ TimeoutSeconds = 30; Process = $true })
+        $sw.Elapsed.TotalSeconds | Should-BeGreaterThan 0.9
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 2
     }
 }
 

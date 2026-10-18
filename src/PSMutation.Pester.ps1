@@ -187,6 +187,20 @@ $script:PSMutationWarmRunspace = @{}
 $script:PSMutationWarmShell = @{}
 $script:PSMutationWarmUses = @{}
 
+# --- WORKER PROCESSES (#256) ----------------------------------------------------------------
+# With more than one worker, each worker's runspace lives in a pwsh process of its own. Runspaces
+# in one process share its GC heap and stop scaling: measured on PSComplexity's own suites, runspace
+# workers were no faster at 16 than at 4, and process workers were 2.3x faster than runspaces at
+# 16, with equal times at one worker. A process also gives each worker its own environment block
+# and its own $PID, which removes both documented parallel-safety hazards.
+#
+# worker id -> its PowerShellProcessInstance; absent for an in-process runspace. The out-of-process
+# runspace never notices that its process died -- measured on Windows and Linux: killed, or ended
+# by [Environment]::Exit, the pipeline stays Running and disposing the runspace hangs -- so the
+# runner watches the process itself, and a dead or killed worker is released through this instance
+# alone, whose Dispose ends the process and returns at once.
+$script:PSMutationWarmProcess = @{}
+
 # Runspaces taken out of the pool after a timeout, whose stop has been REQUESTED and may not have
 # finished (#250). PowerShell's Stop() is synchronous and waits for a blocking .NET call to
 # return -- measured: 7.4s for an 8s Thread.Sleep -- and the scheduler is single-threaded, so
@@ -198,6 +212,14 @@ $script:PSMutationRetiredRunspace = [System.Collections.Generic.List[object]]::n
 # leaves behind: the saving is already 93% of the floor at this interval, so a larger number buys
 # almost nothing and widens the window in which a leak could go unnoticed.
 $script:PSMutationWarmRunspaceLifetime = 50
+
+# The same bound for a worker PROCESS (#256), set by the same rule and so a different number. A new
+# process compiles Pester and the code under test afresh, which a runspace in this process does not:
+# measured against PSComplexity's whole config on four cores, renewing every fifty mutants cost about
+# 12 worker-seconds a renewal -- 65% more CPU and 3% slower than runspace workers, where without
+# renewal the same run was 28% faster with the same CPU. At 500 the renewal is about 4% of what a
+# mutant costs there, back inside the 93% this interval was chosen for.
+$script:PSMutationWarmProcessLifetime = 500
 
 function Close-PSMutationWarmRunspace {
     # Dispose ONE worker's warm runspace, if it has one. Safe to call when it does not.
@@ -212,7 +234,9 @@ function Close-PSMutationWarmRunspace {
     # happen, and the mutation gate proved the cost of pretending otherwise: forcing either guard
     # false left the OTHER object disposed, so a test asking whether the shell still works threw
     # anyway and both mutants survived. One guard is both simpler and observable.
-    if ($script:PSMutationWarmShell.ContainsKey($WorkerId)) {
+    # A worker whose process has died is released by its process alone: disposing a runspace whose
+    # process is gone waits for it forever.
+    if ($script:PSMutationWarmShell.ContainsKey($WorkerId) -and -not (Test-PSMutationWorkerExited -WorkerId $WorkerId)) {
         $script:PSMutationWarmShell[$WorkerId].Dispose()
         $script:PSMutationWarmRunspace[$WorkerId].Dispose()
     }
@@ -222,6 +246,27 @@ function Close-PSMutationWarmRunspace {
     $script:PSMutationWarmShell.Remove($WorkerId)
     $script:PSMutationWarmRunspace.Remove($WorkerId)
     $script:PSMutationWarmUses.Remove($WorkerId)
+    Close-PSMutationWorkerProcess -WorkerId $WorkerId
+}
+
+function Close-PSMutationWorkerProcess {
+    # End ONE worker's process, if it has one, at once: a clean close, a timeout and a crash alike.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Ends a worker process this module started; there is no user state to confirm.')]
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$WorkerId)
+    if (-not $script:PSMutationWarmProcess.ContainsKey($WorkerId)) { return }
+    $script:PSMutationWarmProcess[$WorkerId].Dispose()
+    $script:PSMutationWarmProcess.Remove($WorkerId)
+}
+
+function Test-PSMutationWorkerExited {
+    # True when this worker runs in a process and that process has ended -- crashed, or killed.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$WorkerId)
+    return $script:PSMutationWarmProcess.ContainsKey($WorkerId) -and $script:PSMutationWarmProcess[$WorkerId].Process.HasExited
 }
 
 function Stop-PSMutationWarmRunspace {
@@ -233,6 +278,16 @@ function Stop-PSMutationWarmRunspace {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [int]$WorkerId)
     if (-not $script:PSMutationWarmShell.ContainsKey($WorkerId)) { return }
+    # A worker PROCESS is ended outright (#256): killing it stops even a blocking .NET call, which
+    # a stop request cannot, and its runspace is abandoned rather than parked -- disposing it would
+    # wait forever on a process that is gone.
+    if ($script:PSMutationWarmProcess.ContainsKey($WorkerId)) {
+        Close-PSMutationWorkerProcess -WorkerId $WorkerId
+        $script:PSMutationWarmShell.Remove($WorkerId)
+        $script:PSMutationWarmRunspace.Remove($WorkerId)
+        $script:PSMutationWarmUses.Remove($WorkerId)
+        return
+    }
     $shell = $script:PSMutationWarmShell[$WorkerId]
     $script:PSMutationRetiredRunspace.Add([pscustomobject]@{
             Shell = $shell; Runspace = $script:PSMutationWarmRunspace[$WorkerId]
@@ -282,22 +337,34 @@ function Get-PSMutationWarmShell {
     # A PowerShell instance on a runspace that already has Pester loaded, belonging to one worker.
     [OutputType([powershell])]
     [CmdletBinding()]
-    param([Parameter(Mandatory)] [int]$WorkerId)
+    param(
+        [Parameter(Mandatory)] [int]$WorkerId,
+        # In a pwsh process of its own rather than in this one (#256).
+        [switch]$Process
+    )
     # Opportunistic: a retired runspace whose stop has since finished is disposed here, so a long
     # run with many timeouts does not hold them all until the end.
     Clear-PSMutationRetiredRunspace
+    # Reused only where it lives where it was asked for -- a run cannot be handed the other kind --
+    # and never once its process has died: its runspace would wait on it forever.
+    $lifetime = $Process ? $script:PSMutationWarmProcessLifetime : $script:PSMutationWarmRunspaceLifetime
     if ($script:PSMutationWarmShell.ContainsKey($WorkerId) -and
-        $script:PSMutationWarmUses[$WorkerId] -lt $script:PSMutationWarmRunspaceLifetime) {
+        $script:PSMutationWarmUses[$WorkerId] -lt $lifetime -and
+        $script:PSMutationWarmProcess.ContainsKey($WorkerId) -eq [bool]$Process -and
+        -not (Test-PSMutationWorkerExited -WorkerId $WorkerId)) {
         $script:PSMutationWarmUses[$WorkerId]++
         return $script:PSMutationWarmShell[$WorkerId]
     }
     Close-PSMutationWarmRunspace -WorkerId $WorkerId
-    $rs = [runspacefactory]::CreateRunspace()
+    $rs = New-PSMutationWorkerRunspace -WorkerId $WorkerId -Process:$Process
     $rs.Open()
     $shell = [PowerShell]::Create()
     $shell.Runspace = $rs
-    [void]$shell.AddScript('param($pester) Import-Module $pester -Force -ErrorAction Stop').
-        AddParameter('pester', (Get-PSMutationPesterPath))
+    # Started where an in-process runspace starts: the process's current directory. A worker
+    # process starts in the user's home instead, measured, and a suite reading a relative path
+    # would read it from there.
+    [void]$shell.AddScript('param($pester, $cwd) Set-Location -LiteralPath $cwd; Import-Module $pester -Force -ErrorAction Stop').
+        AddParameter('pester', (Get-PSMutationPesterPath)).AddParameter('cwd', [System.Environment]::CurrentDirectory)
     # Caught and re-thrown with context, not swallowed. The child's -ErrorAction Stop makes a
     # failed import TERMINATING, so this arrives as an exception from Invoke() rather than on the
     # error stream -- which is why there is no HadErrors check beside it: with the import
@@ -311,6 +378,7 @@ function Get-PSMutationWarmShell {
     try { $null = $shell.Invoke() }
     catch {
         $shell.Dispose(); $rs.Dispose()
+        Close-PSMutationWorkerProcess -WorkerId $WorkerId
         throw "Could not import Pester into the mutant runspace: $($_.Exception.Message)"
     }
     $shell.Commands.Clear()
@@ -318,6 +386,22 @@ function Get-PSMutationWarmShell {
     $script:PSMutationWarmShell[$WorkerId] = $shell
     $script:PSMutationWarmUses[$WorkerId] = 1
     return $shell
+}
+
+function New-PSMutationWorkerRunspace {
+    # An unopened runspace for one worker: in this process, or in a pwsh process of its own (#256),
+    # which is recorded so the runner can watch it and end it.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Starts a worker process this module owns and ends; there is no user state to confirm.')]
+    [OutputType([runspace])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$WorkerId, [switch]$Process)
+    if (-not $Process) { return [runspacefactory]::CreateRunspace() }
+    # The process running this one, by default: the same pwsh, so the same PowerShell version.
+    $instance = [System.Management.Automation.Runspaces.PowerShellProcessInstance]::new()
+    $script:PSMutationWarmProcess[$WorkerId] = $instance
+    return [runspacefactory]::CreateOutOfProcessRunspace(
+        [System.Management.Automation.Runspaces.TypeTable]::LoadDefaultTypeFiles(), $instance)
 }
 
 function Get-PSMutationWarmPesterScript {

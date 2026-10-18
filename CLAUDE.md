@@ -917,6 +917,12 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   parent), and `$script:` in a dot-sourced source file belongs to the runspace that sourced it.
   Those are why `Push-Location` in two covering suites is harmless.
 
+  **Since #256 both hazards are gone for a run of more than one worker, and the fixes stay.** Each
+  worker is then a `pwsh` process of its own, with its own environment block and its own `$PID`.
+  A ONE-worker run is still a runspace in the caller's process, the suites here still run beside
+  each other in the order-independence gate's reversed run, and a consumer's single-worker run
+  meets exactly the old rules -- so `tests/ParallelSafety.Tests.ps1` keeps holding them.
+
 - **MORE WORKERS IS NOT MONOTONICALLY BETTER, and the `x workers` budget is well calibrated. Both
   were measured, and the second retired an issue rather than closing one** (#217). Interleaved in
   both orders over 174 mutants, per-mutant LATENCY -- not throughput, which is what the earlier
@@ -934,6 +940,36 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   WORSE past it**, because every worker is a runspace in ONE process sharing ONE GC heap -- so
   contention is real and it is not only about cores. A pool sized to the core count is past the
   useful point.
+
+  *That was the runspace model, and #256 replaced it for more than one worker.* Each worker is now
+  a `pwsh` process reached through an out-of-process runspace, so the scheduler's handles,
+  `BeginInvoke` and `EndInvoke` are unchanged. Against PSComplexity's whole config, 1424 mutants
+  with identical verdicts every run: `workers: 8` went from 426/438s to 251/255s, and `workers: 3`
+  pinned to four cores from 376/380s to 282/326s. Four things about that transport were measured,
+  on Windows and Linux both, and each is load-bearing:
+
+  - **It never notices its process die.** Killed, or ended by `[Environment]::Exit`, the pipeline
+    stays `Running` forever and disposing the runspace HANGS. So the scheduler watches the process
+    (`Test-PSMutationWorkerExited`, polled at least once a second), and a dead or killed worker is
+    released only through `PowerShellProcessInstance.Dispose()`, which ends it at once; its
+    runspace is abandoned, never disposed.
+  - **That also makes a timeout better than before**: ending the process stops a blocking .NET call,
+    which a stop request cannot (#250), so a process worker is never parked.
+  - **It starts in the user's home**, not the current directory an in-process runspace starts in.
+    The warm-up sets the location to `[Environment]::CurrentDirectory`, for both kinds.
+  - **Renewal is expensive.** A new process compiles Pester and the code under test again: at the
+    runspace's fifty mutants a renewal cost about 12 worker-seconds, and the run used 65% more CPU
+    and was 3% SLOWER than runspaces. Without renewal the same run was 28% faster. Process workers
+    renew every 500, by the same 93%-of-the-floor rule the fifty came from.
+
+  **A test that runs two workers now starts two processes, and every mutant of the file it covers
+  pays for them.** The first full self-run after the change took 2140s against 1328s, and the
+  instrumented run that found why counted only 18 process starts in the whole run: the cost was the
+  TESTS. `Runner.Tests.ps1`'s green-check block closed the pool after every test and so started two
+  processes per test, 20.7s where it had been 6.7s. It closes the pool once, after the block, now
+  (7.7s), and the process tests in `Pester.Tests.ps1` share processes where one test can say several
+  things. The self-run is 1442s. Before adding a test that starts a worker process, see whether an
+  existing one can carry the assertion.
 
   **Where that optimum sits depends on the repo, and one project is not enough to say.** The same
   sweep on a second consumer repo -- 112 mutate files against this one's 3 covering suites, 381
