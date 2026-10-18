@@ -212,17 +212,145 @@ function Get-PSMutationConfigTypeFault {
     [OutputType([string])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Cfg)
+    $schema = Get-PSMutationConfigSchema
+    # The faults are found HERE, by a walk over the schema's own keywords (#289). Test-Json's
+    # messages differ by PowerShell version: 7.6.7 writes none for a fault inside a nested object
+    # or a list -- measured, a string in thresholds.break was refused with nothing after the colon,
+    # and beside a missing key it was not mentioned at all. The walk says what 7.5 said, on every
+    # version. PSComplexity checks its config the same way, for the same reason.
+    $faults = @(Get-PSMutationSchemaFault -Value $Cfg -Schema ($schema | ConvertFrom-Json) -Pointer '')
+    # Test-Json still has a vote, so a rule the walk does not model is refused rather than missed;
+    # tests/Config.Tests.ps1 holds the two to the same verdicts.
     $json = $Cfg | ConvertTo-Json -Depth 10
-    $ok = Test-Json -Json $json -Schema (Get-PSMutationConfigSchema) -ErrorAction SilentlyContinue -ErrorVariable schemaErrors
-    if ($ok) { return $null }
-    # EVERY violation, not just the first. Test-Json writes one error per violation and the
-    # first is not reliably the one the reader caused, so reporting only that sends them to
-    # a line that is fine.
-    $detail = @($schemaErrors | ForEach-Object {
-            $_.Exception.Message -replace '^The JSON is not valid with the schema: ', ''
-        }) -join '; '
-    return "The config does not match the PSMutant config schema: $detail"
+    $ok = Test-Json -Json $json -Schema $schema -ErrorAction SilentlyContinue -ErrorVariable schemaErrors
+    if ($ok -and $faults.Count -eq 0) { return $null }
+    # Its own words only when the walk found nothing to say, and every violation either way: the
+    # first is not reliably the one the reader caused.
+    if ($faults.Count -eq 0) {
+        $faults = @($schemaErrors | ForEach-Object { $_.Exception.Message -replace '^The JSON is not valid with the schema: ', '' })
+    }
+    return "The config does not match the PSMutant config schema: $($faults -join '; ')"
+}
 
+function Get-PSMutationJsonType {
+    # The JSON type of one value as ConvertFrom-Json produced it, named as a schema names it. Pure.
+    # A whole number is 'integer' however it is held -- JSON's 2.0 is one, as Test-Json agrees --
+    # and a date-shaped string, which ConvertFrom-Json turns into a [datetime], is a string.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowNull()] $Value)
+    if ($null -eq $Value) { return 'null' }
+    if ($Value -is [string] -or $Value -is [datetime]) { return 'string' }
+    if ($Value -is [bool]) { return 'boolean' }
+    if ($Value -is [System.Collections.IList]) { return 'array' }
+    if ($Value -is [System.Management.Automation.PSCustomObject]) { return 'object' }
+    return ([math]::Truncate([double]$Value) -eq [double]$Value) ? 'integer' : 'number'
+}
+
+function Get-PSMutationSchemaPointer {
+    # A JSON pointer one step deeper: '~' and '/' in a key escaped as ~0 and ~1. Pure.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$Pointer, [Parameter(Mandatory)] [string]$Step)
+    return "$Pointer/$($Step.Replace('~', '~0').Replace('/', '~1'))"
+}
+
+function Get-PSMutationSchemaValueFault {
+    # The faults of one value against the keywords that judge a value of its own type: enum,
+    # minLength, minimum and exclusiveMinimum. Pure.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Value,
+        [Parameter(Mandatory)] $Schema,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Pointer,
+        [Parameter(Mandatory)] [string]$Type
+    )
+    if ($Schema.PSObject.Properties['enum'] -and -not (@($Schema.enum) -ccontains $Value)) {
+        "Value should match one of the values specified by the enum at '$Pointer'"
+    }
+    if ($Type -eq 'string' -and $Schema.PSObject.Properties['minLength'] -and "$Value".Length -lt $Schema.minLength) {
+        "Value should be at least $($Schema.minLength) characters at '$Pointer'"
+    }
+    if ($Type -notin 'integer', 'number') { return }
+    if ($Schema.PSObject.Properties['minimum'] -and $Value -lt $Schema.minimum) { "$Value should be at least $($Schema.minimum) at '$Pointer'" }
+    if ($Schema.PSObject.Properties['exclusiveMinimum'] -and $Value -le $Schema.exclusiveMinimum) { "$Value should be greater than $($Schema.exclusiveMinimum) at '$Pointer'" }
+}
+
+function Get-PSMutationSchemaKeyRule {
+    # The schema one key of an object is judged by: its own, else the first pattern it matches,
+    # else additionalProperties -- which may be a schema, a boolean, or absent. Pure. Matched
+    # case-SENSITIVELY, as JSON keys are: an indexer into PSObject.Properties ignores case, and would
+    # judge 'Mutate' by mutate's rule where the schema calls it unknown.
+    [OutputType([object])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Schema, [Parameter(Mandatory)] [string]$Name)
+    $own = @($Schema.properties.PSObject.Properties | Where-Object { $_.Name -ceq $Name })[0]
+    if ($own) { return $own.Value }
+    $pattern = @($Schema.patternProperties.PSObject.Properties | Where-Object { $Name -cmatch $_.Name })[0]
+    if ($pattern) { return $pattern.Value }
+    return $Schema.additionalProperties
+}
+
+function Get-PSMutationSchemaObjectFault {
+    # The faults of one object: the required keys it lacks, then each of its keys in order --
+    # judged by its own schema, a matching pattern's, or additionalProperties. Pure.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] $Value,
+        [Parameter(Mandatory)] $Schema,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Pointer
+    )
+    $names = @($Value.PSObject.Properties.Name)
+    $missing = @(@($Schema.required) | Where-Object { $_ -and $names -cnotcontains $_ })
+    if ($missing.Count -gt 0) {
+        $list = @(foreach ($m in $missing) { '"' + $m + '"' }) -join ','
+        "Required properties [$list] are not present at '$Pointer'"
+    }
+    foreach ($p in $Value.PSObject.Properties) {
+        $at = Get-PSMutationSchemaPointer -Pointer $Pointer -Step $p.Name
+        $rule = Get-PSMutationSchemaKeyRule -Schema $Schema -Name $p.Name
+        if ($rule -is [bool]) {
+            if (-not $rule) { "All values fail against the false schema at '$at'" }
+            continue
+        }
+        if ($null -ne $rule) { Get-PSMutationSchemaFault -Value $p.Value -Schema $rule -Pointer $at }
+    }
+}
+
+function Get-PSMutationSchemaFault {
+    <#
+    .SYNOPSIS
+        Every way one value breaks one schema, worded as Test-Json words it on PowerShell 7.5. Pure.
+    .DESCRIPTION
+        Only the keywords the config schema uses: type, enum, minLength, minimum, exclusiveMinimum,
+        items, minItems, required, properties, patternProperties and additionalProperties. A value
+        of the wrong type is judged no further, as Test-Json does not judge it.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowNull()] $Value,
+        [Parameter(Mandatory)] $Schema,
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Pointer
+    )
+    $type = Get-PSMutationJsonType -Value $Value
+    if ($Schema.PSObject.Properties['type']) {
+        $allowed = @($Schema.type)
+        if ($allowed -notcontains $type -and -not ($type -eq 'integer' -and $allowed -contains 'number')) {
+            return "Value is `"$type`" but should be `"$($allowed -join ', ')`" at '$Pointer'"
+        }
+    }
+    Get-PSMutationSchemaValueFault -Value $Value -Schema $Schema -Pointer $Pointer -Type $type
+    if ($type -eq 'object') { Get-PSMutationSchemaObjectFault -Value $Value -Schema $Schema -Pointer $Pointer }
+    if ($type -ne 'array') { return }
+    if ($Schema.PSObject.Properties['minItems'] -and $Value.Count -lt $Schema.minItems) {
+        "Value should have at least $($Schema.minItems) items at '$Pointer'"
+    }
+    if ($Schema.PSObject.Properties['items']) {
+        for ($i = 0; $i -lt $Value.Count; $i++) { Get-PSMutationSchemaFault -Value $Value[$i] -Schema $Schema.items -Pointer "$Pointer/$i" }
+    }
 }
 
 function Assert-PSMutationConfig {
