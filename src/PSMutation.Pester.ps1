@@ -261,6 +261,19 @@ function Close-PSMutationWorkerProcess {
     $script:PSMutationWarmProcess.Remove($WorkerId)
 }
 
+function Resume-PSMutationWorkerBreakpoint {
+    # Continue a worker PROCESS stopped at a breakpoint, as a runspace in this process does on its
+    # own: with no debugger attached, a breakpoint there runs on. Nothing for any other worker.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Resumes a worker process this module owns; there is no user state to confirm.')]
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$WorkerId)
+    if (-not $script:PSMutationWarmProcess.ContainsKey($WorkerId) -or (Test-PSMutationWorkerExited -WorkerId $WorkerId)) { return }
+    $debugger = $script:PSMutationWarmRunspace[$WorkerId].Debugger
+    if ($debugger.InBreakpoint) { $debugger.SetDebuggerAction([System.Management.Automation.DebuggerResumeAction]::Continue) }
+}
+
 function Test-PSMutationWorkerExited {
     # True when this worker runs in a process and that process has ended -- crashed, or killed.
     [OutputType([bool])]
@@ -358,6 +371,12 @@ function Get-PSMutationWarmShell {
     Close-PSMutationWarmRunspace -WorkerId $WorkerId
     $rs = New-PSMutationWorkerRunspace -WorkerId $WorkerId -Process:$Process
     $rs.Open()
+    # A worker process refuses Set-PSBreakpoint until its client says it can debug it -- measured:
+    # "remote debugging is not supported by the current host" -- so Pester's breakpoint coverage,
+    # and any suite that traces with a breakpoint action, failed in a worker and passed in this
+    # process. RemoteScript allows them. A breakpoint that STOPS then waits for the client, where
+    # in-process it runs on; Resume-PSMutationWorkerBreakpoint resumes it.
+    if ($Process) { $rs.Debugger.SetDebugMode([System.Management.Automation.DebugModes]::RemoteScript) }
     $shell = [PowerShell]::Create()
     $shell.Runspace = $rs
     # Started where an in-process runspace starts: the process's current directory. A worker

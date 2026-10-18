@@ -650,6 +650,11 @@ Describe 'a worker in a process of its own (#256)' {
         # Where an in-process runspace starts; a process left alone starts in the user's home.
         $out[2] | Should-Be ([System.Environment]::CurrentDirectory)
         Should-BeFalse -Actual (Test-PSMutationWorkerExited -WorkerId 20)
+        # A breakpoint with an action fires there, as Pester's breakpoint coverage needs: a worker
+        # process refuses Set-PSBreakpoint outright until its client allows remote debugging.
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('$f = Join-Path ([IO.Path]::GetTempPath()) "psmut-bp-$([guid]::NewGuid().ToString(''N'')).ps1"; Set-Content $f ''1 | Out-Null''; $global:psmutHits = 0; $bp = Set-PSBreakpoint -Script $f -Line 1 -Action { $global:psmutHits++ }; . $f; Remove-PSBreakpoint $bp; Remove-Item $f; $global:psmutHits')
+        @($shell.Invoke())[-1] | Should-Be 1
         [object]::ReferenceEquals($shell, (Get-PSMutationWarmShell -WorkerId 20 -Process)) | Should-BeTrue
         # Renewed on the PROCESS interval, which is not the runspace's: two uses are spent at two.
         $keep = $script:PSMutationWarmProcessLifetime
@@ -727,6 +732,23 @@ Describe 'a worker in a process of its own (#256)' {
         # A decision, pinned for the reason the runspace's fifty is: the test above is written in
         # terms of the variable.
         $script:PSMutationWarmProcessLifetime | Should-Be 500
+    }
+
+    It 'is resumed at a breakpoint that stops, as one in this process runs on' {
+        $shell = Get-PSMutationWarmShell -WorkerId 28 -Process
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('$f = Join-Path ([IO.Path]::GetTempPath()) "psmut-bp-$([guid]::NewGuid().ToString(''N'')).ps1"; Set-Content $f ''1 | Out-Null''; $bp = Set-PSBreakpoint -Script $f -Line 1; . $f; Remove-PSBreakpoint $bp; Remove-Item $f; ''ran on''')
+        $async = $shell.BeginInvoke()
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not $script:PSMutationWarmRunspace[28].Debugger.InBreakpoint -and $sw.Elapsed.TotalSeconds -lt 15) { Start-Sleep -Milliseconds 50 }
+        Should-BeTrue -Actual $script:PSMutationWarmRunspace[28].Debugger.InBreakpoint
+        Resume-PSMutationWorkerBreakpoint -WorkerId 28
+        Should-BeTrue -Actual $async.AsyncWaitHandle.WaitOne(10000)
+        @($shell.EndInvoke($async))[-1] | Should-Be 'ran on'
+        # And nothing for a worker that is not a process, or not there.
+        $null = Get-PSMutationWarmShell -WorkerId 29
+        Resume-PSMutationWorkerBreakpoint -WorkerId 29
+        Resume-PSMutationWorkerBreakpoint -WorkerId 98
     }
 
     It 'is never said to have exited when it runs in this process' {

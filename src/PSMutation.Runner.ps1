@@ -1211,6 +1211,8 @@ function Complete-PSMutationSweep {
     # the end yields $null, which the idle-slot guard skips, so `-lt` and `-le` produce identical
     # output -- an equivalent mutant that would have to be argued for rather than killed.
     foreach ($job in @($Schedule.InFlight | Where-Object { $null -ne $_ })) {
+        # A worker process stopped at a breakpoint waits for a debugger nobody attached (#256).
+        Resume-PSMutationWorkerBreakpoint -WorkerId $job.WorkerId
         $state = Get-PSMutationJobState -Completed $job.Async.IsCompleted -Exited (Test-PSMutationWorkerExited -WorkerId $job.WorkerId) `
             -ElapsedSeconds $job.Clock.Elapsed.TotalSeconds -TimeoutSeconds $job.TimeoutSeconds
         if ($state -eq 'Running') { continue }
@@ -1506,6 +1508,7 @@ function Wait-PSMutationGreenJob {
     param([Parameter(Mandatory)] $Job, [Parameter(Mandatory)] [int]$TimeoutSeconds)
     $clock = [System.Diagnostics.Stopwatch]::StartNew()
     while ($true) {
+        Resume-PSMutationWorkerBreakpoint -WorkerId $Job.WorkerId
         $state = Get-PSMutationJobState -Completed $Job.Async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds(1)) `
             -Exited (Test-PSMutationWorkerExited -WorkerId $Job.WorkerId) `
             -ElapsedSeconds $clock.Elapsed.TotalSeconds -TimeoutSeconds $TimeoutSeconds

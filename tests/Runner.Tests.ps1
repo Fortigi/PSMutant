@@ -357,9 +357,12 @@ Describe 'the scheduler sweep' {
             InFlight = [object[]]@($null, $running); Parked = @{}; Next = 1; Retired = 0
         }
         $ctx = [pscustomobject]@{ TimeoutSeconds = 3600; SandboxRoot = '/s' }
+        Mock Resume-PSMutationWorkerBreakpoint { }
         Complete-PSMutationSweep -Schedule $sched -Context $ctx
         $sched.Parked.Count | Should-Be 0
         [object]::ReferenceEquals($sched.InFlight[1], $running) | Should-BeTrue
+        # And a worker process stopped at a breakpoint is resumed, once per sweep (#256).
+        Should-Invoke Resume-PSMutationWorkerBreakpoint -Exactly 1 -ParameterFilter { $WorkerId -eq 1 }
     }
 
     It 'PARKS a worker whose mutant has finished, and says it was not expired' {
@@ -1994,11 +1997,14 @@ Describe 'Wait-PSMutationGreenJob (#256)' {
     It 'keeps waiting, slice after slice, for a job that is still running inside its timeout' {
         # Finishes 1.3s in: after the first one-second slice, before the timeout.
         Mock Test-PSMutationWorkerExited { $false }
+        Mock Resume-PSMutationWorkerBreakpoint { }
         Mock Receive-PSMutationJob { [pscustomobject]@{ Result = 'Passed' } }
         Mock Stop-PSMutationJob { throw 'must not be stopped' }
         $late = [System.Threading.Tasks.Task]::Delay(1300)
         $job = [pscustomobject]@{ WorkerId = 4; Async = [pscustomobject]@{ AsyncWaitHandle = ([System.IAsyncResult]$late).AsyncWaitHandle } }
         (Wait-PSMutationGreenJob -Job $job -TimeoutSeconds 10).Result | Should-Be 'Passed'
+        # Resumed at every slice, so a worker stopped at a breakpoint does not wait out the timeout.
+        Should-Invoke Resume-PSMutationWorkerBreakpoint -Exactly 2 -ParameterFilter { $WorkerId -eq 4 }
     }
 
     It 'says Crashed for a job whose worker died, at the next slice rather than at the timeout' {

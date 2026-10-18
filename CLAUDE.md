@@ -956,7 +956,7 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   a `pwsh` process reached through an out-of-process runspace, so the scheduler's handles,
   `BeginInvoke` and `EndInvoke` are unchanged. Against PSComplexity's whole config, 1424 mutants
   with identical verdicts every run: `workers: 8` went from 426/438s to 251/255s, and `workers: 3`
-  pinned to four cores from 376/380s to 282/326s. Four things about that transport were measured,
+  pinned to four cores from 376/380s to 282/326s. Five things about that transport were measured,
   on Windows and Linux both, and each is load-bearing:
 
   - **It never notices its process die.** Killed, or ended by `[Environment]::Exit`, the pipeline
@@ -966,6 +966,14 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
     runspace is abandoned, never disposed.
   - **That also makes a timeout better than before**: ending the process stops a blocking .NET call,
     which a stop request cannot (#250), so a process worker is never parked.
+  - **It refuses a breakpoint until the client allows remote debugging**: "Breakpoints cannot be
+    set in the remote session because remote debugging is not supported by the current host". So
+    Pester's breakpoint coverage failed in a worker and passed in the session, and the green check
+    refused `tests/Incremental.Tests.ps1` -- found by CI on the first run with both features. The
+    client's debugger is set to `RemoteScript` once the runspace opens. A breakpoint that STOPS
+    then waits for the client forever, where in-process it runs on; the sweep and the green check
+    resume it (`Resume-PSMutationWorkerBreakpoint`). `UnhandledBreakpointMode = Ignore`, on either
+    side, does not help -- measured.
   - **It starts in the user's home**, not the current directory an in-process runspace starts in.
     The warm-up sets the location to `[Environment]::CurrentDirectory`, for both kinds.
   - **Renewal is expensive.** A new process compiles Pester and the code under test again: at the
