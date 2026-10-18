@@ -38,6 +38,9 @@ jobs:
   publish:
     runs-on: ubuntu-latest
     timeout-minutes: 30
+    # Read by the github-release job below: 'true' only once the gallery has ACCEPTED this version.
+    outputs:
+      published: ${{ steps.publish.outputs.published }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
 
@@ -226,6 +229,7 @@ jobs:
         run: ./tools/Test-PSMutantPackage.ps1 -Path $env:STAGE_DIR
 
       - name: Publish to PSGallery
+        id: publish
         if: steps.exists.outputs.already != 'true'
         shell: pwsh
         env:
@@ -247,4 +251,33 @@ jobs:
           else {
               Publish-Module -Path $stage -NuGetApiKey $env:PSGALLERY_API_KEY -Verbose
               Write-Host '### Published to the PowerShell Gallery. ###' -ForegroundColor Green
+              # Written only HERE, after Publish-Module returned: a dry run, a version already on
+              # the gallery, and a publish the gallery refused all leave it unset.
+              'published=true' | Out-File -FilePath $env:GITHUB_OUTPUT -Append
           }
+
+  # The GitHub release for the tag, once the gallery has accepted the version -- never before,
+  # so the Releases page cannot announce a version nobody can install. 0.7.0 shipped without
+  # one and the page went on showing 0.6.0 as the latest: nothing in this workflow made it.
+  # Its own job so only this step can write to the repository; the publish job stays read-only.
+  github-release:
+    needs: publish
+    if: needs.publish.outputs.published == 'true' && startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    permissions:
+      contents: write
+    steps:
+      - name: Create the GitHub release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          # A re-run after the release was made, by hand or by an earlier attempt, has nothing to do.
+          gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
+          if ($LASTEXITCODE -eq 0) { Write-Host "Release $env:TAG already exists."; exit 0 }
+          # Notes generated from the merged pull requests since the previous release, as the
+          # existing releases have them.
+          gh release create $env:TAG --repo $env:GITHUB_REPOSITORY --verify-tag --title $env:TAG --generate-notes --latest
+          if ($LASTEXITCODE -ne 0) { throw "Could not create the release for $env:TAG." }

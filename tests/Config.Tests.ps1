@@ -699,6 +699,116 @@ Describe 'a config value of the wrong type' {
     }
 }
 
+Describe 'the schema walk that words a config fault on every PowerShell (#289)' {
+    # Test-Json on 7.6.7 writes no message for a fault inside a nested object or a list, so the
+    # module finds the faults itself and words them as 7.5's Test-Json did. Each message below is
+    # the one 7.5 gives for the same document, compared when this was written.
+    BeforeAll {
+        $script:schemaObj = Get-PSMutationConfigSchema | ConvertFrom-Json
+        function script:Walk { param([string]$Json) @(Get-PSMutationSchemaFault -Value ($Json | ConvertFrom-Json) -Schema $script:schemaObj -Pointer '') }
+        $script:base = '"mutate": ["a"], "tests": {}'
+    }
+
+    It 'names the JSON type of <Why>' -ForEach @(
+        @{ Why = 'nothing'; V = $null; T = 'null' }
+        @{ Why = 'a string'; V = 'x'; T = 'string' }
+        @{ Why = 'a date-shaped string, which ConvertFrom-Json makes a [datetime]'; V = [datetime]::Now; T = 'string' }
+        @{ Why = 'a boolean'; V = $false; T = 'boolean' }
+        @{ Why = 'a list'; V = @(1); T = 'array' }
+        @{ Why = 'an empty list'; V = [object[]]@(); T = 'array' }
+        @{ Why = 'an object'; V = [pscustomobject]@{}; T = 'object' }
+        @{ Why = 'a whole number'; V = [long]3; T = 'integer' }
+        @{ Why = 'a whole number held as a double'; V = 2.0; T = 'integer' }
+        @{ Why = 'a fraction'; V = 1.5; T = 'number' }
+    ) {
+        Get-PSMutationJsonType -Value $V | Should-Be $T
+    }
+
+    It 'escapes a key in a pointer as JSON pointers do' {
+        Get-PSMutationSchemaPointer -Pointer '/tests' -Step 'src/a~b.ps1' | Should-Be '/tests/src~1a~0b.ps1'
+    }
+
+    It 'words <Why>' -ForEach @(
+        @{ Why = 'a string inside thresholds, the case 7.6.7 left blank'; J = '"thresholds": { "break": "80" }'; M = @("Value is `"string`" but should be `"number, null`" at '/thresholds/break'") }
+        @{ Why = 'a wrong type in a list in a map'; J = '"tests": { "src/a~b.ps1": [1] }'; M = @("Value is `"integer`" but should be `"string`" at '/tests/src~1a~0b.ps1/0'") }
+        @{ Why = 'a fraction where an integer belongs'; J = '"workers": 1.5'; M = @("Value is `"number`" but should be `"integer, null`" at '/workers'") }
+        @{ Why = 'an unknown key, at the top and in thresholds'; J = '"bogus": 1, "thresholds": { "brake": 1 }'; M = @("All values fail against the false schema at '/bogus'", "All values fail against the false schema at '/thresholds/brake'") }
+        @{ Why = 'a key differing only in case, which is another key'; J = '"Workers": 1'; M = @("All values fail against the false schema at '/Workers'") }
+        @{ Why = 'an operator not in the enum, which is case-sensitive'; J = '"operators": ["Nope", "BinaryOperator", "binaryoperator"]'; M = @("Value should match one of the values specified by the enum at '/operators/0'", "Value should match one of the values specified by the enum at '/operators/2'") }
+        @{ Why = 'an empty string where one is required'; J = '"ignoreCalls": ["x", ""], "equivalents": { "k": "" }'; M = @("Value should be at least 1 characters at '/ignoreCalls/1'", "Value should be at least 1 characters at '/equivalents/k'") }
+        @{ Why = 'a number under its minimum'; J = '"workers": -1'; M = @("-1 should be at least 0 at '/workers'") }
+        @{ Why = 'a number at an exclusive minimum'; J = '"timeoutFactor": 0, "timeoutFloorSeconds": -2.5'; M = @("0 should be greater than 0 at '/timeoutFactor'", "-2.5 should be greater than 0 at '/timeoutFloorSeconds'") }
+    ) {
+        Walk "{ $($script:base), $J }" | Should-BeCollection $M
+    }
+
+    It 'names every missing required key at once, and judges no further a value of the wrong type' {
+        Walk '{}' | Should-BeCollection @("Required properties [`"mutate`",`"tests`"] are not present at ''")
+        Walk '{ "mutate": 5, "tests": ["x"] }' | Should-BeCollection @("Value is `"integer`" but should be `"array, string, null`" at '/mutate'", "Value is `"array`" but should be `"object, null`" at '/tests'")
+        Walk '"just a string"' | Should-BeCollection @("Value is `"string`" but should be `"object`" at ''")
+    }
+
+    It 'names a single missing required key' {
+        Walk '{ "mutate": ["a"] }' | Should-BeCollection @("Required properties [`"tests`"] are not present at ''")
+    }
+
+    It 'follows JSON Schema where the config schema has no example: <Why>' -ForEach @(
+        # Shapes the config schema does not contain today, so the walk is right for the next key
+        # that adds one -- and so each rule is judged by a test rather than by luck.
+        @{ Why = 'minLength judges strings only'; V = '3'; S = '{ "minLength": 5 }' }
+        @{ Why = 'additionalProperties true admits any key'; V = '{ "x": 1 }'; S = '{ "type": "object", "additionalProperties": true }' }
+        @{ Why = 'no rule for a key admits it'; V = '{ "x": 1 }'; S = '{ "type": "object" }' }
+        @{ Why = 'an array without items admits any item'; V = '[1, "a", null]'; S = '{ "type": "array" }' }
+    ) {
+        @(Get-PSMutationSchemaFault -Value ($V | ConvertFrom-Json -NoEnumerate) -Schema ($S | ConvertFrom-Json) -Pointer '').Count | Should-Be 0
+    }
+
+    It 'judges a key by the pattern it matches, before additionalProperties' {
+        # The config schema's one pattern admits anything, so only a pattern with a rule shows the
+        # rule is applied rather than skipped.
+        $schema = '{ "type": "object", "patternProperties": { "^n_": { "type": "number" } }, "additionalProperties": false }' | ConvertFrom-Json
+        Get-PSMutationSchemaFault -Value ('{ "n_a": "x", "n_b": 2 }' | ConvertFrom-Json) -Schema $schema -Pointer '' |
+            Should-Be "Value is `"string`" but should be `"number`" at '/n_a'"
+    }
+
+    It 'wants at least one item where the schema says so, and no more' {
+        Walk '{ "mutate": [], "tests": {} }' | Should-BeCollection @("Value should have at least 1 items at '/mutate'")
+        @(Walk '{ "mutate": ["a"], "tests": {} }').Count | Should-Be 0
+    }
+
+    It 'accepts every value at its boundary, a comment key, and a whole number written as a fraction' {
+        @(Walk "{ $($script:base), `"workers`": 0, `"timeoutFactor`": 0.000001, `"ignoreCalls`": [`"x`"], `"_note`": 1, `"`$schema`": `"s`", `"runTimeoutSeconds`": 2.0, `"reportPath`": `"2026-01-01T00:00:00`" }").Count | Should-Be 0
+    }
+
+    It 'gives the same verdict as Test-Json on every document here, on any PowerShell' {
+        # Messages differ by version; the VERDICT does not, so that is what the two are held to.
+        $schemaText = Get-PSMutationConfigSchema
+        foreach ($j in @(
+                '{ "mutate": ["a"], "tests": {} }', '{}', '{ "mutate": [], "tests": {} }', '{ "mutate": ["a"], "tests": {}, "workers": 1.5 }'
+                '{ "mutate": ["a"], "tests": {}, "workers": 2.0 }', '{ "mutate": ["a"], "thresholds": { "break": "80" }, "tests": {} }'
+                '{ "mutate": ["a"], "tests": {}, "Workers": 1 }', '{ "mutate": ["a"], "tests": {}, "_x": 1 }'
+                '{ "mutate": ["a"], "tests": { "a": [1] } }', '{ "mutate": ["a"], "tests": {}, "timeoutFactor": 0 }')) {
+            $valid = Test-Json -Json $j -Schema $schemaText -ErrorAction SilentlyContinue
+            (@(Walk $j).Count -eq 0) | Should-Be $valid -Because $j
+        }
+    }
+
+    It 'refuses on the walk''s word alone, in the walk''s words' {
+        Mock Test-Json { $true }
+        Get-PSMutationConfigTypeFault -Cfg ('{ "mutate": ["a"], "tests": {}, "workers": -1 }' | ConvertFrom-Json) |
+            Should-Be "The config does not match the PSMutant config schema: -1 should be at least 0 at '/workers'"
+    }
+
+    It 'falls back to Test-Json''s words for a fault the walk does not model, and passes when both do' {
+        Mock Get-PSMutationSchemaFault { }
+        Mock Test-Json { Write-Error 'The JSON is not valid with the schema: something else at ''/x'''; $false }
+        Get-PSMutationConfigTypeFault -Cfg ('{ "mutate": ["a"], "tests": {} }' | ConvertFrom-Json) |
+            Should-Be "The config does not match the PSMutant config schema: something else at '/x'"
+        Mock Test-Json { $true }
+        Should-BeNull -Actual (Get-PSMutationConfigTypeFault -Cfg ('{ "mutate": ["a"], "tests": {} }' | ConvertFrom-Json))
+    }
+}
+
 Describe 'a config path answers for itself before anything uses it' {
     BeforeAll {
         # Set HERE rather than at file level. A top-level $script: assignment runs during

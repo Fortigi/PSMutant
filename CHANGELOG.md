@@ -28,6 +28,13 @@ with no test named, and the worker is replaced; an unmutated covering suite that
 before the first mutant. A worker process is renewed every 500 mutants rather than every 50: a new
 process compiles Pester and your code afresh, which at 50 cost more than the processes saved.
 
+**A config value of the wrong type is named on every PowerShell.** On PowerShell 7.6.7 a fault
+inside a nested object or a list -- a string in `thresholds.break`, a number in a `tests` list -- was
+refused with nothing after "does not match the PSMutant config schema:", and beside another fault it
+was not mentioned at all: `Test-Json` there writes no message for it. PSMutant now finds the faults
+itself and words them as 7.5's `Test-Json` did, so the message names the key and what was wrong with
+it whatever the version.
+
 **`-Incremental` reuses the previous report's verdicts for every file nothing touched.** Each
 mutate file is keyed on a hash over the file, its covering test files, and every other source file
 its covering suite executed -- measured once per suite with Pester's coverage and recorded in the
