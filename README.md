@@ -312,6 +312,62 @@ terms `-MergeIntoBaseline` uses:
 Up to one worker-count's worth of mutants may be re-evaluated, because a mutant can finish without
 being recorded. That is harmless — they simply run again.
 
+### Reusing verdicts for files nothing touched
+
+`-Incremental` reuses the previous report's verdict for every mutate file whose verdicts cannot
+have changed, and evaluates only the rest:
+
+```powershell
+Invoke-PSMutation -ConfigFile ./c.json -Incremental
+```
+
+A mutant's verdict depends on its file, the tests that run against it, and the other code those
+tests run. So each mutate file gets a **key**: a hash over the file, its covering test files, and
+every other source file its covering suite **executed**. Which files those are is measured, once per
+covering suite, with Pester's coverage over every script in the sandbox, and recorded in the report
+beside the key. A file whose key is unchanged since the previous report reuses its rows; every other
+file is evaluated, and its key recorded for the next run. The first `-Incremental` run has nothing
+to reuse: it evaluates everything and records the keys.
+
+**The executed files are the point.** Replayed over this repo's last 60 merges, a key on the mutate
+file and its tests alone would have reused the verdicts for about 78% of the mutated code (weighted
+by line count), and missed every change to a helper the tests also run. Keyed on all of `src/`
+instead, only 35-40% would have been reused. The files the
+suite actually executed are the ones that can change a verdict.
+
+Measured on PSComplexity's own config, 1424 mutants, 3 workers, every run's verdicts identical to a
+plain run's:
+
+| run | wall | reused |
+|---|---|---|
+| plain | 401s | -- |
+| first `-Incremental`: nothing to reuse, dependencies measured | 479s | 0 |
+| nothing changed | 24s | 1424 |
+| one source file touched | 161s | 1065 |
+
+Touching that one file re-ran it and the four files whose covering suites execute it, and reused the
+other ten. The first run costs about a fifth more, for measuring each suite's dependencies; a run
+that re-evaluates a file measures its suite again.
+
+The previous report is the one at `reportPath`, and it must be a **full** run's report that recorded
+incremental data, written by the same PSMutant, Pester and PowerShell minor version, under the same
+`timeoutFactor`, `timeoutFloorSeconds` and `recordAllKillers`. Anything else is not reused, and the
+run says why. A file whose candidates no longer match its recorded rows -- you changed `operators`,
+say -- is evaluated in full. The result is a **complete** run with a real score; before it starts it
+says how many verdicts it reused, under `-Quiet` too, and the report marks each reused row with
+`"Reused": true` and counts them in `reused`.
+
+**What the key cannot see:**
+
+- a file a suite reads as **data** rather than running -- a JSON fixture, a schema;
+- an **installed module**, which is not in the sandbox;
+- a file the suite **loads but runs nothing from**: dot-sourcing a file of functions none of which is
+  called counts no command, so a later edit that adds top-level code to it, or redefines a function
+  the suite does call, is not seen.
+
+After changing one of those, run without `-Incremental`. It cannot be combined with `-RecheckFrom`,
+`-ResumeFrom`, `-MergeIntoBaseline`, `-ChangedFile` or `-ListOnly`.
+
 ### Declaring equivalent mutants
 
 Some mutants provably cannot change behaviour — `ConvertTo-Json -Depth 6` versus `-Depth 7`

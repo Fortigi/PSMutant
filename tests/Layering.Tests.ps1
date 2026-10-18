@@ -31,6 +31,7 @@ BeforeAll {
         # Patterns in mutate and tests, and pairing by name (#265): expanded once at start-up
         # into the plain lists the rest reads. Reaches no other file.
         'Invoke-PSMutation.ps1 -> PSMutation.Glob.ps1'
+        'Invoke-PSMutation.ps1 -> PSMutation.Incremental.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Operators.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Output.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Pester.ps1'
@@ -49,6 +50,13 @@ BeforeAll {
         # and reuses the report layer rather than restating either.
         # A recheck sizes each mutant's deadline from its suite's measured time with the same
         # decision a full run uses (#253), rather than a second copy of the formula.
+        # An incremental run keys each file on hashes the recheck already computes, measures a
+        # suite's dependencies with the baseline's coverage setting, and asks the runner which
+        # tests cover a file -- the same answer every other caller gets (#255).
+        'PSMutation.Incremental.ps1 -> PSMutation.Output.ps1'
+        'PSMutation.Incremental.ps1 -> PSMutation.Recheck.ps1'
+        'PSMutation.Incremental.ps1 -> PSMutation.Runner.ps1'
+        'PSMutation.Incremental.ps1 -> PSMutation.Sandbox.ps1'
         'PSMutation.Recheck.ps1 -> PSMutation.Config.ps1'
         'PSMutation.Recheck.ps1 -> PSMutation.Output.ps1'
         'PSMutation.Recheck.ps1 -> PSMutation.Report.ps1'

@@ -215,6 +215,36 @@ Describe 'Write-PSMutationReport' {
         finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It 'records an incremental run''s keys for the next one, and counts the rows it reused (#255)' {
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-incremental-$($script:tag)/report.json"
+        try {
+            $reusedRow = $script:mixed[0].PSObject.Copy()
+            $reusedRow | Add-Member -NotePropertyName Reused -NotePropertyValue $true
+            $rows = @($reusedRow) + @($script:mixed | Select-Object -Skip 1)
+            $record = [ordered]@{ basis = [ordered]@{ psmutant = '0.8.0' }; files = [ordered]@{ 'src/a.ps1' = [ordered]@{ key = ('0' * 64); dependsOn = @('src/h.ps1') } } }
+            Write-PSMutationReport -Results $rows -ReportPath $out -Thresholds $null -Incremental $record | Out-Null
+            $json = Get-Content $out -Raw | ConvertFrom-Json
+            $json.reused | Should-Be 1
+            $json.incremental.basis.psmutant | Should-Be '0.8.0'
+            @($json.incremental.files.'src/a.ps1'.dependsOn) | Should-BeCollection @('src/h.ps1')
+            Should-BeTrue -Actual $json.mutants[0].Reused
+            # Still a real score: every mutant has a verdict, some of them carried.
+            $json.mutationScore | Should-Be 66.7
+        }
+        finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'carries neither incremental field on any other run' {
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-notincremental-$($script:tag)/report.json"
+        try {
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+            $json = Get-Content $out -Raw | ConvertFrom-Json
+            $json.PSObject.Properties.Name | Should-NotContainCollection 'incremental'
+            $json.PSObject.Properties.Name | Should-NotContainCollection 'reused'
+        }
+        finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
     It 'records a resume that carried over NOTHING, which a sentinel could not express' {
         # An interruption before the first mutant finished is a real case, and the reason the
         # signal is a switch plus a count rather than a count with a magic value: zero carried
