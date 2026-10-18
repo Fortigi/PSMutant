@@ -543,12 +543,13 @@ function Get-PSMutationInputFault {
         [Parameter(Mandatory)] [bool]$MergeIntoBaseline,
         [Parameter(Mandatory)] [bool]$Changed,
         [bool]$Resume,
+        [bool]$Incremental,
         [AllowEmptyString()] [AllowEmptyCollection()] [string[]]$ChangedFile = @()
     )
     $fault = Get-PSMutationSourceRootFault -SourceRoot $SourceRoot
     if ($fault) { return $fault }
     $fault = Get-PSMutationModeFault -ListOnly $ListOnly -Recheck $Recheck `
-        -UpdateBaseline $UpdateBaseline -MergeIntoBaseline $MergeIntoBaseline -Changed $Changed -Resume $Resume
+        -UpdateBaseline $UpdateBaseline -MergeIntoBaseline $MergeIntoBaseline -Changed $Changed -Resume $Resume -Incremental $Incremental
     if ($fault) { return $fault }
     return $Changed ? (Get-PSMutationChangedFileFault -ChangedFile $ChangedFile) : ''
 }
@@ -609,8 +610,21 @@ function Get-PSMutationModeFault {
         [Parameter(Mandatory)] [bool]$UpdateBaseline,
         [Parameter(Mandatory)] [bool]$MergeIntoBaseline,
         [bool]$Changed,
-        [bool]$Resume
+        [bool]$Resume,
+        [bool]$Incremental
     )
+    # -Incremental first (#255): it reads the previous FULL report and writes the next one, so a
+    # run that reads another report, scopes itself or evaluates nothing is a different run.
+    $reusing = Get-PSMutationConflictName -When $Incremental -Against @(
+        @{ Name = '-RecheckFrom'; On = $Recheck }
+        @{ Name = '-ResumeFrom'; On = $Resume }
+        @{ Name = '-MergeIntoBaseline'; On = $MergeIntoBaseline }
+        @{ Name = '-ChangedFile'; On = $Changed }
+        @{ Name = '-ListOnly'; On = $ListOnly })
+    if ($reusing) {
+        return "-Incremental reuses the previous full report's verdicts and writes the next one, so it cannot be combined with $reusing. " +
+            'Drop -Incremental, or the other switch.'
+    }
     # -ChangedFile first, because its conflicts hold whether or not -ListOnly is present, and
     # -ListOnly WITH -ChangedFile is the one combination here that is not a conflict at all:
     # previewing what a pull request would mutate is the cheapest use either has.

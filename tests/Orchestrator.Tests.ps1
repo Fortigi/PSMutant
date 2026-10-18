@@ -30,7 +30,7 @@ BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
         'PSMutation.Config.ps1', 'PSMutation.Output.ps1', 'PSMutation.Killers.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
-        'PSMutation.Sarif.ps1', 'PSMutation.Recheck.ps1', 'PSMutation.Inline.ps1', 'PSMutation.Glob.ps1', 'Invoke-PSMutation.ps1') {
+        'PSMutation.Sarif.ps1', 'PSMutation.Recheck.ps1', 'PSMutation.Inline.ps1', 'PSMutation.Glob.ps1', 'PSMutation.Incremental.ps1', 'Invoke-PSMutation.ps1') {
         . (Join-Path $src $f)
     }
     # The unmutated suite check (#248) runs real suites in real runspaces, and every run here is
@@ -124,6 +124,59 @@ Describe 'Invoke-PSMutation' {
         $r.Survived | Should-Be 1
         $r.Score    | Should-Be 50
         $r.ExitCode | Should-Be 0
+    }
+
+    It 'runs -Incremental: evaluates only what it leaves, joins the reused rows back, says so even under -Quiet, and records it (#255)' {
+        $script:inc = $null
+        $script:loud = @()
+        Mock Get-PSMutationIncrementalState {
+            $script:inc = @{ On = $Incremental; ReportPath = $ReportPath; Basis = $Basis; Candidates = $Candidates }
+            [pscustomobject]@{
+                Candidates = @('cand-2')
+                Reused     = @([pscustomobject]@{ Id = 1; File = 'src/a.ps1'; Line = 1; Operator = 'BinaryOperator'; Description = 'eq to ne'; Status = 'Killed'; Reused = $true })
+                Record     = [ordered]@{ basis = $Basis; files = [ordered]@{} }
+                Lines      = @(New-PSMutationLine -Role 'Muted' -Text 'INCREMENTAL notice')
+            }
+        }
+        Mock Invoke-PSMutationLoop {
+            $script:loopCands = @($Candidates)
+            , @([pscustomobject]@{ Id = 2; File = 'src/a.ps1'; Line = 2; Operator = 'BinaryOperator'; Description = 'gt to le'; Status = 'Survived' })
+        }
+        Mock Join-PSMutationIncrementalRow { $script:joinAll = @($Candidates); , @(@($Reused) + @($Results)) }
+        Mock Write-PSMutationOutput { if (-not $Quiet) { $script:loud += @($Lines | ForEach-Object { $_.Text }) } }
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet -Incremental
+        Should-BeTrue -Actual $script:inc.On
+        $script:inc.ReportPath | Should-Be (Join-Path $script:root 'reports/run.json')
+        @($script:inc.Candidates) | Should-BeCollection @('cand-1', 'cand-2')
+        $script:loopCands | Should-BeCollection @('cand-2')
+        $script:joinAll | Should-BeCollection @('cand-1', 'cand-2')
+        $script:loud | Should-ContainCollection 'INCREMENTAL notice'
+        $r.Total | Should-Be 2
+        $json = Get-Content (Join-Path $script:root 'reports/run.json') -Raw | ConvertFrom-Json
+        $json.reused | Should-Be 1
+        $b = $script:inc.Basis
+        $b.pester | Should-Be "$((Get-PSMutationLoadedPester).Version)"
+        $b.powershell | Should-Be "$($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)"
+        $b.timeoutFactor | Should-Be 4.0
+        $b.timeoutFloorSeconds | Should-Be 15.0
+        Should-BeFalse -Actual $b.recordAllKillers
+    }
+
+    It 'asks for no reuse on an ordinary run, and writes no incremental record' {
+        Mock Get-PSMutationIncrementalState {
+            $script:incOff = $Incremental
+            [pscustomobject]@{ Candidates = $Candidates; Reused = @(); Record = $null; Lines = @() }
+        }
+        $null = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet
+        Should-BeFalse -Actual $script:incOff
+        $json = Get-Content (Join-Path $script:root 'reports/run.json') -Raw | ConvertFrom-Json
+        $json.PSObject.Properties.Name | Should-NotContainCollection 'incremental'
+    }
+
+    It 'refuses -Incremental with -ListOnly before building anything' {
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet -Incremental -ListOnly } |
+            Should-Throw -ExceptionMessage '-Incremental reuses*-ListOnly*'
+        Should-Invoke New-PSMutationSandbox -Exactly 0
     }
 
     It 'expands a pattern in mutate before anything reads the list, and says what it became (#265)' {

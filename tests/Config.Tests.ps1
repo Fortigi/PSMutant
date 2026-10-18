@@ -1430,6 +1430,32 @@ Describe 'Get-PSMutationModeFault' {
             -MergeIntoBaseline $M -Resume $true | Should-MatchString "cannot be combined with $Named"
     }
 
+    It 'permits -Incremental with -UpdateBaseline, and on its own (#255)' {
+        # An incremental run is complete -- every mutant has a verdict -- so recording its
+        # survivors records nothing it did not answer for.
+        Get-PSMutationModeFault -ListOnly $false -Recheck $false -UpdateBaseline $true `
+            -MergeIntoBaseline $false -Incremental $true | Should-Be ''
+    }
+
+    It 'refuses -Incremental with a switch that names another run, naming every one (#255)' -ForEach @(
+        @{ R = $true; Rs = $false; M = $false; C = $false; L = $false; Named = '-RecheckFrom' }
+        @{ R = $false; Rs = $true; M = $false; C = $false; L = $false; Named = '-ResumeFrom' }
+        @{ R = $false; Rs = $false; M = $true; C = $false; L = $false; Named = '-MergeIntoBaseline' }
+        @{ R = $false; Rs = $false; M = $false; C = $true; L = $false; Named = '-ChangedFile' }
+        @{ R = $false; Rs = $false; M = $false; C = $false; L = $true; Named = '-ListOnly' }
+        @{ R = $true; Rs = $true; M = $false; C = $false; L = $false; Named = '-RecheckFrom or -ResumeFrom' }
+    ) {
+        Get-PSMutationModeFault -ListOnly $L -Recheck $R -UpdateBaseline $false -MergeIntoBaseline $M -Changed $C `
+            -Resume $Rs -Incremental $true |
+            Should-Be "-Incremental reuses the previous full report's verdicts and writes the next one, so it cannot be combined with $Named. Drop -Incremental, or the other switch."
+    }
+
+    It 'passes -Incremental through to the mode check' {
+        Get-PSMutationInputFault -SourceRoot ([System.IO.Path]::GetTempPath()) -ListOnly $true -Recheck $false `
+            -UpdateBaseline $false -MergeIntoBaseline $false -Changed $false -Incremental $true |
+            Should-MatchString '^-Incremental reuses'
+    }
+
     It 'refuses -ChangedFile with -ResumeFrom' {
         # A scoped resume of a whole-tree partial is not a thing: the partial's rows cover files
         # this run would not touch, so carrying them over would report a whole-tree score for a

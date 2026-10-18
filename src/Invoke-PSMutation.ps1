@@ -236,7 +236,8 @@ function Invoke-PSMutationRun {
         [switch]$ListOnly,
         [switch]$Quiet,
         [switch]$UpdateBaseline,
-        [switch]$MergeIntoBaseline
+        [switch]$MergeIntoBaseline,
+        [switch]$Incremental
     )
 
     # Started before anything else so `totalSeconds` covers what a user actually waits for,
@@ -252,7 +253,7 @@ function Invoke-PSMutationRun {
     $inputFault = Get-PSMutationInputFault -SourceRoot $SourceRoot -ListOnly $ListOnly.IsPresent `
         -Recheck ([bool]$RecheckFrom) -UpdateBaseline $UpdateBaseline.IsPresent `
         -MergeIntoBaseline $MergeIntoBaseline.IsPresent -Changed $ChangedFileBound `
-        -Resume ([bool]$ResumeFrom) -ChangedFile $ChangedFile
+        -Resume ([bool]$ResumeFrom) -Incremental $Incremental.IsPresent -ChangedFile $ChangedFile
     if ($inputFault) { throw $inputFault }
     $root = (Resolve-Path $SourceRoot).Path
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
@@ -299,7 +300,18 @@ function Invoke-PSMutationRun {
         # back unchanged, no prior rows and no notice.
         $resume = Get-PSMutationResumeState -ResumeFrom $ResumeFrom -Candidates $cands -Plan $t `
             -SandboxRoot $sandbox -SourceHashes $ctx.SourceHashes -Operators $ctx.Operators
-        $cands = $resume.Candidates
+        # Then the incremental narrowing (#255), branch-free the same way: an ordinary run gets its
+        # candidates back. The two never both narrow -- they are refused together.
+        $all = $cands
+        $inc = Get-PSMutationIncrementalState -Incremental $Incremental.IsPresent -Candidates $resume.Candidates -Plan $t `
+            -SandboxRoot $sandbox -ReportPath $ctx.ReportPath -Basis (New-PSMutationIncrementalBasis `
+                -ModuleVersion "$($ctx.ProvenanceArgs.ModuleVersion)" -PesterVersion "$((Get-PSMutationLoadedPester).Version)" `
+                -PowerShellVersion "$($PSVersionTable.PSVersion.Major).$($PSVersionTable.PSVersion.Minor)" `
+                -TimeoutRule (Get-PSMutationTimeoutRule -Cfg $cfg) -RecordAllKillers $ctx.RecordAllKillers)
+        $cands = $inc.Candidates
+        # NOT passed -Quiet, as the annotations are not: a score some of whose verdicts this run
+        # did not check must say so in every log, a CI one most of all.
+        Write-PSMutationOutput -Quiet:$false -Lines $inc.Lines
         # The splat carries the candidate list into the loop, so the narrowed set has to replace
         # what the context built. Assigning through $exec rather than passing -Candidates beside
         # the splat, which PowerShell refuses as a parameter given twice.
@@ -400,8 +412,8 @@ function Invoke-PSMutationRun {
         # PREPENDED, not appended: the prior rows are a prefix of the candidate list, because
         # finished mutants are retired in candidate order, so this restores the order a single
         # uninterrupted run would have produced. Empty on an ordinary run.
-        $results = @($resume.PriorRows) + @($results)
-        $summary = Write-PSMutationReport @doc -Resumed:$resume.IsResume -CarriedOverUnverified @($resume.PriorRows).Count -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $ctx.Exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $ctx.RecordAllKillers -MappedTests $t.AllTests `
+        $results = Join-PSMutationIncrementalRow -Candidates $all -Reused $inc.Reused -Results (@($resume.PriorRows) + @($results)) -SandboxRoot $sandbox
+        $summary = Write-PSMutationReport @doc -Incremental $inc.Record -Resumed:$resume.IsResume -CarriedOverUnverified @($resume.PriorRows).Count -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $ctx.Exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $ctx.RecordAllKillers -MappedTests $t.AllTests `
             -TestFileLength (Get-PSMutationTestFileLength -Path $t.AllTests -SandboxRoot $sandbox) `
             -ChangedFiles $ctx.ChangedFiles -InScopeFile $ctx.InScopeFile
         # Right after the report and from the same rows, so the two files describe one run. Only
@@ -511,6 +523,15 @@ function Invoke-PSMutation {
         Piping FILES binds -ConfigFile by value AND -SourceRoot from the same object's FullName,
         which points the root at the config file. That is refused by name rather than left to
         surface later as a puzzling sandbox error.
+
+    .PARAMETER Incremental
+        Reuse the previous report's verdict for every mutate file nothing has touched (#255): the
+        file, its covering tests, and every other source file its covering suite executed, all
+        byte-identical. The previous report is the one at `reportPath`; only a full run's report
+        that recorded incremental data is read, so the first -Incremental run evaluates everything
+        and records it. The run says how many verdicts it reused before it starts, and the report
+        marks each reused row. A file a suite reads as data, or an installed module, is not part of
+        the key: after changing one, run without -Incremental.
 
     .PARAMETER ResumeFrom
         Path to a PARTIAL report -- the one an interrupted run leaves behind. Continues that run
@@ -713,6 +734,8 @@ function Invoke-PSMutation {
         # explicit '' behaves as absent rather than as a path that cannot be read -- the same
         # shape Invoke-PSMutationRun takes it in, so there is one meaning of "not a resume".
         [AllowEmptyString()] [string]$ResumeFrom,
+        # Reuse the previous report's verdicts for the files nothing touched (#255).
+        [switch]$Incremental,
         # Preview the mutant set and stop. Evaluates nothing, so it refuses to combine with
         # any switch that acts on verdicts -- see Get-PSMutationModeFault.
         [switch]$ListOnly,
@@ -742,6 +765,6 @@ function Invoke-PSMutation {
             -ResumeFrom $ResumeFrom `
             -ChangedFile $ChangedFile -ChangedFileBound $PSBoundParameters.ContainsKey('ChangedFile') `
             -ListOnly:$ListOnly -Quiet:$Quiet -UpdateBaseline:$UpdateBaseline `
-            -MergeIntoBaseline:$MergeIntoBaseline
+            -MergeIntoBaseline:$MergeIntoBaseline -Incremental:$Incremental
     }
 }
