@@ -22,6 +22,7 @@ foreach ($file in @(
         'PSMutation.Report.ps1'
         'PSMutation.Sarif.ps1'
         'PSMutation.Recheck.ps1'
+        'PSMutation.Killers.ps1'
         'PSMutation.Runner.ps1'
         'Invoke-PSMutation.ps1'
     )) {

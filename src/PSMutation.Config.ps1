@@ -284,6 +284,23 @@ function Get-PSMutationCoveredLinesOnly {
     return [bool]$Cfg.coveredLinesOnly
 }
 
+function Get-PSMutationKillersFirst {
+    <#
+    .SYNOPSIS
+        Whether a mutant tries the tests that killed its neighbours before its whole covering files.
+    #>
+    # Default TRUE (#254), so absent needs its own branch, as coveredLinesOnly does: [bool]$null is
+    # false. A verdict cannot change with it -- a first test is trusted only once it has passed alone
+    # on unmutated source, so its failure is a failure the whole files would also report -- and on
+    # this repo's own run it removes most of the time a killed mutant spends in its covering files.
+    # What does change is WHICH test the report names as the killer. Off restores the old timing.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param($Cfg)
+    if ($null -eq $Cfg.killersFirst) { return $true }
+    return [bool]$Cfg.killersFirst
+}
+
 # The commands whose arguments are not mutated when a config says nothing (#263): logging only.
 # Their text rarely tells anyone anything about the tests. Write-Warning, Write-Error and throw are
 # NOT here: tests assert those messages, so their mutants are signal.
@@ -1207,6 +1224,18 @@ function Get-PSMutationLargestTimeout {
     return [int]($TimeoutByFile.Values | Measure-Object -Maximum).Maximum
 }
 
+function Get-PSMutationTimeoutRule {
+    # The config's timeoutFactor and timeoutFloorSeconds, or 4 and 15: { Factor; Floor }. One place,
+    # because a mutant's deadline and its first pass's (#254) are sized by the same rule.
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param($Cfg)
+    return [pscustomobject]@{
+        Factor = $Cfg.timeoutFactor ? $Cfg.timeoutFactor : 4
+        Floor  = $Cfg.timeoutFloorSeconds ? $Cfg.timeoutFloorSeconds : 15
+    }
+}
+
 function Get-PSMutationTimeout {
     # Per-mutant timeout in whole seconds.
     #
@@ -1226,8 +1255,9 @@ function Get-PSMutationTimeout {
         # that forgot it would get a budget sized for a machine it does not have.
         [Parameter(Mandatory)] [int]$Workers
     )
-    $factor = $Cfg.timeoutFactor ? $Cfg.timeoutFactor : 4
-    $floor = $Cfg.timeoutFloorSeconds ? $Cfg.timeoutFloorSeconds : 15
+    $rule = Get-PSMutationTimeoutRule -Cfg $Cfg
+    $factor = $rule.Factor
+    $floor = $rule.Floor
     # x Workers, and the asymmetry is the whole argument. The baseline is measured ONCE, ALONE,
     # with the machine to itself; N mutants sharing it are slower for reasons that have nothing
     # to do with the fault injected in them. A mutant that overruns is scored KILLED, so a budget

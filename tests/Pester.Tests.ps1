@@ -427,13 +427,13 @@ Describe 'fixture' {
         $out.Ran | Should-Be 0
     }
 
-    It 'declares the two parameters the runner binds by name' {
+    It 'declares the parameters the runner binds by name' {
         # AddParameter binds by NAME, so a rename here fails at run time with a binding error
-        # rather than at parse time. These two are the contract between this file and the runner.
+        # rather than at parse time. These are the contract between this file and the runner.
         $ast = [System.Management.Automation.Language.Parser]::ParseInput(
             (Get-PSMutationWarmPesterScript).ToString(), [ref]$null, [ref]$null)
         $params = @($ast.ParamBlock.Parameters | ForEach-Object { $_.Name.VariablePath.UserPath })
-        $params | Should-BeCollection @('tests', 'recordAllKillers', 'sandboxRoot')
+        $params | Should-BeCollection @('tests', 'recordAllKillers', 'sandboxRoot', 'filter')
     }
 
     It 'keeps the early stop unless every killer is wanted' {
@@ -449,6 +449,54 @@ Describe 'fixture' {
                 }, $true))
         $guarded | Should-BeCollection -Count 1
         $guarded[0].Clauses[0].Item1.Extent.Text | Should-MatchString 'recordAllKillers'
+    }
+}
+
+Describe 'the child script, given a filter (#254)' {
+    BeforeAll {
+        # 'b fails' and 'c fails [x]' both fail; the -ForEach test is one name with two cases.
+        $script:firstFixture = Join-Path $TestDrive "first-$([System.Guid]::NewGuid().ToString('N')).Tests.ps1"
+        @'
+Describe 'd' {
+    It 'a passes' { 1 | Should-Be 1 }
+    It 'b fails' { 1 | Should-Be 2 }
+    It 'case <n>' -ForEach @(@{ n = 1 }, @{ n = 2 }) { $n | Should-BeGreaterThan 0 }
+    It 'c fails [x]' { 1 | Should-Be 2 }
+}
+'@ | Set-Content -LiteralPath $script:firstFixture -Encoding utf8
+        function script:Child { param([string[]]$Filter, [bool]$All = $false)
+            & (Get-PSMutationWarmPesterScript) -tests @($script:firstFixture) -recordAllKillers $All -sandboxRoot $TestDrive -filter $Filter
+        }
+    }
+
+    It 'runs only the tests named, a bracket in a name included' {
+        # Escaped: a filter is a -like pattern.
+        $out = Child -Filter 'd.c fails [x]'
+        $out.Result | Should-Be 'Failed'
+        @($out.Killers) | Should-BeCollection @('c fails [x]')
+        @($out.FailedPath) | Should-BeCollection @('d.c fails [x]')
+        $out.Ran | Should-Be 1
+    }
+
+    It 'runs the whole files without one' {
+        $out = Child -Filter @()
+        @($out.FailedPath) | Should-BeCollection @('d.b fails')
+        $out.Ran | Should-Be 2
+    }
+
+    It 'names each test that passed or failed by the unexpanded path a filter matches' {
+        $out = Child -Filter 'd.a passes', 'd.case <n>', 'd.b fails' -All $true
+        $out.Result | Should-Be 'Failed'
+        $out.Ran | Should-Be 4
+        @($out.PassedPath | Sort-Object) | Should-BeCollection @('d.a passes', 'd.case <n>')
+        @($out.FailedPath) | Should-BeCollection @('d.b fails')
+    }
+
+    It 'answers a filter that matches no test with a pass over nothing' {
+        $out = Child -Filter 'd.gone'
+        $out.Result | Should-Be 'Passed'
+        $out.Ran | Should-Be 0
+        @($out.PassedPath).Count | Should-Be 0
     }
 }
 

@@ -19,6 +19,7 @@
     "src/PSMutation.Inline.ps1",
     "src/PSMutation.Glob.ps1",
     "src/PSMutation.Output.ps1",
+    "src/PSMutation.Killers.ps1",
     "src/PSMutation.Runner.ps1",
     "src/Invoke-PSMutation.ps1",
     "src/PSMutation.Sandbox.ps1"
@@ -50,6 +51,9 @@
     ],
     "src/PSMutation.Output.ps1": [
       "tests/Output.Tests.ps1"
+    ],
+    "src/PSMutation.Killers.ps1": [
+      "tests/Killers.Tests.ps1"
     ],
     "src/PSMutation.Runner.ps1": [
       "tests/Runner.Tests.ps1"

@@ -369,50 +369,77 @@ function Get-PSMutationWarmPesterScript {
     # the caller concatenated in or left out, which made the thing handed to the runspace
     # assembled text again -- one conditional away from the problem this fixes. It is now a
     # parameter the child reads, so there is exactly one script and it is always the same one.
-    $sb = {
-        param($tests, $recordAllKillers, [string]$sandboxRoot)
-        # Every module loaded from THIS worker's sandbox is removed first (#249). The runspace is
-        # reused across mutants, and `Import-Module` without -Force hands back a module already
-        # loaded -- measured: after the file changed, the second import returned the old code. So
-        # a suite importing the code under test would run mutant 2 against mutant 1. Removed, the
-        # next import reads the file as it is now; a module that defines a class reloads too.
-        # Only the sandbox's: an installed dependency does not change between mutants, and
-        # removing it would only make every run reload it.
-        $own = $sandboxRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
-        Get-Module | Where-Object { $_.Path -and $_.Path.StartsWith($own, [System.StringComparison]::OrdinalIgnoreCase) } |
-            Remove-Module -Force
-        $c = New-PesterConfiguration
-        $c.Run.Path = $tests
-        $c.Run.PassThru = $true
-        $c.Output.Verbosity = 'None'
-        # SkipRemainingOnFailure stops the suite at the first failing test. A mutant only ever asks
-        # one question -- does ANY test notice -- and once one has, every test after it is work
-        # whose outcome cannot change the verdict. Measured against a killed mutant in this repo's
-        # sibling: a 2.03s covering suite finishes in 0.34s, 83% less, with the result identical.
-        # A SURVIVOR is unaffected by construction: nothing fails, so nothing is skipped.
-        #
-        # Set only when the loaded Pester HAS the property. It arrived in Pester 5.3.0 -- measured,
-        # not looked up: 5.2.0 does not carry it and 5.3.0 does -- so the guard exists for Pester
-        # 5.2.x and nothing else. Assigning a property that does not exist would fail the whole run
-        # for a speed optimisation, on a version this module still promises to support.
-        if (-not $recordAllKillers -and $c.Run.PSObject.Properties['SkipRemainingOnFailure']) {
-            $c.Run.SkipRemainingOnFailure = 'Run'
-        }
-        $r = Invoke-Pester -Configuration $c
-        # ExpandedName, not Name: a -ForEach case is one name and many tests, and a killer nobody
-        # can tell apart from its siblings is not an answer to "which test killed this".
-        # Ran is how many tests reached a verdict (#251). A file whose discovery a mutant ended --
-        # `exit`, `break` or `return` reached at the top of it, or in a Describe body -- loses its
-        # tests silently, and Pester calls a run of none 'Passed'.
-        [pscustomobject]@{
-            Result = [string]$r.Result; Ran = $r.PassedCount + $r.FailedCount
-            Killers = @($r.Failed | ForEach-Object { $_.ExpandedName })
-        }
-    }
+    $sb = ${function:Invoke-PSMutationChild}
     # Returned as a SCRIPTBLOCK; the runner stringifies at the boundary where the runspace needs
     # text. Handing back .ToString() here looked equivalent and is not: a caller can only get the
     # code back by re-creating it, and a re-created block has no file association, so nothing it
     # executes is attributed to these lines. Coverage sat at 98.95% with the body untested
     # precisely because the only way to run it was through a copy.
     return $sb
+}
+
+function Invoke-PSMutationChild {
+    # The body a mutant -- or a proof (#254) -- runs in a worker runspace. Its TEXT is what runs there:
+    # Get-PSMutationWarmPesterScript hands this function's own scriptblock to the runner, which
+    # stringifies it at the boundary. A function rather than a block inside one, so it is measured,
+    # linted and tested as the unit it is.
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        $tests, $recordAllKillers, [string]$sandboxRoot,
+        # Run only the tests by these names (#254) -- the ones that killed a mutant's neighbours,
+        # or the ones a proof asks about -- rather than the whole files. Empty runs everything.
+        [string[]]$filter = @()
+    )
+    # Every module loaded from THIS worker's sandbox is removed first (#249). The runspace is
+    # reused across mutants, and `Import-Module` without -Force hands back a module already
+    # loaded -- measured: after the file changed, the second import returned the old code. So
+    # a suite importing the code under test would run mutant 2 against mutant 1. Removed, the
+    # next import reads the file as it is now; a module that defines a class reloads too.
+    # Only the sandbox's: an installed dependency does not change between mutants, and
+    # removing it would only make every run reload it.
+    $own = $sandboxRoot.TrimEnd('\', '/') + [System.IO.Path]::DirectorySeparatorChar
+    Get-Module | Where-Object { $_.Path -and $_.Path.StartsWith($own, [System.StringComparison]::OrdinalIgnoreCase) } |
+        Remove-Module -Force
+    $c = New-PesterConfiguration
+    $c.Run.Path = $tests
+    $c.Run.PassThru = $true
+    $c.Output.Verbosity = 'None'
+    # Escaped: a filter is a -like pattern, and a test named with a bracket matches nothing
+    # unescaped. Matched against the UNEXPANDED name, so a -ForEach test runs every case.
+    $c.Filter.FullName = [string[]]@(foreach ($f in $filter) { [WildcardPattern]::Escape($f) })
+    # SkipRemainingOnFailure stops the suite at the first failing test. A mutant only ever asks one
+    # question -- does ANY test notice -- and once one has, every test after it is work whose
+    # outcome cannot change the verdict. Measured against a killed mutant in this repo's sibling: a
+    # 2.03s covering suite finishes in 0.34s, 83% less, with the result identical. A SURVIVOR is
+    # unaffected by construction: nothing fails, so nothing is skipped.
+    #
+    # Set only when the loaded Pester HAS the property. It arrived in Pester 5.3.0 -- measured, not
+    # looked up: 5.2.0 does not carry it and 5.3.0 does -- so the guard exists for Pester 5.2.x and
+    # nothing else. Assigning a property that does not exist would fail the whole run for a speed
+    # optimisation, on a version this module still promises to support.
+    if (-not $recordAllKillers -and $c.Run.PSObject.Properties['SkipRemainingOnFailure']) {
+        $c.Run.SkipRemainingOnFailure = 'Run'
+    }
+    $r = Invoke-Pester -Configuration $c
+    # ExpandedName, not Name: a -ForEach case is one name and many tests, and a killer nobody
+    # can tell apart from its siblings is not an answer to "which test killed this".
+    #
+    # Ran is how many tests reached a verdict (#251). A file whose discovery a mutant ended --
+    # `exit`, `break` or `return` reached at the top of it, or in a Describe body -- loses its
+    # tests silently, and Pester calls a run of none 'Passed'.
+    #
+    # Named twice more by the UNEXPANDED path a filter matches (#254): the tests that failed,
+    # which the runner tries first on later mutants, and the tests that passed -- a proof trusts
+    # a name that passed and did not fail.
+    #
+    # foreach STATEMENTS, which iterate zero times over a list that is not there. Measured on 6.1.0, a
+    # green run's Failed is an empty collection rather than $null -- but a pipeline over $null would
+    # run once, and nothing here should rest on which a given Pester returns.
+    [pscustomobject]@{
+        Result = [string]$r.Result; Ran = $r.PassedCount + $r.FailedCount
+        Killers = @(foreach ($t in $r.Failed) { $t.ExpandedName })
+        FailedPath = @(@(foreach ($t in $r.Failed) { $t.Path -join '.' }) | Select-Object -Unique)
+        PassedPath = @(@(foreach ($t in $r.Passed) { $t.Path -join '.' }) | Select-Object -Unique)
+    }
 }

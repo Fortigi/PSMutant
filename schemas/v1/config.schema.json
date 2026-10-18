@@ -64,6 +64,14 @@
         ]
       }
     },
+    "killersFirst": {
+      "type": [
+        "boolean",
+        "null"
+      ],
+      "description": "Before running a mutant's whole covering files, run only the tests that already killed a mutant in the same function or file, once each has passed on its own against unmutated source. A failure there kills the mutant; otherwise the whole files run as before. Verdicts are the same either way; the test named as the killer can differ. Default true. Off under recordAllKillers.",
+      "default": true
+    },
     "ignoreCalls": {
       "type": [
         "array",

@@ -5,7 +5,7 @@
 BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
-        'PSMutation.Runner.ps1') { . (Join-Path $src $f) }
+        'PSMutation.Output.ps1', 'PSMutation.Killers.ps1', 'PSMutation.Runner.ps1') { . (Join-Path $src $f) }
 
     # A tiny fixture "project": a module function + a covering test that dot-sources it.
     $script:proj = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-mut-$([System.Guid]::NewGuid().ToString('N'))"
@@ -78,6 +78,37 @@ Describe 'd' { It 'is positive' -ForEach `$cases { `$_ | Should -BeGreaterThan 0
             -CoveringTests @($disc) -TimeoutSeconds 30 | Select-Object -ExpandProperty Status | Should-Be 'RuntimeError'
         Invoke-TestMutant -Candidate $cand -MutatedContent ($original -replace '1, 2', '1, -2') -OriginalContent $original `
             -CoveringTests @($disc) -TimeoutSeconds 30 | Select-Object -ExpandProperty Status | Should-Be 'Killed'
+    }
+}
+
+Describe 'a test that passes only after another is never tried first (#254)' {
+    It 'keeps a survivor a survivor, where trusting that test alone would have killed it' {
+        # 'needs' reads what 'sets' left behind, so it fails whenever it runs alone. It kills the
+        # first mutant in a whole run, is learned, and fails its proof -- so the second mutant, which
+        # no test can notice, still runs the whole file and survives. Trusted unproven, 'needs' run
+        # alone would have failed on it and scored a kill nothing earned.
+        $code = Join-Path $script:proj 'order.ps1'
+        $original = "function Get-Twice { param(`$n) return (`$n * 2) }`nfunction Get-Unused { return (1 + 1) }`n"
+        Set-Content $code $original -Encoding utf8 -NoNewline
+        $test = Join-Path $script:proj 'order.Tests.ps1'
+        @"
+BeforeAll { . '$code' }
+Describe 'd' {
+    It 'sets' { `$script:seen = Get-Twice 3 }
+    It 'needs' { `$script:seen | Should -Be 6 }
+}
+"@ | Set-Content $test -Encoding utf8
+        $cands = @(
+            [pscustomobject]@{ Id = 1; Function = 'Get-Twice'; File = $code; Line = 1; Operator = 'BinaryOperator'; Description = '* -> +'
+                StartOffset = $original.IndexOf('*'); EndOffset = $original.IndexOf('*') + 1; Mutated = '+' }
+            [pscustomobject]@{ Id = 2; Function = 'Get-Unused'; File = $code; Line = 2; Operator = 'BinaryOperator'; Description = '+ -> -'
+                StartOffset = $original.IndexOf('1 + 1') + 2; EndOffset = $original.IndexOf('1 + 1') + 3; Mutated = '-' }
+        )
+        $r = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) -Candidates $cands `
+            -TestsByFile @{ $code = @($test) } -AllTests @($test) -TimeoutSeconds 30 -SandboxRoot $script:proj -Quiet
+        @($r | ForEach-Object Status) | Should-BeCollection @('Killed', 'Survived')
+        @($r[0].KilledBy) | Should-BeCollection @('needs')
+        [System.IO.File]::ReadAllText($code) | Should-Be $original
     }
 }
 
