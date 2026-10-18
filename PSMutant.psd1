@@ -53,6 +53,13 @@ on -- about 22% less -- every mutant killed both ways. A first pass gets its own
 sized from how long its tests took alone, so a mutant that hangs them is not held for the whole
 files'' deadline before they run.
 
+**A config value of the wrong type is named on every PowerShell.** On PowerShell 7.6.7 a fault
+inside a nested object or a list -- a string in `thresholds.break`, a number in a `tests` list -- was
+refused with nothing after "does not match the PSMutant config schema:", and beside another fault it
+was not mentioned at all: `Test-Json` there writes no message for it. PSMutant now finds the faults
+itself and words them as 7.5''s `Test-Json` did, so the message names the key and what was wrong with
+it whatever the version.
+
 **A mutant that stops the tests from being found is no longer a survivor.** When mutated code
 reaches `exit` while a test file is being discovered -- in a function a `BeforeDiscovery` calls for
 its cases, say -- the file''s tests are never found, and Pester calls a run of no test `Passed`.
