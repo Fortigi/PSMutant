@@ -898,7 +898,9 @@ function Write-PSMutationReport {
         # that carried over zero rows -- an interruption before the first mutant finished -- is a
         # real case, and a sentinel would make it indistinguishable from an ordinary run.
         [switch]$Resumed,
-        [int]$CarriedOverUnverified = 0
+        [int]$CarriedOverUnverified = 0,
+        # An incremental run's record (#255) -- { basis; files } -- or $null for any other run.
+        $Incremental = $null
     )
     # The only place holding EVERY row, so the only place that can ask whether a
     # declaration matched nothing. The per-set fold no longer answers it.
@@ -1010,6 +1012,12 @@ function Write-PSMutationReport {
     if ($Resumed) {
         $document | Add-Member -NotePropertyName resumed -NotePropertyValue $true
         $document | Add-Member -NotePropertyName carriedOverUnverified -NotePropertyValue $CarriedOverUnverified
+    }
+    # An incremental run's key per file, for the next one, and how many of the rows above it took
+    # from the previous report rather than ran. Only on such a run, as resumed is only on a resume.
+    if ($null -ne $Incremental) {
+        $document | Add-Member -NotePropertyName incremental -NotePropertyValue $Incremental
+        $document | Add-Member -NotePropertyName reused -NotePropertyValue @($Results | Where-Object { $_.PSObject.Properties['Reused'] }).Count
     }
     Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath
     return $summary
