@@ -15,6 +15,20 @@ on -- about 22% less -- every mutant killed both ways. A first pass gets its own
 sized from how long its tests took alone, so a mutant that hangs them is not held for the whole
 files' deadline before they run.
 
+**`-Incremental` reuses the previous report's verdicts for every file nothing touched.** Each
+mutate file is keyed on a hash over the file, its covering test files, and every other source file
+its covering suite executed -- measured once per suite with Pester's coverage and recorded in the
+report. A file whose key is unchanged reuses its rows; the rest are evaluated and keyed for next time.
+Measured on PSComplexity's config, 1424 mutants with verdicts identical to a plain run every time: a
+plain run took 401 seconds, the first incremental run 479, a second with nothing changed 24, and one
+after touching a single source file 161, reusing 1065 verdicts. The run says how many it reused
+before it starts, and the report marks each reused row `"Reused": true` and adds `reused` and
+`incremental`. A previous report written by another PSMutant, Pester or PowerShell version, or under
+other timeout or `recordAllKillers` settings, is not reused. The key cannot see a file a suite reads
+as data, an installed module, or a file the suite loads but runs nothing from; after changing one,
+run without `-Incremental`. It cannot be combined with `-RecheckFrom`, `-ResumeFrom`,
+`-MergeIntoBaseline`, `-ChangedFile` or `-ListOnly`.
+
 **A mutant that stops the tests from being found is no longer a survivor.** When mutated code
 reaches `exit` while a test file is being discovered -- in a function a `BeforeDiscovery` calls for
 its cases, say -- the file's tests are never found, and Pester calls a run of no test `Passed`.

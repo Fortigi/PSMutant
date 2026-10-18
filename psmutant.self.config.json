@@ -14,6 +14,7 @@
     "src/PSMutation.Report.ps1",
     "src/PSMutation.Sarif.ps1",
     "src/PSMutation.Recheck.ps1",
+    "src/PSMutation.Incremental.ps1",
     "src/PSMutation.Pester.ps1",
     "src/PSMutation.Config.ps1",
     "src/PSMutation.Inline.ps1",
@@ -36,6 +37,9 @@
     ],
     "src/PSMutation.Recheck.ps1": [
       "tests/Recheck.Tests.ps1"
+    ],
+    "src/PSMutation.Incremental.ps1": [
+      "tests/Incremental.Tests.ps1"
     ],
     "src/PSMutation.Pester.ps1": [
       "tests/Pester.Tests.ps1"

@@ -917,6 +917,17 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   parent), and `$script:` in a dot-sourced source file belongs to the runspace that sourced it.
   Those are why `Push-Location` in two covering suites is harmless.
 
+- **An incremental run's key is the files a covering suite EXECUTED, measured, not guessed**
+  (#255). The two cheaper keys were measured over this repo's history first and both are wrong in
+  a known way: the mutate file plus its tests reuses ~78% of mutated code between merges and misses
+  every helper change; all of `src/` is safe and reuses 35-40%. The executed set is measured once
+  per covering suite with Pester coverage (breakpoints, as the baseline) and RECORDED beside the
+  key, and a later run re-hashes the recorded files instead of measuring again -- the same files
+  unchanged means the suite runs the same code. Two traps, each pinned by a test in
+  `tests/Incremental.Tests.ps1`: Pester counts no command for a function DEFINITION, so a file the
+  suite loads but runs nothing from is not a dependency (the README says so); and an empty
+  `dependsOn` reads back from JSON as `$null`, which `@()` turns into one path.
+
 - **MORE WORKERS IS NOT MONOTONICALLY BETTER, and the `x workers` budget is well calibrated. Both
   were measured, and the second retired an issue rather than closing one** (#217). Interleaved in
   both orders over 174 mutants, per-mutant LATENCY -- not throughput, which is what the earlier

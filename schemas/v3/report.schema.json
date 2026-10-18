@@ -298,6 +298,45 @@
       "type": "integer",
       "minimum": 0,
       "description": "How many of the mutants below were evaluated by an EARLIER run and carried over unchanged. Zero is a real value -- an interruption before the first mutant finished -- so read `resumed` to tell a resumed run from an ordinary one, never this."
+    },
+    "incremental": {
+      "type": "object",
+      "description": "-Incremental runs only (#255). What the next -Incremental run compares: the basis its verdicts were decided under, and per mutate file a key over the file, its covering tests and the other source files its covering suite executed, with those files listed.",
+      "required": [
+        "basis",
+        "files"
+      ],
+      "properties": {
+        "basis": {
+          "type": "object"
+        },
+        "files": {
+          "type": "object",
+          "additionalProperties": {
+            "type": "object",
+            "required": [
+              "key",
+              "dependsOn"
+            ],
+            "properties": {
+              "key": {
+                "type": "string",
+                "pattern": "^[0-9a-f]{64}$"
+              },
+              "dependsOn": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            }
+          }
+        }
+      }
+    },
+    "reused": {
+      "type": "integer",
+      "description": "-Incremental runs only (#255). How many rows in 'mutants' were taken from the previous report rather than evaluated; each carries Reused: true."
     }
   },
   "allOf": [
@@ -490,6 +529,10 @@
             "type": "string"
           },
           "description": "Tests that failed on this mutant. One entry unless killersComplete is true, since the run stops at the first failure by default. Empty for a survivor or a timeout."
+        },
+        "Reused": {
+          "type": "boolean",
+          "description": "Present, and true, on a row an -Incremental run took from the previous report rather than evaluated (#255). Absent on every row a run evaluated itself."
         }
       }
     },

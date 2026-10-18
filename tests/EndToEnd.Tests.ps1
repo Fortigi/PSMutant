@@ -201,6 +201,73 @@ Describe 'Invoke-PSMutation -ListOnly end-to-end' {
     }
 }
 
+Describe 'Invoke-PSMutation -Incremental end-to-end (#255)' {
+    BeforeAll {
+        # Two files; b's test also runs a helper. Run 1 has nothing to reuse and records keys;
+        # run 2 reuses everything; then the HELPER changes, and run 3 re-runs b and reuses a.
+        $script:inc = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-inc-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:inc 'src') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:inc 'tests') -Force | Out-Null
+        "function Get-Sign { param(`$n) if (`$n -gt 0) { return 'pos' } else { return 'neg' } }" |
+            Set-Content (Join-Path $script:inc 'src/a.ps1') -Encoding utf8
+        'function Get-Twice { param($x) $x * 2 }' | Set-Content (Join-Path $script:inc 'src/helper.ps1') -Encoding utf8
+        "function Get-B { param(`$n) if (`$n -gt 1) { return (Get-Twice `$n) } else { return 0 } }" |
+            Set-Content (Join-Path $script:inc 'src/b.ps1') -Encoding utf8
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'a.ps1') }
+Describe 'a' { It 'pos' { Get-Sign 5 | Should -Be 'pos' }; It 'neg' { Get-Sign -5 | Should -Be 'neg' } }
+'@ | Set-Content (Join-Path $script:inc 'tests/a.Tests.ps1') -Encoding utf8
+        @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'helper.ps1'); . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'b.ps1') }
+Describe 'b' { It 'doubles' { Get-B 2 | Should -Be 4 }; It 'zero' { Get-B 1 | Should -Be 0 } }
+'@ | Set-Content (Join-Path $script:inc 'tests/b.Tests.ps1') -Encoding utf8
+        $script:incConfig = Join-Path $script:inc 'c.json'
+        [ordered]@{
+            sandboxSubtrees = @('src', 'tests'); mutate = @('src/a.ps1', 'src/b.ps1')
+            tests           = @{ 'src/a.ps1' = @('tests/a.Tests.ps1'); 'src/b.ps1' = @('tests/b.Tests.ps1') }
+            operators       = @('BinaryOperator'); thresholds = @{ high = 85; low = 70; break = $null }
+            reportPath      = 'reports/r.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $script:incConfig -Encoding utf8
+        $script:incReport = Join-Path $script:inc 'reports/r.json'
+        function script:IncRun {
+            $r = Invoke-PSMutation -ConfigFile $script:incConfig -SourceRoot $script:inc -Quiet -Incremental 6>$null
+            return [pscustomobject]@{ Result = $r; Text = [System.IO.File]::ReadAllText($script:incReport) }
+        }
+        $script:inc1 = IncRun
+        $script:inc2 = IncRun
+        'function Get-Twice { param($x) $x + $x }' | Set-Content (Join-Path $script:inc 'src/helper.ps1') -Encoding utf8
+        $script:inc3 = IncRun
+    }
+
+    AfterAll { Remove-Item $script:inc -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'reuses nothing at first, everything when nothing changed, and only the untouched file after a helper changed' {
+        $d1 = $script:inc1.Text | ConvertFrom-Json
+        $d2 = $script:inc2.Text | ConvertFrom-Json
+        $d3 = $script:inc3.Text | ConvertFrom-Json
+        $d1.reused | Should-Be 0
+        $d2.reused | Should-Be $d2.total
+        @($d3.mutants | Where-Object Reused | ForEach-Object { $_.File } | Select-Object -Unique) | Should-BeCollection @('src/a.ps1')
+        @($d3.mutants | Where-Object { -not $_.PSObject.Properties['Reused'] } | ForEach-Object { $_.File } | Select-Object -Unique) | Should-BeCollection @('src/b.ps1')
+        # And the same verdicts, in the same order, every time.
+        @($d3.mutants | ForEach-Object { "$($_.File)|$($_.Id)|$($_.Status)" }) | Should-BeCollection @($d1.mutants | ForEach-Object { "$($_.File)|$($_.Id)|$($_.Status)" })
+        $script:inc3.Result.Score | Should-Be $script:inc1.Result.Score
+    }
+
+    It 'records the helper as b''s dependency, and nothing for a' {
+        $d1 = $script:inc1.Text | ConvertFrom-Json
+        @($d1.incremental.files.'src/b.ps1'.dependsOn) | Should-BeCollection @('src/helper.ps1')
+        @($d1.incremental.files.'src/a.ps1'.dependsOn | Where-Object { $_ }).Count | Should-Be 0
+    }
+
+    It 'writes reports the published schema accepts' {
+        $schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v3/report.schema.json') -Raw
+        function Test-IncSchema { param([string]$Json) return (Test-Json -Json $Json -Schema $schema -ErrorAction SilentlyContinue) }
+        Should-BeTrue -Actual (Test-IncSchema -Json $script:inc1.Text)
+        Should-BeTrue -Actual (Test-IncSchema -Json $script:inc3.Text)
+    }
+}
+
 Describe 'Invoke-PSMutation -ChangedFile end-to-end' {
     BeforeAll {
         # Its own two-file project, because the scope has to be a real subset of something.
