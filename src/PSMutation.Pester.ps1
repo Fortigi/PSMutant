@@ -269,7 +269,10 @@ function Resume-PSMutationWorkerBreakpoint {
     [OutputType([void])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [int]$WorkerId)
-    if (-not $script:PSMutationWarmProcess.ContainsKey($WorkerId) -or (Test-PSMutationWorkerExited -WorkerId $WorkerId)) { return }
+    # No guard on the kind of worker: an in-process runspace never stops at a breakpoint, a worker
+    # that is not there has no debugger, and a dead process answers at once -- the self-mutation
+    # gate showed a guard here changed nothing. Asked, because resuming a debugger that is not
+    # stopped THROWS (measured).
     $debugger = $script:PSMutationWarmRunspace[$WorkerId].Debugger
     if ($debugger.InBreakpoint) { $debugger.SetDebuggerAction([System.Management.Automation.DebuggerResumeAction]::Continue) }
 }

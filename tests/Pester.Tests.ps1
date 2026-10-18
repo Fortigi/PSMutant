@@ -701,8 +701,9 @@ Describe 'a worker in a process of its own (#256)' {
         $null = $shell.BeginInvoke()
         Should-BeTrue -Actual $proc.WaitForExit(10000)
         Should-BeTrue -Actual (Test-PSMutationWorkerExited -WorkerId 23)
-        # Not handed out again, and closed without waiting on its dead runspace.
+        # Not handed out again, resumed and closed without waiting on its dead runspace.
         $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Resume-PSMutationWorkerBreakpoint -WorkerId 23
         Close-PSMutationWarmRunspace -WorkerId 23
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 1
         $script:PSMutationWarmShell.ContainsKey(23) | Should-BeFalse
@@ -745,10 +746,16 @@ Describe 'a worker in a process of its own (#256)' {
         Resume-PSMutationWorkerBreakpoint -WorkerId 28
         Should-BeTrue -Actual $async.AsyncWaitHandle.WaitOne(10000)
         @($shell.EndInvoke($async))[-1] | Should-Be 'ran on'
-        # And nothing for a worker that is not a process, or not there.
-        $null = Get-PSMutationWarmShell -WorkerId 29
+        # And nothing for a worker that is not a process, or not there -- where a resume would
+        # throw, since a debugger that is not stopped refuses one.
+        $local = Get-PSMutationWarmShell -WorkerId 29
         Resume-PSMutationWorkerBreakpoint -WorkerId 29
         Resume-PSMutationWorkerBreakpoint -WorkerId 98
+        # And a worker in this process keeps its own breakpoints: RemoteScript, which a worker
+        # process needs, would switch them off here -- measured, the action below then never runs.
+        $local.Commands.Clear()
+        [void]$local.AddScript('$f = Join-Path ([IO.Path]::GetTempPath()) "psmut-bp-$([guid]::NewGuid().ToString(''N'')).ps1"; Set-Content $f ''1 | Out-Null''; $global:psmutHits = 0; $bp = Set-PSBreakpoint -Script $f -Line 1 -Action { $global:psmutHits++ }; . $f; Remove-PSBreakpoint $bp; Remove-Item $f; $global:psmutHits')
+        @($local.Invoke())[-1] | Should-Be 1
     }
 
     It 'is never said to have exited when it runs in this process' {
