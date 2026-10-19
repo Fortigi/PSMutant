@@ -284,6 +284,21 @@ jobs:
             throw "Mutation score $($result.Score)% is below the break threshold ($($result.FailureReason))"
           }
 
+      # The report the step above writes holds every mutant's verdict AND duration, and nothing
+      # used to keep it -- so a run's own timings were gone with its runner. Kept, it is the
+      # baseline #266 asked a benchmark job for (wall clock, per-mutant durations, timeouts), on
+      # every run and at no extra runner time. A dedicated job was declined: the public runner
+      # has 4 cores, so 8 and 16 workers would measure contention, and shared runners are too
+      # noisy for an A/B -- #253-#257 were measured on a developer machine for that reason.
+      # always(): a run that FAILED the gate is the one whose report is wanted most.
+      - name: Keep the self-mutation report
+        if: always() && matrix.os == 'ubuntu-latest' && steps.plan.outputs.selfmutation == 'true'
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: self-mutation-report
+          path: reports/ps-mutation-self.json
+          if-no-files-found: warn
+
       # The manifest declares a PowerShellVersion floor and everything above runs on whatever the
       # runners ship, which is several minors newer -- so until #157 the number consumers were told
       # had never been executed. This downloads each supported host and runs a real mutation on it,
