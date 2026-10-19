@@ -692,6 +692,69 @@ function Get-PSMutantConsumerNotes {
     return ($body -join "`n").Trim()
 }
 
+function Get-PSMutantReleaseHeadline {
+    <#
+    .SYNOPSIS
+        Pure: the bold opening sentence of each entry in a consumer block, as plain text.
+
+    .DESCRIPTION
+        The gallery prints ReleaseNotes as text -- it keeps line breaks and renders no
+        Markdown -- so the whole consumer block arrived there as literal ** and backticks,
+        broken mid-sentence where the changelog wraps. Every entry opens with one bold sentence
+        saying what changed, which is the list a reader deciding whether to upgrade wants; the
+        rest is on the GitHub release.
+
+        An entry is a paragraph that OPENS bold. A paragraph that does not is the previous
+        entry continuing, and bold text later in a paragraph is emphasis, not a headline.
+    #>
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$Notes)
+    $out = [System.Collections.Generic.List[string]]::new()
+    foreach ($paragraph in (($Notes -replace "`r`n", "`n") -split '\n[ \t]*\n')) {
+        $flat = ($paragraph -replace '\s+', ' ').Trim()
+        if ($flat -notmatch '^\*\*(.+?)\*\*') { continue }
+        # Plain text: a link keeps its words, code loses its backticks.
+        $out.Add(($Matches[1] -replace '\[([^\]]+)\]\([^)]*\)', '$1' -replace '`', '').Trim())
+    }
+    return $out.ToArray()
+}
+
+function Get-PSMutantGalleryNotes {
+    <#
+    .SYNOPSIS
+        Pure: the gallery's ReleaseNotes for a version -- the module and version, one line per
+        consumer entry, and a link to the GitHub release.
+
+    .DESCRIPTION
+        Throws when the block does not open with a bold sentence: its first entry would be
+        missing from the list, on a page that cannot be corrected afterwards.
+
+        The link is there because this field is read where a browser may not be --
+        `Find-Module | Select ReleaseNotes` in a console -- and the list has to stand alone
+        there while still leading somewhere complete. publish.yml creates that release from the
+        same CHANGELOG section once the gallery has accepted the version.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseSingularNouns', '',
+        Justification = 'ReleaseNotes is the name of the manifest field this produces. A singular "GalleryNote" would name something that does not exist.')]
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyString()] [string]$Notes,
+        [Parameter(Mandatory)] [string]$Version,
+        [AllowEmptyString()] [string]$ReleaseUrl
+    )
+    if (-not $Notes.TrimStart().StartsWith('**')) {
+        throw ("The '### For consumers' block under $Version does not open with a bold sentence. " +
+            'Each entry opens with one, saying what changed: the gallery lists those sentences and nothing else.')
+    }
+    $lines = [System.Collections.Generic.List[string]]::new()
+    $lines.AddRange([string[]]@("PSMutant $Version", ''))
+    foreach ($headline in (Get-PSMutantReleaseHeadline -Notes $Notes)) { $lines.Add("- $headline") }
+    if (-not [string]::IsNullOrWhiteSpace($ReleaseUrl)) { $lines.AddRange([string[]]@('', "Full release notes: $ReleaseUrl")) }
+    return $lines -join "`n"
+}
+
 function Get-PSMutantBoundedReleaseNotes {
     <#
     .SYNOPSIS

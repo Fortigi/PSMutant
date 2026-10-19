@@ -1900,6 +1900,13 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   repetition end to end. The limit is the forcing function; `-Apply` regenerates the manifest field
   from the changelog, so the changelog is the only place to edit.
 
+  **The gallery gets the HEADLINES, not the block.** It prints `ReleaseNotes` as plain text -- line
+  breaks kept, no Markdown -- so the block arrived there as literal `**` and backticks broken
+  mid-sentence. `ReleaseNotes` now holds each consumer entry's bold opening sentence, one line
+  apiece, and a link to the GitHub release, whose body `publish.yml` takes from the same CHANGELOG
+  section where GitHub renders it. An entry is a paragraph that OPENS bold; the gate refuses a block
+  that does not, because its first entry would vanish from the list. The sibling repo does the same.
+
 - **A new REQUIRED field is a schema version bump, not an addition.** The rule written in four
   places here said `schemaVersion` moves when a field changes meaning or disappears, never when one
   is added -- which is right for an optional field and wrong for a required one, because a document
