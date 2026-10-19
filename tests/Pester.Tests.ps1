@@ -631,3 +631,136 @@ Describe 'retiring a timed-out runspace without waiting for it (#250)' {
         $script:PSMutationRetiredRunspace.Count | Should-Be $before
     }
 }
+
+Describe 'a worker in a process of its own (#256)' {
+    # Real pwsh processes, about 1.3s each to start with Pester imported, so as few as prove the
+    # point: this file covers Pester.ps1, and every mutant of it pays for them.
+    AfterEach { Close-PSMutationWarmRunspacePool }
+
+    It 'runs in another process, with Pester, from this process''s directory; is reused, renewed on its own interval, and ended when replaced' {
+        # One test rather than four, because each process costs every mutant of Pester.ps1.
+        $shell = Get-PSMutationWarmShell -WorkerId 20 -Process
+        $first = $script:PSMutationWarmProcess[20].Process
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('$PID; (Get-Module Pester | Select-Object -First 1).Name; $PWD.ProviderPath')
+        $out = @($shell.Invoke())
+        $out[0] | Should-NotBe $PID
+        $out[0] | Should-Be $first.Id
+        $out[1] | Should-Be 'Pester'
+        # Where an in-process runspace starts; a process left alone starts in the user's home.
+        $out[2] | Should-Be ([System.Environment]::CurrentDirectory)
+        Should-BeFalse -Actual (Test-PSMutationWorkerExited -WorkerId 20)
+        # A breakpoint with an action fires there, as Pester's breakpoint coverage needs: a worker
+        # process refuses Set-PSBreakpoint outright until its client allows remote debugging.
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('$f = Join-Path ([IO.Path]::GetTempPath()) "psmut-bp-$([guid]::NewGuid().ToString(''N'')).ps1"; Set-Content $f ''1 | Out-Null''; $global:psmutHits = 0; $bp = Set-PSBreakpoint -Script $f -Line 1 -Action { $global:psmutHits++ }; . $f; Remove-PSBreakpoint $bp; Remove-Item $f; $global:psmutHits')
+        @($shell.Invoke())[-1] | Should-Be 1
+        [object]::ReferenceEquals($shell, (Get-PSMutationWarmShell -WorkerId 20 -Process)) | Should-BeTrue
+        # Renewed on the PROCESS interval, which is not the runspace's: two uses are spent at two.
+        $keep = $script:PSMutationWarmProcessLifetime
+        try {
+            $script:PSMutationWarmProcessLifetime = 2
+            [object]::ReferenceEquals($shell, (Get-PSMutationWarmShell -WorkerId 20 -Process)) | Should-BeFalse
+        }
+        finally { $script:PSMutationWarmProcessLifetime = $keep }
+        Should-BeTrue -Actual $first.WaitForExit(5000)
+        # And a run that asks for this process is not handed the process worker.
+        $second = $script:PSMutationWarmProcess[20].Process
+        $local = Get-PSMutationWarmShell -WorkerId 20
+        $local.Commands.Clear()
+        [void]$local.AddScript('$PID')
+        $local.Invoke()[0] | Should-Be $PID
+        $script:PSMutationWarmProcess.ContainsKey(20) | Should-BeFalse
+        Should-BeTrue -Actual $second.WaitForExit(5000)
+    }
+
+    It 'ends a worker stuck in a blocking call at once, without parking it' {
+        # A stop request waits for a blocking .NET call to return; ending the process does not.
+        $shell = Get-PSMutationWarmShell -WorkerId 22 -Process
+        $proc = $script:PSMutationWarmProcess[22].Process
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('[System.Threading.Thread]::Sleep(60000)')
+        $null = $shell.BeginInvoke()
+        Start-Sleep -Milliseconds 300
+        $parked = $script:PSMutationRetiredRunspace.Count
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Stop-PSMutationWarmRunspace -WorkerId 22
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 1
+        Should-BeTrue -Actual $proc.WaitForExit(5000)
+        $script:PSMutationRetiredRunspace.Count | Should-Be $parked
+        foreach ($map in $script:PSMutationWarmShell, $script:PSMutationWarmRunspace, $script:PSMutationWarmUses, $script:PSMutationWarmProcess) {
+            $map.ContainsKey(22) | Should-BeFalse
+        }
+    }
+
+    It 'knows when its process died, and closes it without waiting on the dead runspace' {
+        $shell = Get-PSMutationWarmShell -WorkerId 23 -Process
+        $proc = $script:PSMutationWarmProcess[23].Process
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('[System.Environment]::Exit(3)')
+        $null = $shell.BeginInvoke()
+        Should-BeTrue -Actual $proc.WaitForExit(10000)
+        Should-BeTrue -Actual (Test-PSMutationWorkerExited -WorkerId 23)
+        # Not handed out again, resumed and closed without waiting on its dead runspace.
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        Resume-PSMutationWorkerBreakpoint -WorkerId 23
+        Close-PSMutationWarmRunspace -WorkerId 23
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 1
+        $script:PSMutationWarmShell.ContainsKey(23) | Should-BeFalse
+        $script:PSMutationWarmProcess.ContainsKey(23) | Should-BeFalse
+    }
+
+    It 'is not handed out again once its process has died' {
+        # Reuse is asked before the runner has discarded the worker, so the pool itself refuses.
+        $shell = Get-PSMutationWarmShell -WorkerId 27 -Process
+        $proc = $script:PSMutationWarmProcess[27].Process
+        $proc.Kill()
+        Should-BeTrue -Actual $proc.WaitForExit(5000)
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        $next = Get-PSMutationWarmShell -WorkerId 27 -Process
+        [object]::ReferenceEquals($shell, $next) | Should-BeFalse
+        $script:PSMutationWarmProcess[27].Process.Id | Should-NotBe $proc.Id
+        $sw.Elapsed.TotalSeconds | Should-BeLessThan 10
+    }
+
+    It 'leaves no process behind when Pester will not import into it' {
+        Mock Get-PSMutationPesterPath { Join-Path ([System.IO.Path]::GetTempPath()) 'no-such-pester.psd1' }
+        { Get-PSMutationWarmShell -WorkerId 24 -Process } | Should-Throw -ExceptionMessage '*Could not import Pester into the mutant runspace*'
+        $script:PSMutationWarmProcess.ContainsKey(24) | Should-BeFalse
+    }
+
+    It 'serves five hundred mutants before it is renewed' {
+        # A decision, pinned for the reason the runspace's fifty is: the test above is written in
+        # terms of the variable.
+        $script:PSMutationWarmProcessLifetime | Should-Be 500
+    }
+
+    It 'is resumed at a breakpoint that stops, as one in this process runs on' {
+        $shell = Get-PSMutationWarmShell -WorkerId 28 -Process
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('$f = Join-Path ([IO.Path]::GetTempPath()) "psmut-bp-$([guid]::NewGuid().ToString(''N'')).ps1"; Set-Content $f ''1 | Out-Null''; $bp = Set-PSBreakpoint -Script $f -Line 1; . $f; Remove-PSBreakpoint $bp; Remove-Item $f; ''ran on''')
+        $async = $shell.BeginInvoke()
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not $script:PSMutationWarmRunspace[28].Debugger.InBreakpoint -and $sw.Elapsed.TotalSeconds -lt 15) { Start-Sleep -Milliseconds 50 }
+        Should-BeTrue -Actual $script:PSMutationWarmRunspace[28].Debugger.InBreakpoint
+        Resume-PSMutationWorkerBreakpoint -WorkerId 28
+        Should-BeTrue -Actual $async.AsyncWaitHandle.WaitOne(10000)
+        @($shell.EndInvoke($async))[-1] | Should-Be 'ran on'
+        # And nothing for a worker that is not a process, or not there -- where a resume would
+        # throw, since a debugger that is not stopped refuses one.
+        $local = Get-PSMutationWarmShell -WorkerId 29
+        Resume-PSMutationWorkerBreakpoint -WorkerId 29
+        Resume-PSMutationWorkerBreakpoint -WorkerId 98
+        # And a worker in this process keeps its own breakpoints: RemoteScript, which a worker
+        # process needs, would switch them off here -- measured, the action below then never runs.
+        $local.Commands.Clear()
+        [void]$local.AddScript('$f = Join-Path ([IO.Path]::GetTempPath()) "psmut-bp-$([guid]::NewGuid().ToString(''N'')).ps1"; Set-Content $f ''1 | Out-Null''; $global:psmutHits = 0; $bp = Set-PSBreakpoint -Script $f -Line 1 -Action { $global:psmutHits++ }; . $f; Remove-PSBreakpoint $bp; Remove-Item $f; $global:psmutHits')
+        @($local.Invoke())[-1] | Should-Be 1
+    }
+
+    It 'is never said to have exited when it runs in this process' {
+        $null = Get-PSMutationWarmShell -WorkerId 25
+        Should-BeFalse -Actual (Test-PSMutationWorkerExited -WorkerId 25)
+        $script:PSMutationWarmProcess.ContainsKey(25) | Should-BeFalse
+    }
+}

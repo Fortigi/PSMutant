@@ -431,7 +431,7 @@ above it.
 2. **Enumerate** — parses each file's AST and collects candidates; only those on covered
    lines are kept (an uncovered mutant is guaranteed to survive and teaches nothing).
 3. **Evaluate** — copies the source subtrees into a temp **sandbox**, splices each mutant
-   into the copy, runs the covering tests in-process, and restores the copy. Tracked source
+   into the copy, runs the covering tests in a worker, and restores the copy. Tracked source
    is never touched. The sandbox is created under a name carrying 128 bits of randomness, and
    a path that already exists is refused rather than cleared: temp is world-writable on a
    shared machine, and a predictable name is one another local user can occupy first.
@@ -505,10 +505,26 @@ away from rather than run in an edit loop. `workers` evaluates several at once:
 `WaitHandle.WaitAny`, and that throws above 64 handles. Clamped rather than refused, because the
 worker count does not change the answer.
 
-**More workers is not monotonically better, and the best number depends on your repo — measure
-yours.** Every worker is a runspace in one process sharing one GC heap, so contention is real and
-it is not only about cores. Two consumer repos on the same 24-core machine, each interleaved in
-both orders:
+**With more than one worker, each worker is a `pwsh` process of its own** (since 0.8.0). Workers
+used to be runspaces in one process, sharing one GC heap, and they stopped scaling at about four.
+Measured on one 24-core machine over seven of PSMutant's own covering suites, the same 112 runs
+spread over warm workers, interleaved:
+
+| workers | runspaces, Windows | processes, Windows | runspaces, WSL 2 | processes, WSL 2 |
+|---|---|---|---|---|
+| 1 | 34.9s | 35.7s | 46.9s | 47.5s |
+| 4 | 17.1s | 14.3s | 17.8s | 14.8s |
+| 8 | 15.3s | 9.8s | 13.6s | 9.0s |
+| 16 | 16.6s | 7.1s | 12.8s | 6.4s |
+
+One worker is as fast either way, so a single worker still runs in this process and starts without
+paying for one. A process costs about 1.3 seconds to start with Pester, once per worker and again
+after every fifty mutants, when a worker is renewed, and more total CPU at high counts -- each has
+its own JIT and GC.
+
+**More workers is still not monotonically better, and the best number depends on your repo —
+measure yours.** These were measured with runspace workers, before 0.8.0, on two consumer repos on
+the same 24-core machine, each interleaved in both orders:
 
 | workers | 8 mutate files, 3 covering suites | 112 mutate files, 112 covering suites |
 |---|---|---|
@@ -520,12 +536,13 @@ both orders:
 
 Both get *worse* past their own optimum, and the optima differ: four for the first, eight for the
 second. More distinct covering suites means more independent work and less contention on the same
-few files, so the wider repo scales further. `0` is a starting point rather than an answer — on a
-large machine it will usually be past the useful point. Try a few numbers on your own repo and keep
-the one that wins; PSMutant's own gate pins `3`.
+few files, so the wider repo scales further. Process workers move both optima up, by the table
+above, but not to infinity: a disk and a set of cores are still shared. `0` is a starting point
+rather than an answer. Try a few numbers on your own repo and keep the one that wins; PSMutant's
+own gate pins `3`.
 
-Each worker gets **its own sandbox copy and its own Pester-loaded runspace**, so nothing is shared
-but the read-only candidate list. Finished mutants are recorded in candidate order rather than
+Each worker gets **its own sandbox copy and its own Pester-loaded runspace**, in its own process,
+so nothing is shared but the read-only candidate list. Finished mutants are recorded in candidate order rather than
 completion order, so the answer does not depend on which worker finished first. Measured against
 PSComplexity, whole config:
 
@@ -539,21 +556,23 @@ only the duration fields differing. That is asserted by a test that runs one fix
 compares, because "deterministic regardless of scheduling" is a claim worth checking rather than
 reasoning about.
 
-**It is opt-in, and the default is 1.** Your covering suite runs N times concurrently; file
-isolation is complete, but nothing isolates a *process-wide* resource. Two kinds turned up in
-PSMutant's own suite and had to be fixed before it could switch this on, and they are the two to
-look for in yours:
+**It is opt-in, and the default is 1.** Your covering suite runs N times concurrently, and file
+isolation is complete. Two hazards that bit PSMutant's own suite are gone since 0.8.0, because each
+worker is a process: **an environment variable a test writes** is written in that worker's own
+environment, and **a temp file named after `$PID`** is named per worker, since each has its own
+process id. What no process isolates is anything outside it -- a fixed path outside the sandbox, a
+network port, a database, a registry key -- and a suite that writes one races itself.
 
-- **An environment variable a test WRITES.** A runspace does not get its own environment, so two
-  workers setting the same variable to different values race. Reading is safe; writing is not.
-- **A temp file named after `$PID`.** Every worker shares one process id — they are runspaces in
-  one process — so a pid-named fixture is one they all write and all delete. `$PID` meant "this
-  run" only while one process ran one suite.
+The symptom is a **verdict**, not an error: a flipped value fails an assertion that should have
+passed, which is scored as a killed mutant. So turning this on by default could move your score for
+a reason that is not about your tests' quality. Try it, and if the score moves, the two runs
+disagree about your suite rather than about your code.
 
-The symptom in both cases is a **verdict**, not an error: a flipped value fails an assertion that
-should have passed, which is scored as a killed mutant. So turning this on by default would move
-your score for a reason that is not about your tests' quality. Try it, and if the score moves, the
-two runs disagree about your suite rather than about your code.
+**A mutant that ends its worker's process is scored Killed**, with no test named, and the worker is
+replaced: a mutant that calls `[Environment]::Exit`, say, or recurses until the stack overflows.
+The tests did not pass, and the run goes on. With one worker, which runs in PSMutant's own process,
+such a mutant ends the run, as it always has. An unmutated covering suite that ends its worker is
+refused before the first mutant.
 
 **The per-mutant timeout is multiplied by `workers`.** The baseline is measured once, alone, with
 the machine to itself; N mutants sharing it are slower for reasons that have nothing to do with the
@@ -635,7 +654,7 @@ schema cannot give.
 | `killersFirst` | Before running a mutant's whole covering files, run only the tests that already killed a mutant in the same function or file (default `true`). See [Tests that killed a neighbour run first](#tests-that-killed-a-neighbour-run-first). `false` runs the whole files for every mutant; `recordAllKillers` turns it off too. |
 | `ignoreCalls` | Commands whose arguments are never mutated. Default: the logging commands `Write-Verbose`, `Write-Debug`, `Write-Information`, `Write-Host` and `Write-Progress`, whose text rarely says anything about your tests. `[]` mutates inside every call. Every mutant inside such a call is skipped, from any operator, and the number is printed beside the score and written to the report as `skippedAsIgnoredCall`, with the list as `ignoreCalls`. Matched by name, ignoring case and a module qualifier. `Write-Warning`, `Write-Error` and `throw` are not in the default, because tests often assert those messages. |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |
-| `workers` | How many mutants to evaluate at once, each in its own sandbox copy and its own Pester runspace. Default `1`; `0` means this machine (`ProcessorCount - 1`). See [Running mutants in parallel](#running-mutants-in-parallel) — it is opt-in for a reason. |
+| `workers` | How many mutants to evaluate at once, each in its own sandbox copy and its own Pester runspace -- in a `pwsh` process of its own when there is more than one. Default `1`; `0` means this machine (`ProcessorCount - 1`). See [Running mutants in parallel](#running-mutants-in-parallel) — it is opt-in for a reason. |
 | `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, seconds × factor × workers)`, where `seconds` is how long the mutant's own covering tests took unmutated (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
 | `equivalents` | `file:function:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator. The run fails if a declaration is killed, matches nothing, **or matches more than one mutant** — a declaration argues about one mutant, so matching several is ambiguous rather than a broader claim. `description` is `<original> -> <mutated>`, taken from the source. `file:line:description` is still accepted, and is the only form available for code outside any function; prefer the function form, because a line number moves whenever anything above it is edited. |
 | `thresholds.high` / `thresholds.low` | Colour bands for the console score: green at or above `high`, yellow at or above `low`, red below (defaults 85 / 70). They affect the printed colour only, never the exit code. |
@@ -716,8 +735,9 @@ untested log strings make the last stretch noise. Raise `thresholds.break` to lo
 
 ### How your tests should load the code under test
 
-Every mutant runs in one PowerShell process, in a runspace that is reused for many mutants. So
-each mutant's tests must read the source **from disk, as it is now**:
+Every worker is one PowerShell process serving many mutants, in a runspace that is reused for many
+of them: this process when there is one worker, a `pwsh` process of its own for each when there are
+more. So each mutant's tests must read the source **from disk, as it is now**:
 
 | In a covering test | Works? |
 |---|---|

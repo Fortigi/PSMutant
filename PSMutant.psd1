@@ -53,6 +53,19 @@ on -- about 22% less -- every mutant killed both ways. A first pass gets its own
 sized from how long its tests took alone, so a mutant that hangs them is not held for the whole
 files'' deadline before they run.
 
+**With more than one worker, each worker is a `pwsh` process of its own, and runs scale further.**
+Workers used to be runspaces in PSMutant''s process, sharing one GC heap, and stopped gaining at
+about four. Measured against PSComplexity''s whole self-mutation config, 1424 mutants with identical
+verdicts in every run: at `workers: 8`, 426 and 438 seconds before, 251 and 255 after; at
+`workers: 3` pinned to four cores, as a CI runner has, 376 and 380 before, 282 and 326 after. One
+worker still runs in PSMutant''s own process, where it is as fast and pays for no process start.
+Two parallel-safety hazards go with the shared process: a test that writes an environment variable
+now writes its own worker''s, and `$PID` names one worker. **A mutant that ends its worker''s
+process** -- `[Environment]::Exit`, or a recursion that overflows the stack -- is scored `Killed`
+with no test named, and the worker is replaced; an unmutated covering suite that does so is refused
+before the first mutant. A worker process is renewed every 500 mutants rather than every 50: a new
+process compiles Pester and your code afresh, which at 50 cost more than the processes saved.
+
 **A config value of the wrong type is named on every PowerShell.** On PowerShell 7.6.7 a fault
 inside a nested object or a list -- a string in `thresholds.break`, a number in a `tests` list -- was
 refused with nothing after "does not match the PSMutant config schema:", and beside another fault it
