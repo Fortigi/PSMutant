@@ -300,6 +300,41 @@ The consumer part.
     }
 }
 
+Describe 'Get-PSMutantReleaseHeadline' {
+    It 'takes the bold opening of each entry, as plain text' {
+        $notes = @(
+            '**`-Incremental` reuses', 'verdicts.** Then the detail, with **emphasis** inside.'
+            ''
+            'A second paragraph of the same entry, which is not a headline.'
+            '   '
+            '**A [linked](https://x/y) thing.** More.'
+        ) -join "`n"
+        Get-PSMutantReleaseHeadline -Notes $notes | Should-BeCollection @('-Incremental reuses verdicts.', 'A linked thing.')
+    }
+    It 'reads a block checked out with CRLF line endings the same way' {
+        Get-PSMutantReleaseHeadline -Notes "**One.** a`r`n`r`n**Two.** b" | Should-BeCollection @('One.', 'Two.')
+    }
+    It 'returns nothing for a block with no bold opening' {
+        @(Get-PSMutantReleaseHeadline -Notes "plain`n`ntext").Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutantGalleryNotes' {
+    It 'names the release, lists the headlines and appends the link' {
+        Get-PSMutantGalleryNotes -Notes "**A thing.** Why.`n`n**Another.** How." -Version '1.2.3' -ReleaseUrl 'https://x/releases/tag/v1.2.3' |
+            Should-Be "PSMutant 1.2.3`n`n- A thing.`n- Another.`n`nFull release notes: https://x/releases/tag/v1.2.3"
+    }
+    It 'omits the link entirely when there is no url' {
+        # Paired with the case above: an empty url would publish a dangling "Full release notes:".
+        Get-PSMutantGalleryNotes -Notes '**A thing.** Why.' -Version '1.2.3' -ReleaseUrl '' |
+            Should-Be "PSMutant 1.2.3`n`n- A thing."
+    }
+    It 'refuses a block that does not open with a bold sentence, which the list would drop' {
+        { Get-PSMutantGalleryNotes -Notes "A thing.`n`n**Another.** b" -Version '1.2.3' -ReleaseUrl '' } |
+            Should-Throw -ExceptionMessage '*under 1.2.3 does not open with a bold sentence*'
+    }
+}
+
 Describe 'the real CHANGELOG, as the gallery will see it' {
     # Guards the artifact rather than the function. These are the two properties that made
     # 0.3.0's published page bad, and neither is visible from the code alone.
@@ -339,6 +374,12 @@ Describe 'the real CHANGELOG, as the gallery will see it' {
         # they render as literal text pointing nowhere.
         ([regex]::Matches($script:consumer, '\[#\d+\]')).Count | Should-Be 0
         ([regex]::Matches($script:consumer, '\(#\d+\)')).Count | Should-Be 0
+    }
+
+    It 'gives the gallery a headline for every entry, with no Markdown left in it' {
+        $h = @(Get-PSMutantReleaseHeadline -Notes $script:consumer)
+        $h.Count | Should-Be @([regex]::Matches($script:consumer, '(?m)^\*\*')).Count
+        ($h -join ' ') | Should-NotMatchString '[*`]'
     }
 
     It 'fits the gallery limit without being truncated' {

@@ -74,15 +74,19 @@ if ($MyInvocation.InvocationName -ne '.') {
             "deciding whether to upgrade.")
     }
 
+    # Not the block itself: the gallery prints it as plain text, so it gets each entry's
+    # headline and a link to the GitHub release, which renders the whole section. Derived from
+    # ProjectUri so the repository is named in one place.
+    $projectUri = [string](Import-PowerShellDataFile $ManifestPath).PrivateData.PSData.ProjectUri
+    $releaseUrl = if ($projectUri) { "$($projectUri.TrimEnd('/'))/releases/tag/v$version" } else { '' }
+    $gallery = Get-PSMutantGalleryNotes -Notes $consumer -Version $version -ReleaseUrl $releaseUrl
+
     # Bounded HERE, at the point the notes are produced, so the publish workflow cannot be
-    # handed something the gallery will reject. A hand-written consumer block should be far
-    # inside the limit, so this is now a backstop rather than the mechanism.
-    $bounded = Get-PSMutantBoundedReleaseNotes -Notes $consumer -Version $version
-    # Against the CONSUMER block, not the whole section. Comparing with the section would
-    # warn on every release -- the section is always longer -- and quote a number that has
-    # nothing to do with what shipped.
-    if ($bounded.Length -lt $consumer.Length) {
-        Write-Host "::warning::Release notes for $version are $($consumer.Length) characters; the gallery accepts 10600 when they come from a PowerShell manifest. Publishing an abridged $($bounded.Length) with a link to the full CHANGELOG entry."
+    # handed something the gallery will reject. A list of headlines is far inside the limit,
+    # so this is a backstop rather than the mechanism.
+    $bounded = Get-PSMutantBoundedReleaseNotes -Notes $gallery -Version $version
+    if ($bounded.Length -lt $gallery.Length) {
+        Write-Host "::warning::Release notes for $version are $($gallery.Length) characters; the gallery accepts 10600 when they come from a PowerShell manifest. Publishing an abridged $($bounded.Length) with a link to the full CHANGELOG entry."
     }
 
     # The repo manifest is checked against the same string, so there is no unchecked second

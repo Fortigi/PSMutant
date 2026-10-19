@@ -268,6 +268,12 @@ jobs:
     permissions:
       contents: write
     steps:
+      # The tag's own CHANGELOG.md, which the release body is taken from. No credentials left in
+      # the checkout: this job's token can write, and gh reads it from GH_TOKEN.
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
       - name: Create the GitHub release
         shell: pwsh
         env:
@@ -277,7 +283,12 @@ jobs:
           # A re-run after the release was made, by hand or by an earlier attempt, has nothing to do.
           gh release view $env:TAG --repo $env:GITHUB_REPOSITORY *> $null
           if ($LASTEXITCODE -eq 0) { Write-Host "Release $env:TAG already exists."; exit 0 }
-          # Notes generated from the merged pull requests since the previous release, as the
-          # existing releases have them.
-          gh release create $env:TAG --repo $env:GITHUB_REPOSITORY --verify-tag --title $env:TAG --generate-notes --latest
+          # The version's CHANGELOG section, which GitHub renders as Markdown -- the gallery prints
+          # its notes as plain text, so it carries only the headlines and links here for the rest.
+          # The generated list of merged pull requests follows it.
+          . ./tools/GateDecisions.ps1
+          $section = Get-PSMutantReleaseSection -Changelog (Get-Content ./CHANGELOG.md -Raw) -Version $env:TAG.TrimStart('v')
+          $body = Join-Path $env:RUNNER_TEMP 'release-body.md'
+          Set-Content -LiteralPath $body -Value $section -Encoding utf8
+          gh release create $env:TAG --repo $env:GITHUB_REPOSITORY --verify-tag --title $env:TAG --notes-file $body --generate-notes --latest
           if ($LASTEXITCODE -ne 0) { throw "Could not create the release for $env:TAG." }
