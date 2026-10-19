@@ -22,6 +22,13 @@ Describe 'ConvertTo/From-PSMutationSandboxPath' {
         ConvertFrom-PSMutationSandboxPath -Path $sb -SandboxRoot $sbRoot | Should-Be 'src/x.ps1'
     }
 
+    It 'keeps a backslash that is part of a file name, on a platform where one can be' -Skip:$IsWindows {
+        # Only the platform separator becomes '/'. On Linux 'a\b.ps1' is one file, not a folder.
+        $sbRoot = Join-Path ([System.IO.Path]::GetTempPath()) "sb-$([System.Guid]::NewGuid().ToString('N'))"
+        # Concatenated: Join-Path would itself turn the backslash into a separator.
+        ConvertFrom-PSMutationSandboxPath -Path ($sbRoot + '/src/a\b.ps1') -SandboxRoot $sbRoot | Should-Be 'src/a\b.ps1'
+    }
+
     It 'refuses a config path that lands outside the sandbox' -ForEach @(
         @{ Rel = '../victim/Real.ps1'; What = 'one level up' }
         @{ Rel = '../../far/Real.ps1'; What = 'two levels up, out of temp entirely' }

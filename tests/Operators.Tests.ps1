@@ -495,6 +495,13 @@ function Outer {
             @($already | Where-Object Mutated -eq '$false').Count | Should-Be 1
         }
 
+        It 'knows a switch clause written with other spacing is already the value too' {
+            $p = Join-Path $TestDrive 'spaced.ps1'
+            Set-Content -LiteralPath $p -Value "switch (`$x) {`n    {  `$true  } { 'a' }`n}" -Encoding utf8
+            $c = @(Get-PSMutationCandidate -Path $p -Operators @('ConditionForcing') | Where-Object Original -eq '{  $true  }')
+            @($c | ForEach-Object Mutated) | Should-BeCollection @('{ $false }')
+        }
+
         It 'never forces a loop condition' {
             # Forcing `while (X)` to $true is an unconditional hang, not a fault worth
             # reporting -- the same reason the other operators skip loop conditions.
@@ -610,6 +617,119 @@ function Outer {
     }
 }
 
+Describe 'the operators BinaryOperator never reached (#258)' {
+    BeforeAll {
+        $script:moreFixture = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-more-$PID-$($script:tag).ps1"
+        @'
+function Test-More {
+    param($a, $b)
+    if ($a -like 'x*') { 'pattern' }
+    if ($a -CNotMatch '^y') { 'regex' }
+    if ($a -in $b) { 'member' }
+    if ($a -is [int]) { 'type' }
+    if ($a -ceq $b) { 'exact' }
+    if ($a -IEQ $b) { 'loose' }
+    if ($a -eq $b) { 'bare' }
+    $mask = $a -band 4
+    $t = $a -replace 'x', 'y'
+    $parts = -split $a
+    $joined = $b -join ','
+    while (($a -replace 'z') -ne '') { $a = $a -csplit ',' }
+}
+'@ | Set-Content $script:moreFixture -Encoding utf8
+        $script:more = @(Get-PSMutationCandidate -Path $script:moreFixture -Operators @(
+                'ComparisonOperator', 'CaseSensitivity', 'BitwiseOperator', 'StringOperatorRemoval'))
+        function Get-MoreMutation {
+            param([string]$Operator, [string]$Original)
+            @($script:more | Where-Object { $_.Operator -eq $Operator -and $_.Original -ceq $Original } | ForEach-Object Mutated)
+        }
+    }
+    AfterAll { Remove-Item $script:moreFixture -ErrorAction SilentlyContinue }
+
+    It 'negates the pattern, membership and type tests' {
+        Get-MoreMutation 'ComparisonOperator' '-like' | Should-BeCollection @('-notlike')
+        Get-MoreMutation 'ComparisonOperator' '-CNotMatch' | Should-BeCollection @('-cmatch')
+        Get-MoreMutation 'ComparisonOperator' '-in' | Should-BeCollection @('-notin')
+        Get-MoreMutation 'ComparisonOperator' '-is' | Should-BeCollection @('-isnot')
+    }
+
+    It 'negates the -c and -i spellings, whatever their case, and leaves the bare one to BinaryOperator' {
+        Get-MoreMutation 'ComparisonOperator' '-ceq' | Should-BeCollection @('-cne')
+        Get-MoreMutation 'ComparisonOperator' '-IEQ' | Should-BeCollection @('-ine')
+        @(Get-MoreMutation 'ComparisonOperator' '-eq').Count | Should-Be 0
+        # ...which does reach it, so the bare -eq is mutated once, not twice.
+        $binary = @(Get-PSMutationCandidate -Path $script:moreFixture -Operators @('BinaryOperator'))
+        @($binary | Where-Object Original -ceq '-eq').Count | Should-Be 1
+        @($binary | Where-Object Original -ceq '-ceq').Count | Should-Be 0
+    }
+
+    It 'changes case sensitivity in the direction a missing test hides' {
+        Get-MoreMutation 'CaseSensitivity' '-ceq' | Should-BeCollection @('-eq')
+        Get-MoreMutation 'CaseSensitivity' '-IEQ' | Should-BeCollection @('-ceq')
+        Get-MoreMutation 'CaseSensitivity' '-CNotMatch' | Should-BeCollection @('-notmatch')
+        # Bare to -c is an equivalent on a number, so the bare spelling is never touched.
+        @(Get-MoreMutation 'CaseSensitivity' '-eq').Count | Should-Be 0
+        @(Get-MoreMutation 'CaseSensitivity' '-like').Count | Should-Be 0
+    }
+
+    It 'swaps a bitwise operator' {
+        Get-MoreMutation 'BitwiseOperator' '-band' | Should-BeCollection @('-bor')
+    }
+
+    It 'skips a binary -replace or -join, leaving its left operand' {
+        Get-MoreMutation 'StringOperatorRemoval' "`$a -replace 'x', 'y'" | Should-BeCollection @('$a')
+        Get-MoreMutation 'StringOperatorRemoval' "`$b -join ','" | Should-BeCollection @('$b')
+        # The splice of the whole expression, not of the operator token.
+        $c = $script:more | Where-Object { $_.Operator -eq 'StringOperatorRemoval' -and $_.Mutated -eq '$b' }
+        $content = [System.IO.File]::ReadAllText($script:moreFixture)
+        Set-PSMutationText -Content $content -Candidate $c | Should-MatchString '\$joined = \$b\r?\n'
+    }
+
+    It 'leaves a -join alone that is the whole of a $() in a string, and only that one' {
+        # There, removing it changes only the separator. Built as a value it is a real mutant, and
+        # so is a -replace in the same place: that one changes the text, not its punctuation.
+        $p = Join-Path $TestDrive 'joins.ps1'
+        Set-Content -LiteralPath $p -Encoding utf8 -Value @'
+"files: $($a -join ', ')"
+"in a list: $(($a -join ', '), 'x')"
+"replaced: $($a -replace 'x')"
+$v = $a -join ', '
+$s = $($a -JOIN ', ')
+$w = $a -eq 1
+'@
+        # Line 5 is a $() outside any string, so the value is the join's; line 6 is no string
+        # operator at all; and the spelling's case is not the operator's.
+        $got = @(Get-PSMutationCandidate -Path $p -Operators @('StringOperatorRemoval'))
+        @($got | ForEach-Object Original) | Should-BeCollection @("`$a -join ', '", "`$a -replace 'x'", "`$a -join ', '", "`$a -JOIN ', '")
+        @($got | ForEach-Object Line) | Should-BeCollection @(2, 3, 4, 5)
+    }
+
+    It 'answers a plain false, not nothing, for an operator that is not -join' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput('"r: $($a -replace ''x'')"', [ref]$null, [ref]$null)
+        $node = $ast.Find({ $args[0] -is [System.Management.Automation.Language.BinaryExpressionAst] }, $true)
+        $r = Test-PSMutationInterpolatedJoin -Node $node
+        $r -is [bool] | Should-BeTrue
+        Should-BeFalse -Actual $r
+    }
+
+    It 'leaves a unary -split alone, as it has no operand to fall back to' {
+        @($script:more | Where-Object Original -eq '-split $a').Count | Should-Be 0
+    }
+
+    It 'never mutates inside a loop condition, but does in the loop body' {
+        @($script:more | Where-Object Original -like "*'z'*").Count | Should-Be 0
+        Get-MoreMutation 'StringOperatorRemoval' "`$a -csplit ','" | Should-BeCollection @('$a')
+        Get-MoreMutation 'CaseSensitivity' '-csplit' | Should-BeCollection @('-split')
+    }
+
+    It 'keeps all four out of the default operator set' {
+        $default = @(Get-PSMutationCandidate -Path $script:moreFixture)
+        @($default | Where-Object Operator -in 'ComparisonOperator', 'CaseSensitivity', 'BitwiseOperator', 'StringOperatorRemoval').Count |
+            Should-Be 0
+        @($default | Where-Object Operator -eq 'BinaryOperator').Count | Should-BeGreaterThan 0
+    }
+}
+
 Describe 'Test-PSMutationInLoop' {
     # The no-mutate zone's own predicate. It was only ever exercised THROUGH the
     # operators, so its boundaries were never pinned -- and an off-by-one here either
@@ -719,8 +839,9 @@ Describe 'Get-PSMutationKnownOperator' {
         # Asserting the exact set also fails loudly when an operator is added without a
         # thought for whether it belongs in the default set.
         Get-PSMutationKnownOperator | Should-BeCollection @(
-            'BinaryOperator', 'BooleanLiteral', 'ConditionalBoundary', 'ConditionForcing',
-            'NegationRemoval', 'NumberLiteral', 'ReturnValue', 'StringLiteral')
+            'BinaryOperator', 'BitwiseOperator', 'BooleanLiteral', 'CaseSensitivity', 'ComparisonOperator',
+            'ConditionalBoundary', 'ConditionForcing', 'NegationRemoval', 'NumberLiteral', 'ReturnValue',
+            'StringLiteral', 'StringOperatorRemoval')
     }
 
     It 'lists them sorted, so the error message reads predictably' {

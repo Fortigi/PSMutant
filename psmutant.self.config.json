@@ -78,7 +78,11 @@
     "NegationRemoval",
     "ConditionalBoundary",
     "ConditionForcing",
-    "ReturnValue"
+    "ReturnValue",
+    "ComparisonOperator",
+    "CaseSensitivity",
+    "BitwiseOperator",
+    "StringOperatorRemoval"
   ],
   "_equivalentsComment": "Mutants that provably cannot change behaviour, excluded from the denominator so the score means 'every catchable fault is caught'. Each needs a reason, and the run FAILS if one is ever killed or stops existing - a declaration is a checkable claim, not a mute button. Everything else here was killed by a test; nothing is listed merely because it was inconvenient. ONE DECLARATION RETIRED IN #3: `$isDeclared -> $true` in Get-PSMutationScore argued that counting undeclared keys into $matched could not be observed, because $matched is only read for keys that are declared. True when written. It stopped being true when the key became $null for an undeclared mutant -- $matched[$null] throws -- so the suite now kills all three of those mutants and the claim was removed rather than re-keyed. A declaration is a checkable claim, and this is what it looks like when one stops being needed.",
   "equivalents": {

@@ -1078,6 +1078,34 @@ Describe 'Get-PSMutationRunContext' {
         $doc.durations.totalSeconds | Should-BeGreaterThanOrEqual 0
     }
 
+    It 'traces each list it resolved as one comma-separated line' {
+        # Several of each, so a list that lost its separator, or came out as a .NET type name,
+        # shows: two subtrees, three mutate files, one of them mapped to two suites, two unmapped.
+        [ordered]@{
+            mutate          = @('src/a.ps1', 'src/b.ps1', 'src/c.ps1')
+            tests           = @{ 'src/a.ps1' = @('tests/a.Tests.ps1', 'tests/b.Tests.ps1') }
+            sandboxSubtrees = @('src', 'tests')
+            operators       = @('BinaryOperator')
+            reportPath      = 'reports/run.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        Mock New-PSMutationSandbox {
+            $sb = Join-Path $script:root 'sandbox'
+            foreach ($rel in 'src/a.ps1', 'src/b.ps1', 'src/c.ps1', 'tests/a.Tests.ps1', 'tests/b.Tests.ps1') {
+                $dest = Join-Path $sb $rel
+                New-Item -ItemType Directory -Path (Split-Path -Parent $dest) -Force | Out-Null
+                Set-Content -LiteralPath $dest -Value '# copied by the sandbox'
+            }
+            $sb
+        }
+        $script:said = [System.Collections.Generic.List[string]]::new()
+        Mock Write-PSMutationOutput { foreach ($l in @($Lines)) { $script:said.Add($l.Text) } }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        $script:said | Should-ContainCollection 'subtrees copied: src, tests'
+        $script:said | Should-ContainCollection 'mutate set resolved to 3 file(s): a.ps1, b.ps1, c.ps1'
+        $script:said | Should-ContainCollection '  a.ps1 -> a.Tests.ps1, b.Tests.ps1'
+        @($script:said | Where-Object { $_ -like '*no tests entry*: b.ps1, c.ps1' }).Count | Should-Be 1
+    }
+
     It 'checks the config paths reached the sandbox before running anything' {
         # Before the baseline, because after it the answer is a false statement about the tests
         # rather than a true one about the config.

@@ -1820,6 +1820,14 @@ Describe 'Get-PSMutationSuiteGroup' {
         (@($groups | ForEach-Object { $_ -join '+' }) -join ' | ') | Should-Be 'b.Tests.ps1+x.Tests.ps1 | a.Tests.ps1'
     }
 
+    It 'tells two suites apart that would read alike run together with spaces' {
+        # A path may hold a space: 'a b' + 'c' and 'a' + 'b c' are two suites.
+        $c = @([pscustomobject]@{ File = 'p.ps1' }, [pscustomobject]@{ File = 'q.ps1' })
+        $map = @{ 'p.ps1' = @('a b', 'c'); 'q.ps1' = @('a', 'b c') }
+        $groups = Get-PSMutationSuiteGroup -Candidates $c -TestsByFile $map -AllTests @('all')
+        (@($groups | ForEach-Object { $_ -join '+' }) -join ' | ') | Should-Be 'a b+c | a+b c'
+    }
+
     It 'falls back to the whole suite for an unmapped file, as a mutant of it would' {
         $groups = Get-PSMutationSuiteGroup -Candidates @([pscustomobject]@{ File = 'z.ps1' }) -TestsByFile @{} `
             -AllTests @('one.Tests.ps1', 'two.Tests.ps1')

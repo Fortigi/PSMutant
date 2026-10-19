@@ -616,7 +616,7 @@ mutants under it and therefore scores a **vacuous 100%** — a phase guard
 (`if ($SyncUsers) { ... }`) or a reference-fallback chain
 (`if ($Ref.Value) { return ... }`) contains no comparison, no literal and no negation.
 
-Four operators are **opt-in**, and this repo turns three of them on for itself:
+Eight operators are **opt-in**, and this repo turns seven of them on for itself:
 
 | Operator | Reaches |
 |---|---|
@@ -624,6 +624,10 @@ Four operators are **opt-in**, and this repo turns three of them on for itself:
 | `ConditionForcing` | an `if`/`elseif` condition forced to `$true` and to `$false`. The one that reaches bare guards |
 | `ReturnValue` | `return <expr>` → `return $null`, for a result nothing asserts on |
 | `StringLiteral` | quoted string → `''`. Still off here: high-volume, low-signal |
+| `ComparisonOperator` | `-like`, `-match`, `-contains`, `-in`, `-is` negated, and the `-c`/`-i` spellings of `-eq`…`-le` -- which `BinaryOperator` never reached, its map being keyed by the bare spelling (#258) |
+| `CaseSensitivity` | `-ceq` → `-eq`, `-ieq` → `-ceq`. Bare → `-c` is deliberately absent: on a number it is an equivalent |
+| `BitwiseOperator` | `-band`↔`-bor`, `-bxor` → `-bor`, `-shl`↔`-shr` |
+| `StringOperatorRemoval` | `$a -replace ...`, `-split`, `-join` → `$a`. Not a `-join` that is the whole of a `$(...)` in a string: measured here, 22 of 52 `-join` mutants survived and nearly all were message punctuation |
 
 They are opt-in for consumers because switching one on roughly doubles the mutant count
 and lowers the score, so a repo gating on `thresholds.break` would go red purely from

@@ -66,6 +66,13 @@ Describe 'Get-PSMutationIncrementalBasisFault' {
         Get-PSMutationIncrementalBasisFault -Prior $round -Current (Basis) | Should-Be "its pester was '6.1.0' and is '6.2.0' now"
     }
 
+    It 'tells two values apart that differ only in case' {
+        # A version string is compared as written: '0.8.0-RC1' and '0.8.0-rc1' are two builds.
+        $prior = [pscustomobject]@{ psmutant = '0.8.0-RC1' }
+        $current = [ordered]@{ psmutant = '0.8.0-rc1' }
+        Get-PSMutationIncrementalBasisFault -Prior $prior -Current $current | Should-Be "its psmutant was '0.8.0-RC1' and is '0.8.0-rc1' now"
+    }
+
     It 'says a report without incremental data has none' {
         Get-PSMutationIncrementalBasisFault -Prior $null -Current (Basis) | Should-Be 'it records no incremental data'
     }
@@ -80,6 +87,16 @@ Describe 'Get-PSMutationIncrementalKey' {
         $k = Get-PSMutationIncrementalKey -Path 'src/a.ps1', 'src/b.ps1' -SandboxRoot $script:kt
         $k | Should-MatchString '^[0-9a-f]{64}$'
         Get-PSMutationIncrementalKey -Path 'src/b.ps1', 'src/a.ps1', 'src/a.ps1' -SandboxRoot $script:kt | Should-Be $k
+    }
+
+    It 'is the SHA-256 of one path=hash line per file, sorted, joined by newlines' {
+        # Pinned to the exact value: a report written by one PSMutant is read by the next, so the
+        # recipe is a format, not a detail.
+        $text = (@('src/a.ps1', 'src/b.ps1') | ForEach-Object { "$_=$(Get-PSMutationSourceHash -Path (Join-Path $script:kt $_))" }) -join "`n"
+        $sha = [System.Security.Cryptography.SHA256]::Create()
+        $want = [System.BitConverter]::ToString($sha.ComputeHash([System.Text.Encoding]::UTF8.GetBytes($text))).Replace('-', '').ToLowerInvariant()
+        $sha.Dispose()
+        Get-PSMutationIncrementalKey -Path 'src/b.ps1', 'src/a.ps1' -SandboxRoot $script:kt | Should-Be $want
     }
 
     It 'changes when a file''s content changes' {
@@ -194,6 +211,7 @@ Describe 'Select-PSMutationReusedRow' {
         @{ Why = 'a description differing in case'; C = @{ Id = 1; Description = 'D1' } }
         @{ Why = 'another line'; C = @{ Id = 1; Line = 2 } }
         @{ Why = 'another operator'; C = @{ Id = 1; Operator = 'NumberLiteral' } }
+        @{ Why = 'an operator differing in case'; C = @{ Id = 1; Operator = 'binaryoperator' } }
     ) {
         $odd = Cand 'x' @C
         Should-BeNull -Actual (Select-PSMutationReusedRow -Candidates @((Cand 'x' 2), $odd) -File 'src/a.ps1' -Rows $script:rows)
@@ -203,6 +221,19 @@ Describe 'Select-PSMutationReusedRow' {
         $out = Select-PSMutationReusedRow -Candidates @() -File 'src/a.ps1' -Rows $script:rows
         Should-NotBeNull -Actual $out
         $out.Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationIncrementalEntry' {
+    It 'drops the file itself from its dependencies, but not a file whose name differs only in case' {
+        # Two files on a case-sensitive file system, and each changes the key on its own. Only the
+        # mutate file is written: the filter reads names, and Windows could not hold both.
+        $root = NewTree @{ 'src/a.ps1' = 'a'; 'tests/a.Tests.ps1' = 't' }
+        $a = Join-Path $root 'src/a.ps1'; $t = Join-Path $root 'tests/a.Tests.ps1'
+        Mock Get-PSMutationSuiteDependency { [string[]]@('src/A.ps1', 'src/a.ps1') }
+        $e = Get-PSMutationIncrementalEntry -File $a -Plan @{ Mutate = @($a); TestsByFile = @{ $a = @($t) }; AllTests = @($t) } `
+            -SandboxRoot $root -Source @('src/a.ps1', 'src/A.ps1') -Measured @{}
+        @($e.dependsOn) | Should-BeCollection @('src/A.ps1')
     }
 }
 
