@@ -227,7 +227,11 @@ function ConvertFrom-PSMutationSandboxPath {
         [Parameter(Mandatory)] [string]$Path,
         [Parameter(Mandatory)] [string]$SandboxRoot
     )
-    return [System.IO.Path]::GetRelativePath($SandboxRoot, [System.IO.Path]::GetFullPath($Path)) -replace '\\', '/'
+    # The PLATFORM separator, not a literal backslash. On Linux a backslash is an ordinary
+    # character in a file name, and rewriting it named a different file; there the replace is
+    # a no-op, which is also why no Linux run could ever tell `-replace '\\'` from no replace.
+    $rel = [System.IO.Path]::GetRelativePath($SandboxRoot, [System.IO.Path]::GetFullPath($Path))
+    return $rel.Replace([System.IO.Path]::DirectorySeparatorChar, '/')
 }
 
 function Remove-PSMutationSandbox {

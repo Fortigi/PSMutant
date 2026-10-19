@@ -1889,6 +1889,19 @@ Describe 'Get-PSMutationMutantListLine' {
         $text | Should-NotMatchString 'vacuous 100%'
     }
 
+    It 'lists several such files on one line, comma-separated' {
+        $rows = @(
+            [pscustomobject]@{ File = 'src/n1.ps1'; Produced = 0; Kept = 0; ByOperator = [ordered]@{} }
+            [pscustomobject]@{ File = 'src/n2.ps1'; Produced = 0; Kept = 0; ByOperator = [ordered]@{} }
+            [pscustomobject]@{ File = 'src/u1.ps1'; Produced = 1; Kept = 0; ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 1; Kept = 0 } } }
+            [pscustomobject]@{ File = 'src/u2.ps1'; Produced = 1; Kept = 0; ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 1; Kept = 0 } } }
+        )
+        $text = (Get-PSMutationMutantListLine -PerFile $rows -CoveredLinesOnly $true -BaselineMeasured $true |
+                ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString '(?m)vacuous 100%: src/n1\.ps1, src/n2\.ps1$'
+        $text | Should-MatchString '(?m)none of their lines: src/u1\.ps1, src/u2\.ps1$'
+    }
+
     It 'warns a reader when the counts are PRE-filter' {
         # coveredLinesOnly set but no coverage measured: the counts are an upper bound on what
         # a run would evaluate, and a preview that let them read as filtered would be the

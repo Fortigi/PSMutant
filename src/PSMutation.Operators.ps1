@@ -28,7 +28,38 @@ $script:PSMutationBinaryMap = @{
 # -le there, so `-gt` vs `-ge` -- the classic fencepost -- is never tried.
 $script:PSMutationBoundaryMap = @{ '-gt' = '-ge'; '-ge' = '-gt'; '-lt' = '-le'; '-le' = '-lt' }
 
-# StringLiteral, ConditionalBoundary, ConditionForcing and ReturnValue are all OPT-IN.
+# The comparisons BinaryOperator never touched (#258): pattern, membership and type tests, and
+# the explicit -c/-i spellings of the ones it does -- `-ceq` was never mutated at all, because
+# the map above is keyed by the bare spelling. Each is negated, as BinaryOperator negates -eq.
+$script:PSMutationComparisonMap = @{
+    '-ceq' = '-cne'; '-cne' = '-ceq'; '-cgt' = '-cle'; '-cle' = '-cgt'; '-clt' = '-cge'; '-cge' = '-clt'
+    '-ieq' = '-ine'; '-ine' = '-ieq'; '-igt' = '-ile'; '-ile' = '-igt'; '-ilt' = '-ige'; '-ige' = '-ilt'
+    '-like' = '-notlike'; '-notlike' = '-like'; '-clike' = '-cnotlike'; '-cnotlike' = '-clike'; '-ilike' = '-inotlike'; '-inotlike' = '-ilike'
+    '-match' = '-notmatch'; '-notmatch' = '-match'; '-cmatch' = '-cnotmatch'; '-cnotmatch' = '-cmatch'; '-imatch' = '-inotmatch'; '-inotmatch' = '-imatch'
+    '-contains' = '-notcontains'; '-notcontains' = '-contains'; '-ccontains' = '-cnotcontains'; '-cnotcontains' = '-ccontains'
+    '-icontains' = '-inotcontains'; '-inotcontains' = '-icontains'
+    '-in' = '-notin'; '-notin' = '-in'; '-cin' = '-cnotin'; '-cnotin' = '-cin'; '-iin' = '-inotin'; '-inotin' = '-iin'
+    '-is' = '-isnot'; '-isnot' = '-is'
+}
+# Case sensitivity, in the direction a missing test hides: -c to the bare (insensitive) form,
+# and an explicit -i to -c. Bare to -c is deliberately absent -- on a number or a $null it
+# changes nothing, so it would bury the real mutants under equivalent ones.
+$script:PSMutationCaseMap = @{
+    '-ceq' = '-eq'; '-cne' = '-ne'; '-cgt' = '-gt'; '-cge' = '-ge'; '-clt' = '-lt'; '-cle' = '-le'
+    '-ieq' = '-ceq'; '-ine' = '-cne'; '-igt' = '-cgt'; '-ige' = '-cge'; '-ilt' = '-clt'; '-ile' = '-cle'
+    '-clike' = '-like'; '-cnotlike' = '-notlike'; '-cmatch' = '-match'; '-cnotmatch' = '-notmatch'
+    '-ilike' = '-clike'; '-inotlike' = '-cnotlike'; '-imatch' = '-cmatch'; '-inotmatch' = '-cnotmatch'
+    '-ccontains' = '-contains'; '-cnotcontains' = '-notcontains'; '-cin' = '-in'; '-cnotin' = '-notin'
+    '-icontains' = '-ccontains'; '-inotcontains' = '-cnotcontains'; '-iin' = '-cin'; '-inotin' = '-cnotin'
+    '-creplace' = '-replace'; '-ireplace' = '-creplace'; '-csplit' = '-split'; '-isplit' = '-csplit'
+}
+$script:PSMutationBitwiseMap = @{ '-band' = '-bor'; '-bor' = '-band'; '-bxor' = '-bor'; '-shl' = '-shr'; '-shr' = '-shl' }
+# The string operators StringOperatorRemoval skips: the expression becomes its left operand.
+# A list rather than a hashtable of flags: a flag's value is never read, so every one of them was
+# a mutant nothing could kill.
+$script:PSMutationStringOperator = @('-replace', '-creplace', '-ireplace', '-split', '-csplit', '-isplit', '-join')
+
+# Only the four below are on by default; every other operator is OPT-IN.
 # Adding one here roughly doubles a consumer's mutant count and lowers their score, so a
 # repo gating on thresholds.break would go red purely from upgrading the module.
 $script:PSMutationDefaultOperators = @('BinaryOperator', 'BooleanLiteral', 'NumberLiteral', 'NegationRemoval')
@@ -365,6 +396,66 @@ function Get-PSMutationBoundaryCandidate {
     Get-PSMutationSwapCandidate -Ast $Ast -File $File -Ranges $Ranges -Map $script:PSMutationBoundaryMap -Operator 'ConditionalBoundary'
 }
 
+function Get-PSMutationComparisonCandidate {
+    # -like <-> -notlike, -match, -contains, -in, -is, and the -c/-i spellings of -eq to -le.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    Get-PSMutationSwapCandidate -Ast $Ast -File $File -Ranges $Ranges -Map $script:PSMutationComparisonMap -Operator 'ComparisonOperator'
+}
+
+function Get-PSMutationCaseCandidate {
+    # -ceq -> -eq, -ieq -> -ceq, and likewise for every operator with a case-sensitive spelling.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    Get-PSMutationSwapCandidate -Ast $Ast -File $File -Ranges $Ranges -Map $script:PSMutationCaseMap -Operator 'CaseSensitivity'
+}
+
+function Get-PSMutationBitwiseCandidate {
+    # -band <-> -bor, -bxor -> -bor, -shl <-> -shr.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    Get-PSMutationSwapCandidate -Ast $Ast -File $File -Ranges $Ranges -Map $script:PSMutationBitwiseMap -Operator 'BitwiseOperator'
+}
+
+function Test-PSMutationInterpolatedJoin {
+    # True for a -join that is the whole of a `$(...)` inside a double-quoted string. Removed
+    # there, it changes only the separator -- the string interpolates the array with a space --
+    # and only for two items or more: measured on this module's own source, 22 of its 52 -join
+    # mutants survived, nearly all of them punctuation in an error message. A -join that builds a
+    # value, assigned, returned or compared, is still mutated.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Node)
+    if ($Node.Operator -ne [System.Management.Automation.Language.TokenKind]::Join) { return $false }
+    $p = $Node.Parent
+    while ($p -is [System.Management.Automation.Language.CommandExpressionAst] -or
+        $p -is [System.Management.Automation.Language.PipelineAst] -or
+        $p -is [System.Management.Automation.Language.StatementBlockAst]) { $p = $p.Parent }
+    return $p -is [System.Management.Automation.Language.SubExpressionAst] -and
+        $p.Parent -is [System.Management.Automation.Language.ExpandableStringExpressionAst]
+}
+
+function Get-PSMutationStringOperatorCandidate {
+    # `$a -replace 'x', 'y'` -> `$a`, and the same for -split and -join: the transformation
+    # skipped. Only the binary form -- unary `-split $a` has no operand to fall back to that is
+    # not the expression itself. The splice never re-associates: these operators are
+    # left-associative and bind looser than anything that can sit on their left, so the left
+    # operand's text stands where the whole expression stood.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.BinaryExpressionAst]))
+    foreach ($n in $nodes) {
+        if ($n.ErrorPosition.Text -notin $script:PSMutationStringOperator) { continue }
+        if (Test-PSMutationInterpolatedJoin -Node $n) { continue }
+        if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
+        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $n.Left.Extent.Text -Operator 'StringOperatorRemoval'
+    }
+}
+
 function New-PSMutationForcedCandidate {
     # Emit the $true and $false forcings of one decision extent. Shared by the three
     # constructs below so the loop guard, the already-forced guard and the operator name
@@ -617,6 +708,10 @@ $script:PSMutationOperatorMap = @{
     'ConditionalBoundary' = 'Get-PSMutationBoundaryCandidate'
     'ConditionForcing' = 'Get-PSMutationConditionCandidate'
     'ReturnValue' = 'Get-PSMutationReturnCandidate'
+    'ComparisonOperator' = 'Get-PSMutationComparisonCandidate'
+    'CaseSensitivity' = 'Get-PSMutationCaseCandidate'
+    'BitwiseOperator' = 'Get-PSMutationBitwiseCandidate'
+    'StringOperatorRemoval' = 'Get-PSMutationStringOperatorCandidate'
 }
 
 function Get-PSMutationCandidate {
@@ -631,11 +726,15 @@ function Get-PSMutationCandidate {
         Operator classes to emit. Defaults to the four expression operators: BinaryOperator,
         BooleanLiteral, NumberLiteral, NegationRemoval.
 
-        FOUR more are opt-in, not one. ConditionalBoundary reaches off-by-one errors,
+        EIGHT more are opt-in, not one. ConditionalBoundary reaches off-by-one errors,
         ConditionForcing reaches a bare guard with no comparison in it, ReturnValue reaches a
         result nothing asserts on, and StringLiteral is high-volume and low-signal. The first
         three are what stop structural code scoring a vacuous 100%; each roughly doubles the
-        mutant count, which is why none of them is on by default.
+        mutant count, which is why none of them is on by default. ComparisonOperator,
+        CaseSensitivity, BitwiseOperator and StringOperatorRemoval (#258) reach the operators
+        BinaryOperator never touched -- -like, -match, -contains, -in, -is, every -c/-i
+        spelling, -band, -replace, -split, -join -- and are opt-in for the same reason: on by
+        default, they would lower the score of a repo that changed nothing but its PSMutant.
 
         An unknown name is an error, not an empty result: a misspelling in a config would
         otherwise be dropped and then written into the report as though it had run, handing back

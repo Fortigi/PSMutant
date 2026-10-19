@@ -50,17 +50,21 @@
         "array",
         "null"
       ],
-      "description": "Which mutation operators to apply. Omit for the default expression set. Four are opt-in because enabling one roughly doubles the mutant count and lowers the score, so a repo gating on thresholds.break would go red purely from turning one on.",
+      "description": "Which mutation operators to apply. Omit for the default expression set. Eight are opt-in because enabling one roughly doubles the mutant count and lowers the score, so a repo gating on thresholds.break would go red purely from turning one on.",
       "items": {
         "enum": [
           "BinaryOperator",
+          "BitwiseOperator",
           "BooleanLiteral",
+          "CaseSensitivity",
+          "ComparisonOperator",
           "ConditionForcing",
           "ConditionalBoundary",
           "NegationRemoval",
           "NumberLiteral",
           "ReturnValue",
-          "StringLiteral"
+          "StringLiteral",
+          "StringOperatorRemoval"
         ]
       }
     },

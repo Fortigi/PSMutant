@@ -20,6 +20,10 @@ $script:PSMutationOperatorSummary = @{
     ConditionalBoundary = 'shifts a boundary: -gt to -ge, -lt to -le, and back.'
     ConditionForcing    = 'forces an if, elseif, switch or ternary condition to always true, or always false.'
     ReturnValue         = 'replaces return <expr> with return $null.'
+    ComparisonOperator  = 'negates a pattern, membership or type test, or a -c/-i comparison: -like to -notlike, -in to -notin, -ceq to -cne.'
+    CaseSensitivity     = 'changes case sensitivity: -ceq to -eq, -ieq to -ceq, -creplace to -replace.'
+    BitwiseOperator     = 'swaps a bitwise operator: -band to -bor, -shl to -shr.'
+    StringOperatorRemoval = 'skips a -replace, -split or -join: the expression becomes its left operand.'
 }
 
 function Get-PSMutationSarifRuleId {

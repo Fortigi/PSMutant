@@ -769,6 +769,14 @@ Describe 'the schema walk that words a config fault on every PowerShell (#289)' 
         $schema = '{ "type": "object", "patternProperties": { "^n_": { "type": "number" } }, "additionalProperties": false }' | ConvertFrom-Json
         Get-PSMutationSchemaFault -Value ('{ "n_a": "x", "n_b": 2 }' | ConvertFrom-Json) -Schema $schema -Pointer '' |
             Should-Be "Value is `"string`" but should be `"number`" at '/n_a'"
+        # Matched case-sensitively, as a JSON Schema pattern is: N_c is not an n_ key.
+        Get-PSMutationSchemaFault -Value ('{ "N_c": 2 }' | ConvertFrom-Json) -Schema $schema -Pointer '' |
+            Should-Be "All values fail against the false schema at '/N_c'"
+    }
+
+    It 'counts a required key as missing when only a key differing in case is there' {
+        Walk '{ "Mutate": ["a"], "tests": {} }' |
+            Should-BeCollection @("Required properties [`"mutate`"] are not present at ''", "All values fail against the false schema at '/Mutate'")
     }
 
     It 'wants at least one item where the schema says so, and no more' {

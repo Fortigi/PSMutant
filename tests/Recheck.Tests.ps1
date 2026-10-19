@@ -419,6 +419,17 @@ Describe 'Invoke-PSMutationRecheckRun' {
             Should-Throw -ExceptionMessage '*Cannot recheck*source changed for src/a.ps1*regenerate*'
     }
 
+    It 'names every reason when the report fails on several' {
+        # A separate test from the one-reason refusal above, not a replacement for it: ONE reason
+        # must refuse too, and only a one-reason case can tell `-gt 0` from `-gt 1`.
+        Mock Test-PSMutationRecheckCompatible { @('source changed for src/a.ps1', 'operators changed') }
+
+        { Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @() -Plan $script:plan `
+                -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+                -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet } |
+            Should-Throw -ExceptionMessage '*Cannot recheck*source changed for src/a.ps1; operators changed. Run*regenerate*'
+    }
+
     It 'merges into the baseline under -MergeIntoBaseline, and says what it carried over' {
         # The recheck's whole point is that it does NOT touch the baseline, so the one path that
         # does needs driving end to end -- the merged document is asserted on its own above, and
@@ -466,6 +477,25 @@ Describe 'Invoke-PSMutationRecheckRun' {
                 -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet -MergeIntoBaseline } |
             Should-Throw -ExceptionMessage '*Run the full set to get a report that measured all of them*'
         Should-Invoke Save-PSMutationReportDocument -Times 0
+    }
+
+    It 'lists every merge fault on its own line' {
+        # Apart from the one-fault refusal above, which is the case that tells `-gt 0` from `-gt 1`.
+        Mock Get-PSMutationAnnotationHost { $null }
+        Mock Write-PSMutationOutput { }
+        Mock Test-PSMutationRecheckCompatible { , @() }
+        Mock Select-PSMutationRecheckCandidate { @('cand-1') }
+        Mock Invoke-PSMutationLoop { , @([pscustomobject]@{ Status = 'Killed' }) }
+        Mock Get-PSMutationRecheckReportPath { Join-Path $TestDrive 'out.recheck.json' }
+        Mock Write-PSMutationRecheckReport { [pscustomobject]@{ NowKilled = 1; StillSurviving = 0 } }
+        Mock Get-PSMutationMergeFault { , @('tests/a.Tests.ps1 is shorter than when the baseline was written', 'tests/b.Tests.ps1 is gone') }
+        Mock Save-PSMutationReportDocument { }
+
+        $nl = [Environment]::NewLine
+        { Invoke-PSMutationRecheckRun -RecheckFrom $script:reportFile -Candidates @('a') -Plan $script:plan `
+                -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 5 `
+                -SandboxRoot $TestDrive -ReportPath (Join-Path $TestDrive 'out.json') -Quiet -MergeIntoBaseline } |
+            Should-Throw -ExceptionMessage "*written$nl  - tests/b.Tests.ps1 is gone$nl*"
     }
 
     It 'evaluates only the prior survivors and returns the recheck summary' {

@@ -28,6 +28,21 @@ with no test named, and the worker is replaced; an unmutated covering suite that
 before the first mutant. A worker process is renewed every 500 mutants rather than every 50: a new
 process compiles Pester and your code afresh, which at 50 cost more than the processes saved.
 
+**Four new opt-in operators reach the comparisons `BinaryOperator` never touched.**
+`ComparisonOperator` negates `-like`, `-match`, `-contains`, `-in` and `-is`, and the `-c` and `-i`
+spellings of `-eq` to `-le` -- `-ceq` was never mutated at all, because the default swaps are keyed
+by the bare spelling. `CaseSensitivity` turns `-ceq` into `-eq` and an explicit `-ieq` into `-ceq`,
+for every operator with a case-sensitive spelling, `-creplace` and `-csplit` included; bare to `-c`
+is not tried, as on a number it changes nothing. `BitwiseOperator` swaps `-band` and `-bor`, `-bxor`
+for `-bor`, `-shl` and `-shr`. `StringOperatorRemoval` replaces `$a -replace 'x', 'y'` -- and a
+binary `-split` or `-join` -- with `$a`, except a `-join` that is the whole of a `$(...)` in a
+double-quoted string, where removing it changes only the separator. All four are off unless `operators` names them, so the
+default mutant set, and your score, are unchanged by the upgrade.
+
+**On Linux, a backslash in a file name is kept in the paths a report shows.** Only the platform's own
+separator becomes `/` now; before, every backslash did, so `src/a\b.ps1` -- one file there -- was
+reported as `src/a/b.ps1`.
+
 **A config value of the wrong type is named on every PowerShell.** On PowerShell 7.6.7 a fault
 inside a nested object or a list -- a string in `thresholds.break`, a number in a `tests` list -- was
 refused with nothing after "does not match the PSMutant config schema:", and beside another fault it
