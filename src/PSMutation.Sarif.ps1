@@ -24,6 +24,8 @@ $script:PSMutationOperatorSummary = @{
     CaseSensitivity     = 'changes case sensitivity: -ceq to -eq, -ieq to -ceq, -creplace to -replace.'
     BitwiseOperator     = 'swaps a bitwise operator: -band to -bor, -shl to -shr.'
     StringOperatorRemoval = 'skips a -replace, -split or -join: the expression becomes its left operand.'
+    NumberBoundary      = 'changes an integer N to N-1 or 0, and a fractional number to N+1, N-1 or 0.'
+    ArithmeticOperator  = 'changes % to *, swaps += with -= and *= with /=, and ++ with --.'
 }
 
 function Get-PSMutationSarifRuleId {

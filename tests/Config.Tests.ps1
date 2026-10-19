@@ -217,6 +217,12 @@ Describe 'Get-PSMutationEditDistance' {
         @{ From = 'brake';  To = 'break';   Expected = 2 }   # the transposition from #24
         @{ From = 'break';  To = 'brake';   Expected = 2 }   # symmetric, so neither side is privileged
         @{ From = 'kitten'; To = 'sitting'; Expected = 3 }   # the textbook case
+        # Each a first character the other string repeats later: a loop started at 0 rather than
+        # 1, or a row seeded at its far end, reads the string's last character as though it came
+        # before the first, and these are the pairs where that changes the answer (#260).
+        @{ From = 'a';      To = 'aab';     Expected = 2 }
+        @{ From = 'ab';     To = 'b';       Expected = 1 }
+        @{ From = 'aab';    To = 'a';       Expected = 2 }
     ) {
         Get-PSMutationEditDistance -From $From -To $To | Should-Be $Expected
     }
@@ -772,6 +778,12 @@ Describe 'the schema walk that words a config fault on every PowerShell (#289)' 
         # Matched case-sensitively, as a JSON Schema pattern is: N_c is not an n_ key.
         Get-PSMutationSchemaFault -Value ('{ "N_c": 2 }' | ConvertFrom-Json) -Schema $schema -Pointer '' |
             Should-Be "All values fail against the false schema at '/N_c'"
+    }
+
+    It 'judges a key two patterns match by the first of them' {
+        $schema = '{ "type": "object", "patternProperties": { "^n_": { "type": "number" }, "^n_s": { "type": "string" } } }' | ConvertFrom-Json
+        Get-PSMutationSchemaFault -Value ('{ "n_s": "x" }' | ConvertFrom-Json) -Schema $schema -Pointer '' |
+            Should-Be "Value is `"string`" but should be `"number`" at '/n_s'"
     }
 
     It 'counts a required key as missing when only a key differing in case is there' {

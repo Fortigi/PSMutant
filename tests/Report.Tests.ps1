@@ -2336,6 +2336,17 @@ Describe 'one mutant declared twice (#262)' {
         $faults | Should-BeCollection @('a.ps1:3:0 -> 1 -- declares the same mutant as a.ps1:F:0 -> 1; two arguments for one mutant drift apart, so keep one')
     }
 
+    It 'counts every hit on the excluding key, whichever result comes first' {
+        # The other mutant of F comes first, so the key's count is already 1 when the doubly
+        # declared one adds to it -- read back under the other key, it would stay 1 (#260).
+        $r5 = [pscustomobject]@{ File = 'a.ps1'; Line = 5; Function = 'F'; Description = '0 -> 1'; Status = 'Survived' }
+        $r3 = [pscustomobject]@{ File = 'a.ps1'; Line = 3; Function = 'F'; Description = '0 -> 1'; Status = 'Survived' }
+        $eq = [pscustomobject]@{ 'a.ps1:F:0 -> 1' = 'in config'; 'a.ps1:3:0 -> 1' = 'in code' }
+        Get-PSMutationDeclarationCoverageFault -Results @($r5, $r3) -Equivalents $eq | Should-BeCollection @(
+            'a.ps1:3:0 -> 1 -- declares the same mutant as a.ps1:F:0 -> 1; two arguments for one mutant drift apart, so keep one'
+            'a.ps1:F:0 -> 1 -- matches 2 mutants, so the declaration is ambiguous: it argues about one and would exclude all of them')
+    }
+
     It 'still judges a single declaration by its hits' {
         $r = [pscustomobject]@{ File = 'a.ps1'; Line = 3; Function = 'F'; Description = '0 -> 1'; Status = 'Survived' }
         @(Get-PSMutationDeclarationCoverageFault -Results @($r) -Equivalents ([pscustomobject]@{ 'a.ps1:3:0 -> 1' = 'x' })).Count | Should-Be 0

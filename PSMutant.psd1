@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.8.0'
+    ModuleVersion     = '0.9.0'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -40,20 +40,11 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = 'PSMutant 0.8.0
+            ReleaseNotes = 'PSMutant 0.9.0
 
-- Killed mutants are much cheaper: the tests that killed a neighbour run first.
-- With more than one worker, each worker is a pwsh process of its own, and runs scale further.
-- Four new opt-in operators reach the comparisons BinaryOperator never touched.
-- On Linux, a backslash in a file name is kept in the paths a report shows.
-- A config value of the wrong type is named on every PowerShell.
-- -Incremental reuses the previous report''s verdicts for every file nothing touched.
-- A mutant that stops the tests from being found is no longer a survivor.
-- An equivalent mutant can be declared in the code.
-- Logging calls are no longer mutated.
-- Patterns in mutate and tests, and pairing by name.
+- Two opt-in operators reach the numbers and arithmetic the defaults never touched.
 
-Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.8.0'
+Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.0'
         }
     }
 }

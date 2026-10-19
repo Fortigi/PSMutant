@@ -71,6 +71,7 @@ Describe 'a declaration that cannot become a key' {
         @{ Why = 'it follows the first token of the file'; Source = "x # PSMutant-Equivalent: 0 -> 1: x`n`$x = 0"; Like = '*shares its line with code*' }
         @{ Why = 'nothing follows it'; Source = "`$x = 0`n# PSMutant-Equivalent: 0 -> 1: x"; Like = '*no code follows it*' }
         @{ Why = 'only comments follow it'; Source = "`$x = 0`n# PSMutant-Equivalent: 0 -> 1: x`n# more"; Like = '*no code follows it*' }
+        @{ Why = 'a blank line follows a further comment'; Source = "# PSMutant-Equivalent: 0 -> 1: x`n# more`n`n`$x = 0"; Like = '*blank line*' }
         @{ Why = 'it names no mutation'; Source = "# PSMutant-Equivalent: because`n`$x = 0"; Like = "*'because' is not '<original> -> <mutated>: <reason>'*" }
         @{ Why = 'it gives no reason'; Source = "# PSMutant-Equivalent: 0 -> 1:   `n`$x = 0"; Like = '*gives no reason*' }
     ) {
