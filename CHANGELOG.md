@@ -1,3 +1,19 @@
+## [0.9.0] - 2026-10-19
+
+### For consumers
+
+**Two opt-in operators reach the numbers and arithmetic the defaults never touched.**
+`NumberLiteral` only ever turned `N` into `N+1`, so a boundary test that catches one of `N+1`, `N-1`
+and `0` and not the others looked complete, and a fractional literal such as `1.5` produced no mutant
+at all. `NumberBoundary` turns an integer into `N-1` and `0`, and a fractional number into `N+1`,
+`N-1` and `0`; a value equal to the original or already listed is dropped, so `1` gives only `0` and
+`0` only `-1`, and a negative result is bracketed so it still parses after a unary minus.
+`ArithmeticOperator` turns `%` into `*`, swaps `+=` with `-=` and `*=` with `/=`, turns `%=` into
+`*=`, and swaps `++` with `--` on either side of the operand -- except in a `for` loop's iterator,
+where `$i++` turned into `$i--` is a loop that never ends. Both are opt-in, like every operator
+after the first four: on by default they would lower the score of a repo that changed nothing but
+its PSMutant. Add them to `operators` to use them.
+
 ## [0.8.0] - 2026-10-19
 
 ### For consumers

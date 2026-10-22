@@ -49,6 +49,7 @@ function Get-PSMutationInlineTarget {
         return [pscustomobject]@{ Line = $null; Fault = 'it shares its line with code -- put it on its own line, directly above the mutated line' }
     }
     $newLines = 0
+    # PSMutant-Equivalent: 1 -> 0: Token[Index] is the declaration's own comment, and a comment is skipped without touching the count, so starting one token early changes nothing.
     for ($i = $Index + 1; $i -lt $Token.Count; $i++) {
         $t = $Token[$i]
         if ($t.Kind -eq $kind::NewLine) {

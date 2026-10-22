@@ -285,6 +285,7 @@ function Get-PSMutationSchemaKeyRule {
     [OutputType([object])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Schema, [Parameter(Mandatory)] [string]$Name)
+    # PSMutant-Equivalent: 0 -> (-1): JSON property names are unique and -ceq is exact, so at most one property matches and its first and last are the same one.
     $own = @($Schema.properties.PSObject.Properties | Where-Object { $_.Name -ceq $Name })[0]
     if ($own) { return $own.Value }
     $pattern = @($Schema.patternProperties.PSObject.Properties | Where-Object { $Name -cmatch $_.Name })[0]

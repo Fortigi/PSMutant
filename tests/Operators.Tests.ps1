@@ -195,6 +195,17 @@ Describe 'Get-PSMutationCandidate - unparseable input' {
             Should-Throw -ExceptionMessage "*Missing closing '}'*"
     }
 
+    It 'reports the first of several parse errors, not the last' {
+        # A one-error file cannot tell $errors[0] from $errors[-1] (#260).
+        $p = Join-Path $TestDrive 'two-errors.ps1'
+        Set-Content -LiteralPath $p -Encoding utf8 -Value "`$a = (1`n`$b = @{"
+        $errors = $null
+        [void][System.Management.Automation.Language.Parser]::ParseFile($p, [ref]$null, [ref]$errors)
+        $errors.Count | Should-BeGreaterThan 1
+        $errors[0].Message | Should-NotBe $errors[-1].Message
+        { Get-PSMutationCandidate -Path $p } | Should-Throw -ExceptionMessage "*parse errors: $($errors[0].Message)"
+    }
+
     It 'names the file it could not parse' {
         $p = Get-BadSyntaxFile 'named.ps1'
         { Get-PSMutationCandidate -Path $p } | Should-Throw -ExceptionMessage '*named.ps1*'
@@ -730,6 +741,135 @@ $w = $a -eq 1
     }
 }
 
+Describe 'Get-PSMutationNumberBoundaryValue (#260)' {
+    It 'turns an integer into N-1 and 0' {
+        Get-PSMutationNumberBoundaryValue -Value 7 | Should-BeCollection @('6', '0')
+        Get-PSMutationNumberBoundaryValue -Value 2 | Should-BeCollection @('1', '0')
+    }
+
+    It 'reaches a long as well as an int' {
+        Get-PSMutationNumberBoundaryValue -Value 5000000000 | Should-BeCollection @('4999999999', '0')
+    }
+
+    It 'gives 1 only 0, and 0 only -1, rather than repeating a value or the original' {
+        Get-PSMutationNumberBoundaryValue -Value 1 | Should-BeCollection @('0')
+        Get-PSMutationNumberBoundaryValue -Value 0 | Should-BeCollection @('(-1)')
+    }
+
+    It 'brackets a negative result, so a splice after a unary minus still parses' {
+        Get-PSMutationNumberBoundaryValue -Value (-3) | Should-BeCollection @('(-4)', '0')
+    }
+
+    It 'turns a fractional number into N+1, N-1 and 0, which NumberLiteral never reaches' {
+        Get-PSMutationNumberBoundaryValue -Value 1.5 | Should-BeCollection @('2.5', '0.5', '0')
+        Get-PSMutationNumberBoundaryValue -Value ([decimal]2.25) | Should-BeCollection @('3.25', '1.25', '0')
+        Get-PSMutationNumberBoundaryValue -Value 1.0 | Should-BeCollection @('2', '0')
+        Get-PSMutationNumberBoundaryValue -Value 0.5 | Should-BeCollection @('1.5', '(-0.5)', '0')
+    }
+
+    It 'gives nothing for a value that is not a number' {
+        @(Get-PSMutationNumberBoundaryValue -Value 'text').Count | Should-Be 0
+        @(Get-PSMutationNumberBoundaryValue -Value $null).Count | Should-Be 0
+        @(Get-PSMutationNumberBoundaryValue -Value $true).Count | Should-Be 0
+    }
+}
+
+Describe 'the number and arithmetic operators (#260)' {
+    BeforeAll {
+        $script:arithFixture = Join-Path $TestDrive "arith-$($script:tag).ps1"
+        @'
+$a += 2; $b -= 3; $c *= 4; $d /= 5; $e %= 6; $f = 7 % 8; $g = 9
+$h++; $i--; ++$j; --$k; $l = -$h; $m = -not $h
+for ($n = 10; $n -lt 11; $n++) { $o = 1.5; $n += 12 }
+for ($p = 13; $p -lt 14;) { $p++ }
+for ($v = 20; $v -lt 21; $v += 1) { $v %= 22 }
+while (($q += 15) -lt 16) { $q %= 17 }
+while ($r++ -lt 18) { }
+while (($s % 19) -eq 0) { }
+$t = 'text' + "$u"
+'@ | Set-Content -LiteralPath $script:arithFixture -Encoding utf8
+        $script:arith = @(Get-PSMutationCandidate -Path $script:arithFixture -Operators @('NumberBoundary', 'ArithmeticOperator'))
+        function Get-ArithMutation {
+            param([string]$Operator, [string]$Original)
+            @($script:arith | Where-Object { $_.Operator -eq $Operator -and $_.Original -ceq $Original } | ForEach-Object Mutated)
+        }
+    }
+
+    It 'turns each integer literal into N-1 and 0' {
+        Get-ArithMutation 'NumberBoundary' '9' | Should-BeCollection @('8', '0')
+        Get-ArithMutation 'NumberBoundary' '1.5' | Should-BeCollection @('2.5', '0.5', '0')
+        # A string is no number: neither the literal nor the expandable string gives a mutant.
+        @($script:arith | Where-Object { $_.Operator -eq 'NumberBoundary' -and $_.Line -eq 9 }).Count | Should-Be 0
+    }
+
+    It 'turns % into *, and swaps each compound assignment' {
+        Get-ArithMutation 'ArithmeticOperator' '%' | Should-BeCollection @('*')
+        Get-ArithMutation 'ArithmeticOperator' '+=' | Should-BeCollection @('-=', '-=')
+        Get-ArithMutation 'ArithmeticOperator' '-=' | Should-BeCollection @('+=')
+        Get-ArithMutation 'ArithmeticOperator' '*=' | Should-BeCollection @('/=')
+        Get-ArithMutation 'ArithmeticOperator' '/=' | Should-BeCollection @('*=')
+        Get-ArithMutation 'ArithmeticOperator' '%=' | Should-BeCollection @('*=', '*=', '*=')
+        # A plain assignment has no arithmetic in it.
+        @(Get-ArithMutation 'ArithmeticOperator' '=').Count | Should-Be 0
+    }
+
+    It 'swaps an increment for a decrement, on either side of its operand' {
+        Get-ArithMutation 'ArithmeticOperator' '$h++' | Should-BeCollection @('$h--')
+        Get-ArithMutation 'ArithmeticOperator' '$i--' | Should-BeCollection @('$i++')
+        Get-ArithMutation 'ArithmeticOperator' '++$j' | Should-BeCollection @('--$j')
+        Get-ArithMutation 'ArithmeticOperator' '--$k' | Should-BeCollection @('++$k')
+        Get-ArithMutation 'ArithmeticOperator' '$p++' | Should-BeCollection @('$p--')
+        # A negation or a -not is a unary expression too, and not an increment.
+        @($script:arith | Where-Object { $_.Operator -eq 'ArithmeticOperator' -and $_.Line -eq 2 }).Count | Should-Be 4
+    }
+
+    It 'splices the whole increment, operand included' {
+        $c = $script:arith | Where-Object { $_.Operator -eq 'ArithmeticOperator' -and $_.Original -ceq '++$j' }
+        $content = [System.IO.File]::ReadAllText($script:arithFixture)
+        Set-PSMutationText -Content $content -Candidate $c | Should-MatchString '\$i--; --\$j; --\$k;'
+    }
+
+    It 'leaves a for loop''s iterator alone, but not its body or a for loop without one' {
+        @(Get-ArithMutation 'ArithmeticOperator' '$n++').Count | Should-Be 0
+        @($script:arith | Where-Object { $_.Operator -eq 'ArithmeticOperator' -and $_.Line -eq 3 } | ForEach-Object Original) |
+            Should-BeCollection @('+=')
+        # Two loops with an iterator, so the zone holds two ranges: one range alone reads the same
+        # whether or not the list was nested a level too deep.
+        @($script:arith | Where-Object { $_.Operator -eq 'ArithmeticOperator' -and $_.Line -eq 5 } | ForEach-Object Original) |
+            Should-BeCollection @('%=')
+        # The iterator's NUMBERS are still NumberBoundary's: only the arithmetic would hang.
+        Get-ArithMutation 'NumberBoundary' '10' | Should-BeCollection @('9', '0')
+    }
+
+    It 'never mutates inside a loop condition, but does in the loop body' {
+        @($script:arith | Where-Object { $_.Line -in 7, 8 }).Count | Should-Be 0
+        @($script:arith | Where-Object { $_.Line -eq 6 } | ForEach-Object Original) | Should-BeCollection @('%=', '17', '17')
+    }
+
+    It 'keeps both out of the default operator set' {
+        $default = @(Get-PSMutationCandidate -Path $script:arithFixture)
+        @($default | Where-Object Operator -in 'NumberBoundary', 'ArithmeticOperator').Count | Should-Be 0
+        @($default | Where-Object Operator -eq 'NumberLiteral').Count | Should-BeGreaterThan 0
+    }
+}
+
+Describe 'Get-PSMutationIteratorRange' {
+    It 'is the extent of each for loop''s iterator, and nothing for a loop without one' {
+        $src = 'for ($i = 0; $i -lt 3; $i++) { }; for (;;) { break }; while ($x) { }'
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput($src, [ref]$null, [ref]$null)
+        $r = @(Get-PSMutationIteratorRange -Ast $ast)
+        $r.Count | Should-Be 1
+        $src.Substring($r[0].Start, $r[0].End - $r[0].Start) | Should-Be '$i++'
+    }
+
+    It 'is an empty array, not $null, for a file with no for loop' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseInput('$x = 1', [ref]$null, [ref]$null)
+        $r = Get-PSMutationIteratorRange -Ast $ast
+        $r -is [array] | Should-BeTrue
+        $r.Count | Should-Be 0
+    }
+}
+
 Describe 'Test-PSMutationInLoop' {
     # The no-mutate zone's own predicate. It was only ever exercised THROUGH the
     # operators, so its boundaries were never pinned -- and an off-by-one here either
@@ -841,7 +981,7 @@ Describe 'Get-PSMutationKnownOperator' {
         Get-PSMutationKnownOperator | Should-BeCollection @(
             'BinaryOperator', 'BitwiseOperator', 'BooleanLiteral', 'CaseSensitivity', 'ComparisonOperator',
             'ConditionalBoundary', 'ConditionForcing', 'NegationRemoval', 'NumberLiteral', 'ReturnValue',
-            'StringLiteral', 'StringOperatorRemoval')
+            'StringLiteral', 'StringOperatorRemoval', 'NumberBoundary', 'ArithmeticOperator')
     }
 
     It 'lists them sorted, so the error message reads predictably' {

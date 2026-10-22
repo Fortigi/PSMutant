@@ -616,7 +616,7 @@ mutants under it and therefore scores a **vacuous 100%** — a phase guard
 (`if ($SyncUsers) { ... }`) or a reference-fallback chain
 (`if ($Ref.Value) { return ... }`) contains no comparison, no literal and no negation.
 
-Eight operators are **opt-in**, and this repo turns seven of them on for itself:
+Ten operators are **opt-in**, and this repo turns nine of them on for itself:
 
 | Operator | Reaches |
 |---|---|
@@ -628,6 +628,8 @@ Eight operators are **opt-in**, and this repo turns seven of them on for itself:
 | `CaseSensitivity` | `-ceq` → `-eq`, `-ieq` → `-ceq`. Bare → `-c` is deliberately absent: on a number it is an equivalent |
 | `BitwiseOperator` | `-band`↔`-bor`, `-bxor` → `-bor`, `-shl`↔`-shr` |
 | `StringOperatorRemoval` | `$a -replace ...`, `-split`, `-join` → `$a`. Not a `-join` that is the whole of a `$(...)` in a string: measured here, 22 of 52 `-join` mutants survived and nearly all were message punctuation |
+| `NumberBoundary` | an integer to `N-1` and `0`, a fractional number to `N+1`, `N-1` and `0` -- `NumberLiteral` only ever tried `N+1`, and a boundary check is often caught by one of the three and not the others (#260). A negative result is bracketed, because `-0` spliced to `--1` does not parse |
+| `ArithmeticOperator` | `%` → `*`, the compound assignments, and `++`↔`--`. Not in a `for` iterator, where the flip is a guaranteed hang; `NumberLiteral` and `BinaryOperator` still reach it, as they always have, so the exclusion is this operator's own rather than the shared loop zone |
 
 They are opt-in for consumers because switching one on roughly doubles the mutant count
 and lowers the score, so a repo gating on `thresholds.break` would go red purely from

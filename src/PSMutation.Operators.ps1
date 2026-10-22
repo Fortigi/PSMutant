@@ -58,6 +58,10 @@ $script:PSMutationBitwiseMap = @{ '-band' = '-bor'; '-bor' = '-band'; '-bxor' = 
 # A list rather than a hashtable of flags: a flag's value is never read, so every one of them was
 # a mutant nothing could kill.
 $script:PSMutationStringOperator = @('-replace', '-creplace', '-ireplace', '-split', '-csplit', '-isplit', '-join')
+# ArithmeticOperator (#260): the remainder BinaryOperator leaves alone, and the compound
+# assignments. %= goes to *= rather than to a partner, as % does: there is no inverse to swap with.
+$script:PSMutationRemainderMap = @{ '%' = '*' }
+$script:PSMutationCompoundMap = @{ '+=' = '-='; '-=' = '+='; '*=' = '/='; '/=' = '*='; '%=' = '*=' }
 
 # Only the four below are on by default; every other operator is OPT-IN.
 # Adding one here roughly doubles a consumer's mutant count and lowers their score, so a
@@ -359,6 +363,100 @@ function Get-PSMutationNumberCandidate {
         $to = [string]([long]$n.Value + 1)
         New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $to -Operator 'NumberLiteral'
     }
+}
+
+function Get-PSMutationNumberBoundaryValue {
+    # What NumberBoundary turns one literal value into, as source text: an integer to N-1 and 0, a
+    # fractional number to N+1, N-1 and 0 -- NumberLiteral never touches a fractional one. A value
+    # equal to the original, or to one already listed, is dropped: 1 gives only 0, and 0 only -1.
+    #
+    # A negative result is bracketed. Spliced bare after a unary minus, `-0` would become `--1`,
+    # which does not parse -- a mutant that fails to compile tells nobody anything about a test.
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param([AllowNull()] $Value)
+    if ($Value -is [int] -or $Value -is [long]) { $to = @(([long]$Value - 1), [long]0) }
+    elseif ($Value -is [double] -or $Value -is [decimal]) { $to = @(($Value + 1), ($Value - 1), 0) }
+    else { return [string[]]@() }
+    $kept = @($to | Where-Object { $_ -ne $Value } | Select-Object -Unique)
+    return [string[]]@($kept | ForEach-Object { if ($_ -lt 0) { "($_)" } else { [string]$_ } })
+}
+
+function Get-PSMutationNumberBoundaryCandidate {
+    # integer N -> N-1 and -> 0; fractional N -> N+1, N-1 and 0. See the value function above.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.ConstantExpressionAst]))
+    foreach ($n in $nodes) {
+        if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
+        foreach ($to in (Get-PSMutationNumberBoundaryValue -Value $n.Value)) {
+            New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $to -Operator 'NumberBoundary'
+        }
+    }
+}
+
+function Get-PSMutationIteratorRange {
+    # Offset ranges of every `for` loop's ITERATOR, where ArithmeticOperator does not reach.
+    #
+    # `$i++` there turned into `$i--` is a loop that never ends, every time: the verdict is always
+    # a timeout, paid for in full. Kept apart from the loop-condition zone every operator shares,
+    # because NumberLiteral and BinaryOperator have always mutated the iterator and narrowing them
+    # now would drop mutants an existing report already counts.
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Ast)
+    $loops = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.ForStatementAst]))
+    # Comma operator so an empty result stays an [array] through the return, as in Get-PSMutationLoopRange.
+    return , @($loops | Where-Object { $_.Iterator } | ForEach-Object {
+        [pscustomobject]@{ Start = $_.Iterator.Extent.StartOffset; End = $_.Iterator.Extent.EndOffset }
+    })
+}
+
+function Get-PSMutationIncrementCandidate {
+    # `$i++` <-> `$i--` and `++$i` <-> `--$i`. The whole expression is spliced, operand included,
+    # because the operator token has no extent of its own on the AST.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.UnaryExpressionAst]))
+    foreach ($n in $nodes) {
+        $operand = $n.Child.Extent.Text
+        $to = switch ($n.TokenKind) {
+            'PostfixPlusPlus' { "$operand--" }
+            'PostfixMinusMinus' { "$operand++" }
+            'PlusPlus' { "--$operand" }
+            'MinusMinus' { "++$operand" }
+        }
+        # No `default { $null }`: a switch that matches nothing yields nothing already, so the
+        # clause would be a branch whose forcing no test could ever see.
+        if (-not $to) { continue }
+        if (Test-PSMutationInLoop -Extent $n.Extent -Ranges $Ranges) { continue }
+        New-PSMutationCandidate -Extent $n.Extent -File $File -Original $n.Extent.Text -Mutated $to -Operator 'ArithmeticOperator'
+    }
+}
+
+function Get-PSMutationArithmeticCandidate {
+    # % -> *, the compound assignments (+= <-> -=, *= <-> /=, %= -> *=), and ++ <-> --.
+    #
+    # Not inside a for loop's iterator: see Get-PSMutationIteratorRange.
+    [OutputType([pscustomobject[]])]
+    [CmdletBinding()]
+    param($Ast, [string]$File, [object[]]$Ranges = @())
+    # Assigned first, not wrapped in @(): the range list comes back comma-protected, and @() around
+    # the call would nest it, handing Test-PSMutationInLoop one range whose Start is every Start.
+    $iterators = Get-PSMutationIteratorRange -Ast $Ast
+    $zone = @($Ranges) + $iterators
+    Get-PSMutationSwapCandidate -Ast $Ast -File $File -Ranges $zone -Map $script:PSMutationRemainderMap -Operator 'ArithmeticOperator'
+    $nodes = @(Get-PSMutationNodeByKind -Ast $Ast -Type ([System.Management.Automation.Language.AssignmentStatementAst]))
+    foreach ($n in $nodes) {
+        $ext = $n.ErrorPosition
+        $to = $script:PSMutationCompoundMap[$ext.Text]
+        if (-not $to) { continue }
+        if (Test-PSMutationInLoop -Extent $ext -Ranges $zone) { continue }
+        New-PSMutationCandidate -Extent $ext -File $File -Original $ext.Text -Mutated $to -Operator 'ArithmeticOperator'
+    }
+    Get-PSMutationIncrementCandidate -Ast $Ast -File $File -Ranges $zone
 }
 
 function Get-PSMutationStringCandidate {
@@ -712,6 +810,8 @@ $script:PSMutationOperatorMap = @{
     'CaseSensitivity' = 'Get-PSMutationCaseCandidate'
     'BitwiseOperator' = 'Get-PSMutationBitwiseCandidate'
     'StringOperatorRemoval' = 'Get-PSMutationStringOperatorCandidate'
+    'NumberBoundary' = 'Get-PSMutationNumberBoundaryCandidate'
+    'ArithmeticOperator' = 'Get-PSMutationArithmeticCandidate'
 }
 
 function Get-PSMutationCandidate {
@@ -726,7 +826,7 @@ function Get-PSMutationCandidate {
         Operator classes to emit. Defaults to the four expression operators: BinaryOperator,
         BooleanLiteral, NumberLiteral, NegationRemoval.
 
-        EIGHT more are opt-in, not one. ConditionalBoundary reaches off-by-one errors,
+        TEN more are opt-in, not one. ConditionalBoundary reaches off-by-one errors,
         ConditionForcing reaches a bare guard with no comparison in it, ReturnValue reaches a
         result nothing asserts on, and StringLiteral is high-volume and low-signal. The first
         three are what stop structural code scoring a vacuous 100%; each roughly doubles the
@@ -735,6 +835,8 @@ function Get-PSMutationCandidate {
         BinaryOperator never touched -- -like, -match, -contains, -in, -is, every -c/-i
         spelling, -band, -replace, -split, -join -- and are opt-in for the same reason: on by
         default, they would lower the score of a repo that changed nothing but its PSMutant.
+        NumberBoundary and ArithmeticOperator (#260) do the same for numbers: N-1 and 0 where
+        NumberLiteral tries only N+1, fractional literals, %, ++/--, and += and its siblings.
 
         An unknown name is an error, not an empty result: a misspelling in a config would
         otherwise be dropped and then written into the report as though it had run, handing back
