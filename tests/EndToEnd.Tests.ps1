@@ -57,6 +57,7 @@ Describe 'Test-Flag' {
         operators        = @('BinaryOperator', 'BooleanLiteral')
         thresholds       = @{ high = 85; low = 70; break = $null }
         reportPath       = 'reports/e2e.json'
+        mutationTestingReportPath = 'reports/e2e.mte.json'
     }
     $script:configFile = Join-Path $script:proj 'mutation.config.json'
     $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
@@ -101,6 +102,22 @@ Describe 'Invoke-PSMutation end-to-end' {
             '3:2:BooleanLiteral:$false -> $true:Survived'
         )
     }
+    It 'writes every mutant to the mutation testing report, placed on the text it replaces (#261)' {
+        $text = Get-Content (Join-Path $script:proj 'reports/e2e.mte.json') -Raw
+        $schema = Get-Content -Raw (Join-Path $PSScriptRoot 'vendor/mutation-testing-elements/mutation-testing-report-schema-3.9.0.json')
+        Test-Json -Json $text -Schema $schema | Should-BeTrue
+        $file = ($text | ConvertFrom-Json).files.'src/calc.ps1'
+        $file.source | Should-Be $script:originalSrc
+        @($file.mutants | ForEach-Object {
+                '{0} {1}:{2}-{3}:{4} {5} {6}' -f $_.mutatorName, $_.location.start.line, $_.location.start.column,
+                $_.location.end.line, $_.location.end.column, $_.replacement, $_.status
+            }) | Should-BeCollection @(
+            'BinaryOperator 1:38-1:41 -le Killed'
+            'BooleanLiteral 2:49-2:54 $false Survived'
+            'BooleanLiteral 2:71-2:77 $true Survived'
+        )
+    }
+
     It 'returns a consistent summary' {
         ($script:result.Killed + $script:result.Survived) | Should-Be $script:result.Total
         $script:result.ExitCode | Should-Be 0   # thresholds.break is null -> report-only

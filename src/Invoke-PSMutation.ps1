@@ -187,7 +187,9 @@ function Get-PSMutationRunContext {
         ReportPath       = $reportPath
         # $null when the config asks for no SARIF. Scoped beside the report, for the reason
         # Get-PSMutationSarifPath gives: a partial log uploaded as the project's closes alerts.
-        SarifPath        = Get-PSMutationSarifPath -Cfg $Cfg -SourceRoot $SourceRoot -Scoped ($null -ne $ChangedFile)
+        SarifPath        = Get-PSMutationOptionalOutputPath -Cfg $Cfg -Key 'sarifPath' -SourceRoot $SourceRoot -Scoped ($null -ne $ChangedFile)
+        # Scoped too: a report of a few files published as the project's reads as the project.
+        MutationTestingReportPath = Get-PSMutationOptionalOutputPath -Cfg $Cfg -Key 'mutationTestingReportPath' -SourceRoot $SourceRoot -Scoped ($null -ne $ChangedFile)
         # $null on a whole-tree run, which is what the report writer keys its `mode` marker off
         # and what tells a reader the score covered everything in `mutate`.
         ChangedFiles     = $ChangedFile
@@ -424,6 +426,9 @@ function Invoke-PSMutationRun {
                 -Operators $ctx.Operators -Equivalents $cfg.equivalents -Summary $summary `
                 -ModuleVersion "$($ctx.ProvenanceArgs.ModuleVersion)")
         $band = Get-PSMutationScoreBand -Cfg $cfg
+        Write-PSMutationOutput -Quiet:$Quiet -Lines @(Export-PSMutationMutationTestingReport -Path $ctx.MutationTestingReportPath `
+                -Results $results -Candidates $all -SandboxRoot $sandbox -Equivalents $cfg.equivalents -High $band.High -Low $band.Low `
+                -ModuleVersion "$($ctx.ProvenanceArgs.ModuleVersion)")
         $summaryLines = Get-PSMutationSummaryLine -Summary $summary -Results $results `
             -High $band.High -Low $band.Low -ReportPath $ctx.ReportPath -Equivalents $cfg.equivalents -Exclusion $ctx.Exclusion -PerFile (Get-PSMutationPerFileScore -Results $results -Equivalents $cfg.equivalents)
         Write-PSMutationOutput -Quiet:$Quiet -Lines $summaryLines

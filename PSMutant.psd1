@@ -43,6 +43,7 @@
             ReleaseNotes = 'PSMutant 0.9.0
 
 - Two opt-in operators reach the numbers and arithmetic the defaults never touched.
+- Every mutant can be written in the format Stryker''s tools read.
 
 Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.0'
         }

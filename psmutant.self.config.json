@@ -13,6 +13,7 @@
     "src/PSMutation.Operators.ps1",
     "src/PSMutation.Report.ps1",
     "src/PSMutation.Sarif.ps1",
+    "src/PSMutation.MutationTestingReport.ps1",
     "src/PSMutation.Recheck.ps1",
     "src/PSMutation.Incremental.ps1",
     "src/PSMutation.Pester.ps1",
@@ -34,6 +35,9 @@
     ],
     "src/PSMutation.Sarif.ps1": [
       "tests/Sarif.Tests.ps1"
+    ],
+    "src/PSMutation.MutationTestingReport.ps1": [
+      "tests/MutationTestingReport.Tests.ps1"
     ],
     "src/PSMutation.Recheck.ps1": [
       "tests/Recheck.Tests.ps1"
@@ -98,7 +102,8 @@
     "src/PSMutation.Config.ps1:Get-PSMutationConfigTypeFault:10 -> 9": "The N-1 twin of the 10 -> 11 declaration: a config nests 3 deep at its worst, so 9 serialises it as completely as 10.",
     "src/PSMutation.Sarif.ps1:Export-PSMutationSarif:0 -> (-1)": "Get-PSMutationSarifDocument builds exactly one run, so runs[0] and runs[-1] are the same run.",
     "src/PSMutation.Config.ps1:Get-PSMutationSandboxPlan:0 -> (-1)": "Starting at -1 adds one pass at the last index, which writes the same pair the loop's last pass writes again. The list is never empty here: the config schema requires at least one mutate entry.",
-    "src/PSMutation.Inline.ps1:Get-PSMutationTokenIndexAt:0 -> (-1)": "BinarySearch returns the bitwise complement of the insertion point when there is no match, which is -1 only for insertion at 0. Admitting -1 as a hit returns -1, exactly what the miss arm returns."
+    "src/PSMutation.Inline.ps1:Get-PSMutationTokenIndexAt:0 -> (-1)": "BinarySearch returns the bitwise complement of the insertion point when there is no match, which is -1 only for insertion at 0. Admitting -1 as a hit returns -1, exactly what the miss arm returns.",
+    "src/PSMutation.MutationTestingReport.ps1:Save-PSMutationMutationTestingDocument:6 -> 7": "ConvertTo-Json -Depth N and N+1 write the same bytes for a graph no deeper than N, and a mutation testing report nests a position's fields exactly 6 deep. The value that matters is the floor: at 5 the positions vanish, and the suite reads a column back."
   },
   "thresholds": {
     "high": 85,

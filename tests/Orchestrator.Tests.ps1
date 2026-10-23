@@ -30,7 +30,7 @@ BeforeAll {
     $src = Join-Path (Split-Path -Parent $PSScriptRoot) 'src'
     foreach ($f in 'PSMutation.Operators.ps1', 'PSMutation.Sandbox.ps1', 'PSMutation.Pester.ps1',
         'PSMutation.Config.ps1', 'PSMutation.Output.ps1', 'PSMutation.Killers.ps1', 'PSMutation.Runner.ps1', 'PSMutation.Report.ps1',
-        'PSMutation.Sarif.ps1', 'PSMutation.Recheck.ps1', 'PSMutation.Inline.ps1', 'PSMutation.Glob.ps1', 'PSMutation.Incremental.ps1', 'Invoke-PSMutation.ps1') {
+        'PSMutation.Sarif.ps1', 'PSMutation.MutationTestingReport.ps1', 'PSMutation.Recheck.ps1', 'PSMutation.Inline.ps1', 'PSMutation.Glob.ps1', 'PSMutation.Incremental.ps1', 'Invoke-PSMutation.ps1') {
         . (Join-Path $src $f)
     }
     # The unmutated suite check (#248) runs real suites in real runspaces, and every run here is
@@ -256,6 +256,46 @@ Describe 'Invoke-PSMutation' {
         $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
         { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should-Throw
         @(Get-ChildItem $script:root -Recurse -Filter '*.sarif').Count | Should-Be 0
+    }
+
+    It 'hands the mutation testing report every row and candidate, and prints its line unless quiet (#261)' {
+        # The export itself is pinned in tests/MutationTestingReport.Tests.ps1 and against real
+        # files in EndToEnd; what this file owns is that the run calls it, and with what.
+        Mock Export-PSMutationMutationTestingReport {
+            $script:mtr = @{ Path = $Path; Results = @($Results); Candidates = @($Candidates); High = $High; Low = $Low }
+            [pscustomobject]@{ Role = 'Muted'; Text = 'MTR-LINE' }
+        }
+        $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName mutationTestingReportPath -NotePropertyValue 'reports/run.mte.json'
+        $cfg | Add-Member -NotePropertyName thresholds -NotePropertyValue ([pscustomobject]@{ high = 91; low = 72 }) -Force
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        $out = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root } 6>&1 | Out-String
+        $out | Should-BeLikeString '*MTR-LINE*'
+        $script:mtr.Path | Should-BeLikeString '*reports*run.mte.json'
+        @($script:mtr.Candidates) | Should-BeCollection @('cand-1', 'cand-2')
+        @($script:mtr.Results).Count | Should-Be 2
+        $script:mtr.High | Should-Be 91
+        $script:mtr.Low | Should-Be 72
+        $quiet = & { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } 6>&1 | Out-String
+        $quiet | Should-NotBeLikeString '*MTR-LINE*'
+    }
+
+    It 'asks for no mutation testing report unasked, for a recheck, or for an interrupted run' {
+        Mock Export-PSMutationMutationTestingReport { $script:mtrPaths.Add([string]$Path) }
+        $script:mtrPaths = [System.Collections.Generic.List[string]]::new()
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        @($script:mtrPaths) | Should-BeCollection @('')
+        $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName mutationTestingReportPath -NotePropertyValue 'reports/run.mte.json'
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        Mock Invoke-PSMutationRecheckRun { [pscustomobject]@{ Mode = 'Recheck'; Rechecked = 2 } }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -RecheckFrom 'prior.json' -Quiet | Out-Null
+        Mock Invoke-PSMutationLoop {
+            $Sink.Add([pscustomobject]@{ Id = 'm2'; Status = 'Survived'; File = 'src/a.ps1'; Line = 2 })
+            throw 'interrupted'
+        }
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet } | Should-Throw
+        @($script:mtrPaths) | Should-BeCollection @('')
     }
 
     It 'removes the sandbox even when the run blows up half way through' {

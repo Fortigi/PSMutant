@@ -187,6 +187,13 @@
       ],
       "description": "Where a SARIF 2.1.0 log of the surviving mutants is written, relative to the source root unless rooted -- for GitHub code scanning or Azure DevOps Advanced Security. Absent, null or empty means no SARIF. A -ChangedFile run writes a '.changed' sibling; a -RecheckFrom run, a -ListOnly preview and an interrupted run write none."
     },
+    "mutationTestingReportPath": {
+      "type": [
+        "string",
+        "null"
+      ],
+      "description": "Where a mutation testing report of every mutant is written, in the mutation-testing-elements format that Stryker's HTML viewer and dashboard read, relative to the source root unless rooted. Absent, null or empty means none. A -ChangedFile run writes a '.changed' sibling; a -RecheckFrom run, a -ListOnly preview and an interrupted run write none."
+    },
     "recordAllKillers": {
       "type": "boolean",
       "description": "Record every test that kills a mutant rather than only the first. Default false. Setting it forfeits Pester's early stop on failure, which costs roughly 63% more wall clock."

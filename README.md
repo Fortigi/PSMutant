@@ -208,6 +208,29 @@ because Azure Pipelines checks out shallow and detached by default), and both wa
 the log. It uploads to Advanced Security from full runs only: a pull request's log covers the
 files it changed, and its findings already reach the PR as build-summary warnings.
 
+### Browsing every mutant: the mutation testing report
+
+Set `mutationTestingReportPath` and a run also writes every mutant it ran in the
+[`mutation-testing-elements`](https://github.com/stryker-mutator/mutation-testing-elements) report
+format, the open format Stryker's tools read. Each file carries its source, and each mutant its
+operator, its exact start and end, its replacement and its verdict, so a viewer can draw it in place:
+
+```json
+{ "reportPath": "reports/ps-mutation.json", "mutationTestingReportPath": "reports/mutation-testing.json" }
+```
+
+PSMutant writes the data and **ships no viewer**. Open the file with Stryker's
+`<mutation-test-report-app>` HTML component, or upload it to the Stryker dashboard.
+
+- Statuses map one to one: `Killed`, `Survived`, `TimedOut` as `Timeout`, `CompileError` and
+  `RuntimeError`. A declared equivalent is `Ignored`, with its argument as the reason; both tools
+  leave it out of the score.
+- Mutants on lines no test ran (`coveredLinesOnly`) are **not listed**. The format would count them
+  as `NoCoverage`, undetected, and show a lower score than the one the run gated on; the JSON
+  report counts them.
+- Which runs write one is the same as for SARIF: a full run writes the path, a `-ChangedFile` run a
+  `.changed` sibling, and a recheck, preview or interrupted run none.
+
 ### Seeing what a config would mutate, before it costs you minutes
 
 ```powershell
@@ -666,6 +689,7 @@ schema cannot give.
 | `thresholds.high` / `thresholds.low` | Colour bands for the console score: green at or above `high`, yellow at or above `low`, red below (defaults 85 / 70). They affect the printed colour only, never the exit code. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |
 | `reportPath` | Where the JSON report is written (relative to `-SourceRoot`). A `-RecheckFrom` run writes `<name>.recheck.json` beside it and never touches this file. |
+| `mutationTestingReportPath` | Where every mutant is written in the `mutation-testing-elements` format, for Stryker's HTML viewer or dashboard (relative to `-SourceRoot` unless rooted). Absent means none. See [Browsing every mutant](#browsing-every-mutant-the-mutation-testing-report). |
 | `sarifPath` | Where a SARIF 2.1.0 log of the survivors is written, for GitHub code scanning or Azure DevOps Advanced Security (relative to `-SourceRoot` unless rooted). Absent means none. A `-ChangedFile` run writes `<name>.changed.sarif`; recheck, preview and interrupted runs write none. See [In CI](#in-ci-survivors-on-the-pull-request). |
 
 **Unrecognised keys are an error, not a warning.** A misspelling used to resolve to `null`
