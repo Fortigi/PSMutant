@@ -14,6 +14,15 @@ where `$i++` turned into `$i--` is a loop that never ends. Both are opt-in, like
 after the first four: on by default they would lower the score of a repo that changed nothing but
 its PSMutant. Add them to `operators` to use them.
 
+**Every mutant can be written in the format Stryker's tools read.** Set `mutationTestingReportPath`
+and a run also writes a `mutation-testing-elements` report: each mutated file with its source, and
+each mutant with its operator, its exact start and end, its replacement and its verdict, which is what
+Stryker's HTML viewer and dashboard need to draw it in place. PSMutant writes the data and ships no
+viewer. A declared equivalent is `Ignored` with its argument as the reason, `TimedOut` is `Timeout`,
+and mutants on lines no test ran are left out, so the score a viewer shows is the one the run gated
+on. Like the SARIF log it is opt-in, a `-ChangedFile` run writes a `.changed` sibling, and a recheck,
+a preview or an interrupted run writes none.
+
 ## [0.8.0] - 2026-10-19
 
 ### For consumers

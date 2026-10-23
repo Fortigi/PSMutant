@@ -990,13 +990,15 @@ function Get-PSMutationReportPath {
     return Resolve-PSMutationOutputPath -Raw $raw -SourceRoot $SourceRoot
 }
 
-function Get-PSMutationSarifPath {
+function Get-PSMutationOptionalOutputPath {
     <#
     .SYNOPSIS
-        Where the SARIF log is written, or $null when the config asks for none.
+        Where an opt-in output -- the SARIF log, the mutation testing report -- is written, or
+        $null when the config asks for none.
     .DESCRIPTION
-        Opt-in, unlike the report: absent means no SARIF. A SARIF file is something a pipeline
-        UPLOADS, and one appearing unasked would be uploaded by nobody and committed by accident.
+        Opt-in, unlike the report: absent means none. Both are files a pipeline UPLOADS or
+        publishes, and one appearing unasked would be published by nobody and committed by
+        accident. -Key names the config key, which is also the key a refusal names.
 
         A -ChangedFile run writes the `.changed` sibling, for the reason the report does and one
         more. Its survivors are those of a few files; uploaded as the project's log, every alert
@@ -1008,15 +1010,16 @@ function Get-PSMutationSarifPath {
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] $Cfg,
+        [Parameter(Mandatory)] [string]$Key,
         [Parameter(Mandatory)] [string]$SourceRoot,
         [bool]$Scoped
     )
     # The key's PRESENCE is the switch, so an explicit null or empty string is "off" exactly as
     # an omitted key is. A blank that went on to the fault check would refuse a config the
     # schema accepts.
-    $raw = [string]$Cfg.sarifPath
+    $raw = [string]$Cfg.$Key
     if ([string]::IsNullOrWhiteSpace($raw)) { return $null }
-    $fault = Get-PSMutationPathFault -Value $raw -Key 'sarifPath'
+    $fault = Get-PSMutationPathFault -Value $raw -Key $Key
     if ($fault) { throw $fault }
     $path = Resolve-PSMutationOutputPath -Raw $raw -SourceRoot $SourceRoot
     return $Scoped ? (Get-PSMutationScopedReportPath -ReportPath $path) : $path

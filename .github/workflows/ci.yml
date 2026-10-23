@@ -54,9 +54,12 @@ jobs:
         os: [ubuntu-latest, windows-latest]
     runs-on: ${{ matrix.os }}
     # The module bounds each mutant with its own timeout, but nothing bounded the job.
-    # A wedged runner would otherwise sit on the 6-hour default. Windows is the slower of
-    # the two, so the limit is set for it rather than for the faster runner.
-    timeout-minutes: 40
+    # A wedged runner would otherwise sit on the 6-hour default. The limit is set by the
+    # leg that carries the self-mutation gate, the Linux one: measured on main after #301's
+    # two operators, 39 minutes in all, 26 of them mutation -- 58 seconds under the 40 this
+    # used to be, and the next PR (#302) went over. 60 leaves room for a few more files
+    # without inviting a wedged runner to sit for an hour unnoticed.
+    timeout-minutes: 60
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:

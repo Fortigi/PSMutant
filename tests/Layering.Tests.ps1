@@ -40,6 +40,7 @@ BeforeAll {
         'Invoke-PSMutation.ps1 -> PSMutation.Runner.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Sandbox.ps1'
         'Invoke-PSMutation.ps1 -> PSMutation.Sarif.ps1'
+        'Invoke-PSMutation.ps1 -> PSMutation.MutationTestingReport.ps1'
 
         # Config resolves the sandbox plan and the operator list, so it reads both
         # vocabularies. It decides; neither of them decides anything about config.
@@ -80,6 +81,11 @@ BeforeAll {
         # report's equivalence key, so an alert and the declaration that retires it agree.
         'PSMutation.Sarif.ps1 -> PSMutation.Output.ps1'
         'PSMutation.Sarif.ps1 -> PSMutation.Report.ps1'
+        # The mutation testing report (#261) is the same kind of projection: it reads a
+        # declaration with the report's key, and names a file the way every other output does.
+        'PSMutation.MutationTestingReport.ps1 -> PSMutation.Output.ps1'
+        'PSMutation.MutationTestingReport.ps1 -> PSMutation.Report.ps1'
+        'PSMutation.MutationTestingReport.ps1 -> PSMutation.Sandbox.ps1'
     )
 
     function Get-SrcAst {
