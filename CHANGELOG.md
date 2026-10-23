@@ -23,6 +23,15 @@ and mutants on lines no test ran are left out, so the score a viewer shows is th
 on. Like the SARIF log it is opt-in, a `-ChangedFile` run writes a `.changed` sibling, and a recheck,
 a preview or an interrupted run writes none.
 
+**`-Incremental` now reuses a file covered by more than one test file.** Such a file -- two
+entries in its `tests` mapping, or no mapping at all, so the whole suite of two or more files covers
+it -- was evaluated in full on every run. Its covering files were joined into one path with a space
+in it: measuring what the suite executes failed on a path that does not exist, and the sandbox's
+random name went into the file's key, so the key never matched the next run's. No verdict was ever
+wrong, because a key that does not match means "evaluate again"; the cost was the time. Found by
+measuring this repository's own incremental runs, where the one file mapped to two test files
+re-ran 85 mutants with nothing changed.
+
 ## [0.8.0] - 2026-10-19
 
 ### For consumers

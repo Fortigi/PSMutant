@@ -246,7 +246,11 @@ function Get-PSMutationCoveringSuitePath {
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string]$File, [Parameter(Mandatory)] [hashtable]$Plan, [Parameter(Mandatory)] [string]$SandboxRoot)
-    $suite = [string[]]@(Get-PSMutationCoveringSuite -File $File -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests)
+    # Assigned, not wrapped in @(): the suite comes back comma-protected, and @() around the call
+    # nested it, so the [string[]] cast joined a two-file suite into ONE path with a space in it.
+    # Dependency measurement then failed on a path that does not exist, and the sandbox's own
+    # random name ended up inside the key -- so a file mapped to two test files was never reused.
+    $suite = Get-PSMutationCoveringSuite -File $File -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests
     return [pscustomobject]@{
         Suite = $suite
         Relative = [string[]]@(foreach ($t in $suite) { ConvertFrom-PSMutationSandboxPath -Path $t -SandboxRoot $SandboxRoot })

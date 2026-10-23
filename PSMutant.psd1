@@ -44,6 +44,7 @@
 
 - Two opt-in operators reach the numbers and arithmetic the defaults never touched.
 - Every mutant can be written in the format Stryker''s tools read.
+- -Incremental now reuses a file covered by more than one test file.
 
 Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.0'
         }
