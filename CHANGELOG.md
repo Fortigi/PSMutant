@@ -32,6 +32,16 @@ wrong, because a key that does not match means "evaluate again"; the cost was th
 measuring this repository's own incremental runs, where the one file mapped to two test files
 re-ran 85 mutants with nothing changed.
 
+**A dependency measurement that fails no longer fails the run's CI step.** Recording keys,
+`-Incremental` runs each covering suite once more with coverage to see what it executes. When that
+run went wrong, Pester's error reached the caller's error stream and Pester set the global
+`$LASTEXITCODE` -- which a GitHub Actions `pwsh` step exits with -- so the step failed after a run
+that had scored fine. The measurement now captures what Pester writes and restores `$LASTEXITCODE`.
+A suite that wrote an error, threw, returned nothing or did not pass is treated as unmeasured: its
+files get no key, the next run evaluates them in full, and the run says so in one line. Not passing
+counts too, because a suite that stopped part-way ran fewer files than it does, and a key short of a
+file would later reuse a verdict whose dependency had changed.
+
 ## [0.8.0] - 2026-10-19
 
 ### For consumers
