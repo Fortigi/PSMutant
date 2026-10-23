@@ -35,6 +35,8 @@ concurrency:
 # more authority than it uses, which is also the one that runs the most third-party code.
 permissions:
   contents: read
+  # To download main's self-mutation report, which a pull request's run reuses verdicts from.
+  actions: read
 
 jobs:
   # Renamed from `test` because a matrix suffixes its legs: the checks are now
@@ -265,13 +267,36 @@ jobs:
       # and that is exercised on both by the unit tests and by the compatibility guard
       # below, which runs a real end-to-end mutation. This step is the long pole of the
       # chain, so doubling it buys the least of anything here.
+      # A pull request reuses main's verdicts for every file whose key is unchanged: the report
+      # main's last green push run kept, put where -Incremental reads the previous report. The
+      # plan says when that is safe (Get-PSMutantReusePlan). Anything else -- no such run, an
+      # expired artifact, a version the report was not written by -- and PSMutant evaluates every
+      # mutant and says why, so a failure here costs time and never a verdict.
+      - name: Main's self-mutation report, for reuse
+        if: matrix.os == 'ubuntu-latest' && steps.plan.outputs.selfmutation == 'true' && steps.plan.outputs.reuse == 'true'
+        continue-on-error: true
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          $run = gh run list --repo $env:GITHUB_REPOSITORY --workflow ci.yml --branch main --event push --status success --limit 1 --json databaseId --jq '.[0].databaseId'
+          if (-not $run) { Write-Output 'No green push run on main to reuse verdicts from.'; return }
+          gh run download $run --repo $env:GITHUB_REPOSITORY --name self-mutation-report --dir reports
+          Write-Output "Reusing verdicts from main's run $run where a file's key is unchanged."
+
+      # -Incremental on EVERY run, and it means two things. Without a previous report -- a push to
+      # main, or a pull request the plan does not let reuse -- it evaluates every mutant and records
+      # each file's key, which costs about a fifth more and is what the next pull request reuses.
+      # With main's report in place, it evaluates only files whose key changed. Measured on this
+      # repo: 28 minutes recording; 2.5 to 5 with a test, a leaf file or Config.ps1 touched; 22
+      # with Runner.ps1 touched; verdicts identical to a full run in every case.
       - name: Mutation test PSMutant against itself (gated)
         if: matrix.os == 'ubuntu-latest' && steps.plan.outputs.selfmutation == 'true'
         shell: pwsh
         run: |
           Import-Module Pester -RequiredVersion $env:PESTER_VERSION -Force
           Import-Module ./PSMutant.psd1 -Force
-          $result = Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot . -Quiet
+          $result = Invoke-PSMutation -ConfigFile ./psmutant.self.config.json -SourceRoot . -Quiet -Incremental
           Write-Host "Self mutation score: $($result.Score)% ($($result.Killed)/$($result.Total))"
           # Read the REASON off the result rather than assuming one. Exit code 1 means either a
           # stale equivalence declaration or a score under the break threshold, and this line

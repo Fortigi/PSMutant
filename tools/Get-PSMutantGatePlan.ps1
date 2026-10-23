@@ -1,4 +1,4 @@
-# Which expensive CI gates this change can affect. Writes `selfmutation` and `compatibility` to
+# Which expensive CI gates this change can affect. Writes `selfmutation`, `compatibility` and `reuse` to
 # $GITHUB_OUTPUT for ci.yml to read, and prints why, so a skipped gate is never a silent one.
 #
 # The decision is Get-PSMutantGatePlan in GateDecisions.ps1, with tests. This script only gathers
@@ -26,9 +26,11 @@ if (-not $PSBoundParameters.ContainsKey('ChangedPath') -and $EventName -eq 'pull
 $config = Get-Content -LiteralPath (Join-Path $repo 'psmutant.self.config.json') -Raw | ConvertFrom-Json
 $covering = @(foreach ($p in $config.tests.PSObject.Properties) { @($p.Value) })
 
-$plan = Get-PSMutantGatePlan -EventName $EventName -ChangedPath $ChangedPath -CoveringSuite $covering
+$subtrees = @($config.sandboxSubtrees)
+$plan = Get-PSMutantGatePlan -EventName $EventName -ChangedPath $ChangedPath -CoveringSuite $covering -SandboxSubtree $subtrees
 foreach ($line in $plan.Reason) { Write-Output $line }
 if ($env:GITHUB_OUTPUT) {
     "selfmutation=$($plan.SelfMutation.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
     "compatibility=$($plan.Compatibility.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
+    "reuse=$($plan.Reuse.ToString().ToLowerInvariant())" | Out-File -FilePath $env:GITHUB_OUTPUT -Append -Encoding utf8
 }
