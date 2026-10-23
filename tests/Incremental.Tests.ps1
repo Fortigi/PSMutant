@@ -182,6 +182,17 @@ Describe 'Get-PSMutationSuiteDependency' {
         finally { $global:LASTEXITCODE = 0 }
     }
 
+    It 'measures a passing suite whose tests provoke errors on purpose' {
+        # The regression #306's first CI run found: a Should-Throw writes an error, and treating
+        # that as a failed measurement left every real suite unmeasured.
+        $root = NewTree @{
+            'src/a.ps1'         = 'function Get-A { param($x) if (-not $x) { throw ''no x'' }; $x }'
+            'tests/a.Tests.ps1' = 'BeforeAll { . "$PSScriptRoot/../src/a.ps1" }; Describe ''a'' { It ''throws'' { { Get-A } | Should-Throw -ExceptionMessage ''no x'' }; It ''ok'' { Get-A 1 | Should-Be 1 } }'
+        }
+        Get-PSMutationSuiteDependency -Suite @((Join-Path $root 'tests/a.Tests.ps1')) -Source @('src/a.ps1') -SandboxRoot $root |
+            Should-Be 'src/a.ps1'
+    }
+
     It 'leaves the caller''s exit code alone after a measurement that passed' {
         $root = NewTree @{ 'src/a.ps1' = 'function Get-A { 1 }'; 'tests/a.Tests.ps1' = 'BeforeAll { . "$PSScriptRoot/../src/a.ps1" }; Describe ''a'' { It ''ok'' { Get-A | Should-Be 1 } }' }
         $global:LASTEXITCODE = 5
@@ -199,14 +210,21 @@ Describe 'Get-PSMutationDependencyFault (#305)' {
         Should-BeNull -Actual (Get-PSMutationDependencyFault -Result ([pscustomobject]@{ Result = 'Passed' }) -Written @())
     }
 
-    It 'names the first error the run wrote, whatever its result -- one error is enough' {
-        $r = [pscustomobject]@{ Result = 'Passed' }
-        Get-PSMutationDependencyFault -Result $r -Written @('first', 'second') | Should-Be 'first'
-        Get-PSMutationDependencyFault -Result $r -Written @('only') | Should-Be 'only'
+    It 'trusts a run that passed, whatever its tests caused to be written' {
+        # Every Should-Throw writes an error. Read as faults, they left no suite of this repo with
+        # a key on #306's first CI run.
+        Should-BeNull -Actual (Get-PSMutationDependencyFault -Result ([pscustomobject]@{ Result = 'Passed' }) -Written @('provoked'))
+    }
+
+    It 'explains a run with no result by the first error it wrote -- one error is enough' {
+        Get-PSMutationDependencyFault -Result $null -Written @('first', 'second') | Should-Be 'first'
+        Get-PSMutationDependencyFault -Result $null -Written @('only') | Should-Be 'only'
     }
 
     It 'says when Pester returned nothing, or the run did not pass' {
         Get-PSMutationDependencyFault -Result $null -Written @() | Should-Be 'Pester returned no result'
+        Get-PSMutationDependencyFault -Result ([pscustomobject]@{ Result = 'Failed' }) -Written @('x') |
+            Should-Be "the suite's run ended 'Failed'"
         Get-PSMutationDependencyFault -Result ([pscustomobject]@{ Result = 'Failed' }) -Written @() |
             Should-Be "the suite's run ended 'Failed'"
     }

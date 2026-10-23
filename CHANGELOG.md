@@ -37,10 +37,11 @@ re-ran 85 mutants with nothing changed.
 run went wrong, Pester's error reached the caller's error stream and Pester set the global
 `$LASTEXITCODE` -- which a GitHub Actions `pwsh` step exits with -- so the step failed after a run
 that had scored fine. The measurement now captures what Pester writes and restores `$LASTEXITCODE`.
-A suite that wrote an error, threw, returned nothing or did not pass is treated as unmeasured: its
-files get no key, the next run evaluates them in full, and the run says so in one line. Not passing
-counts too, because a suite that stopped part-way ran fewer files than it does, and a key short of a
-file would later reuse a verdict whose dependency had changed.
+A suite whose run returned nothing, threw or did not pass is treated as unmeasured: its files get
+no key, the next run evaluates them in full, and the run says so in one line. Not passing counts
+because a suite that stopped part-way ran fewer files than it does, and a key short of a file would
+later reuse a verdict whose dependency had changed. An error a passing test provokes on purpose --
+every `Should-Throw` writes one -- does not count.
 
 ## [0.8.0] - 2026-10-19
 

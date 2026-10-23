@@ -118,8 +118,9 @@ function Get-PSMutationSuiteDependency {
         gives: the profiler tracer fails a test that touches a class. The suite's own test files are
         left out -- each key names them anyway.
 
-        THROWS when the measurement cannot be trusted (#305): Pester wrote an error, threw, returned
-        nothing, or the suite did not pass. Each of those is a run that may have executed less than
+        THROWS when the measurement cannot be trusted (#305): Pester returned nothing (the first error
+        it wrote then says why), threw, or the suite did not pass. An error a passing test provokes
+        is not one of those. Each of those is a run that may have executed less than
         the suite does, and a dependency list short of a file is a key that later calls a changed
         verdict unchanged. What Pester writes is captured rather than left on the error stream,
         because there it failed a CI step whose run had scored fine -- a pwsh step on GitHub fails on
@@ -162,17 +163,23 @@ function Get-PSMutationSuiteDependency {
 }
 
 function Get-PSMutationDependencyFault {
-    # Why one measuring run cannot be trusted, or nothing when it can. Pure. The first error Pester
-    # wrote is the most specific thing to say; a run that wrote none and still did not pass says how
-    # it ended instead.
+    # Why one measuring run cannot be trusted, or nothing when it can. Pure.
+    #
+    # The RESULT decides, never the error stream alone. -ErrorVariable collects every error written
+    # during the run, and that includes the ones a passing test provokes on purpose -- each
+    # Should-Throw writes one. Read as faults they marked every real suite of this repo unmeasured
+    # on #306's first CI run, so nothing got a key and nothing could ever be reused. A written error
+    # is only the explanation when there is no result to judge by.
     [OutputType([string])]
     [CmdletBinding()]
     param(
         [AllowNull()] $Result,
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Written
     )
-    if ($Written.Count -gt 0) { return [string]$Written[0] }
-    if ($null -eq $Result) { return 'Pester returned no result' }
+    if ($null -eq $Result) {
+        if ($Written.Count -gt 0) { return [string]$Written[0] }
+        return 'Pester returned no result'
+    }
     if ($Result.Result -ne 'Passed') { return "the suite's run ended '$($Result.Result)'" }
 }
 
