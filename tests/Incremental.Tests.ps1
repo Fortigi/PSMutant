@@ -224,7 +224,37 @@ Describe 'Select-PSMutationReusedRow' {
     }
 }
 
+Describe 'Get-PSMutationCoveringSuitePath' {
+    It 'keeps each of several mapped test files a path of its own, absolute and relative' {
+        # Two files: one alone reads the same whether or not the list was joined into one string.
+        $root = NewTree @{ 'src/a.ps1' = 'a'; 'tests/a.Tests.ps1' = 't'; 'tests/a2.Tests.ps1' = 't2' }
+        $a = Join-Path $root 'src/a.ps1'; $t1 = Join-Path $root 'tests/a.Tests.ps1'; $t2 = Join-Path $root 'tests/a2.Tests.ps1'
+        $s = Get-PSMutationCoveringSuitePath -File $a -Plan @{ TestsByFile = @{ $a = @($t1, $t2) }; AllTests = @($t1, $t2) } -SandboxRoot $root
+        @($s.Suite) | Should-BeCollection @($t1, $t2)
+        @($s.Relative) | Should-BeCollection @('tests/a.Tests.ps1', 'tests/a2.Tests.ps1')
+    }
+
+    It 'falls back to the whole suite for an unmapped file' {
+        $root = NewTree @{ 'src/b.ps1' = 'b'; 'tests/x.Tests.ps1' = 'x'; 'tests/y.Tests.ps1' = 'y' }
+        $b = Join-Path $root 'src/b.ps1'; $x = Join-Path $root 'tests/x.Tests.ps1'; $y = Join-Path $root 'tests/y.Tests.ps1'
+        @((Get-PSMutationCoveringSuitePath -File $b -Plan @{ TestsByFile = @{}; AllTests = @($x, $y) } -SandboxRoot $root).Relative) |
+            Should-BeCollection @('tests/x.Tests.ps1', 'tests/y.Tests.ps1')
+    }
+}
+
 Describe 'Get-PSMutationIncrementalEntry' {
+    It 'measures a two-file suite as two paths, and keys it the same way twice' {
+        # The key must not depend on the run: before the fix it held the sandbox's random name.
+        $root = NewTree @{ 'src/a.ps1' = 'a'; 'tests/a.Tests.ps1' = 't'; 'tests/a2.Tests.ps1' = 't2' }
+        $a = Join-Path $root 'src/a.ps1'; $t1 = Join-Path $root 'tests/a.Tests.ps1'; $t2 = Join-Path $root 'tests/a2.Tests.ps1'
+        $script:measured = $null
+        Mock Get-PSMutationSuiteDependency { $script:measured = @($Suite); [string[]]@() }
+        $plan = @{ Mutate = @($a); TestsByFile = @{ $a = @($t1, $t2) }; AllTests = @($t1, $t2) }
+        $e = Get-PSMutationIncrementalEntry -File $a -Plan $plan -SandboxRoot $root -Source @('src/a.ps1') -Measured @{}
+        @($script:measured) | Should-BeCollection @($t1, $t2)
+        $e.key | Should-Be (Get-PSMutationIncrementalKey -Path 'src/a.ps1', 'tests/a.Tests.ps1', 'tests/a2.Tests.ps1' -SandboxRoot $root)
+    }
+
     It 'drops the file itself from its dependencies, but not a file whose name differs only in case' {
         # Two files on a case-sensitive file system, and each changes the key on its own. Only the
         # mutate file is written: the filter reads names, and Windows could not hold both.
