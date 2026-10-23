@@ -2095,6 +2095,24 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   A change to `ci.yml` or `pins.env` runs everything, because the run is the only proof a workflow
   change still works.
 
+- **A pull request's self-mutation reuses main's verdicts; main's never does.** Every run passes
+  `-Incremental`. A push to main finds no previous report, so it evaluates every mutant and records
+  each file's key (about a fifth more), and uploads the report as it always did. A pull request the
+  plan allows downloads that report from main's last green push run first, and evaluates only files
+  whose key changed. Measured here, 2300 mutants: 28 minutes recording; 2.5 minutes with nothing
+  changed, under 5 with a test, a leaf file or `Config.ps1` touched, 22 with `Runner.ps1` touched;
+  verdicts identical to a full run every time.
+
+  `Get-PSMutantReusePlan` refuses reuse when a PR changes any non-script file inside a sandbox
+  subtree, because a key hashes what a suite RUNS and cannot see what a test reads as data -- the
+  config schema, the vendored Stryker schema. It is that one shape rather than a list of today's
+  data files. Version, timeout-rule and candidate changes need no rule here: PSMutant refuses to
+  reuse across them itself. A failed download is harmless for the same reason -- no previous
+  report means every mutant is evaluated.
+
+  Main staying un-reused is the point, not caution for its own sake: what a release tags must be a
+  full measurement, so any blind spot the keys have is caught there, at most one merge late.
+
 ## Writing tests here
 
 The house style is a comment naming the *failure the test prevents*, not a restatement

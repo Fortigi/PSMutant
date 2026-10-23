@@ -1001,6 +1001,45 @@ function Test-PSMutantSkipSafePath {
     return ($p -match '^tools/') -and ($p -notmatch '^tools/(Test-PSMutant(PowerShell|Pester)Compatibility|GateDecisions)\.ps1$')
 }
 
+function Get-PSMutantReusePlan {
+    <#
+    .SYNOPSIS
+        Whether a pull request's self-mutation may reuse main's verdicts (-Incremental against
+        main's report), and why.
+    .DESCRIPTION
+        A reuse key hashes the files a covering suite RUNS. It cannot see a file a test reads as
+        data -- a JSON schema, a vendored fixture -- so a change to one could change a verdict the
+        key calls unchanged. Any non-script file inside the sandbox is such a file as far as this
+        rule knows, so a pull request that changes one evaluates every mutant. Stated as that one
+        shape rather than as a list of today's data files, which the next fixture would outgrow.
+
+        Everything else a key cannot see is refused by PSMutant itself rather than here: a changed
+        PSMutant, Pester or PowerShell version, timeout rule, or candidate set evaluates in full.
+
+        Only a pull request reuses. Every other run evaluates every mutant and records the keys
+        the next pull request reuses, so what main is green at is never itself a reused verdict.
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [bool]$Planned,
+        [Parameter(Mandatory)] [bool]$SelfMutation,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$ChangedPath,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$SandboxSubtree
+    )
+    if (-not $Planned) { return [pscustomobject]@{ Reuse = $false; Reason = 'Reuse: no -- this run evaluates every mutant and records the keys a pull request reuses.' } }
+    if (-not $SelfMutation) { return [pscustomobject]@{ Reuse = $false; Reason = 'Reuse: no -- self-mutation does not run.' } }
+    $data = @(foreach ($c in $ChangedPath) {
+            $p = $c -replace '\\', '/'
+            $inside = @($SandboxSubtree | Where-Object { $p.StartsWith("$($_.TrimEnd('/'))/") }).Count -gt 0
+            if ($inside -and $p -notmatch '\.psm?1$') { $p }
+        })
+    if ($data.Count -gt 0) {
+        return [pscustomobject]@{ Reuse = $false; Reason = "Reuse: no -- $($data[0]) is a file a test may read as data, which a reuse key cannot see." }
+    }
+    return [pscustomobject]@{ Reuse = $true; Reason = "Reuse: yes -- main's verdicts for every file whose key is unchanged." }
+}
+
 function Get-PSMutantGatePlan {
     <#
     .SYNOPSIS
@@ -1019,14 +1058,16 @@ function Get-PSMutantGatePlan {
         reads every test file, and both cost a minute. Only what costs many minutes is worth a
         decision that can be wrong.
     .OUTPUTS
-        SelfMutation and Compatibility booleans, and Reason: one line per gate, for the log.
+        SelfMutation, Compatibility and Reuse booleans, and Reason: one line per decision, for the log.
     #>
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [AllowEmptyString()] [string]$EventName,
         [AllowNull()] [AllowEmptyCollection()] [string[]]$ChangedPath,
-        [AllowEmptyCollection()] [string[]]$CoveringSuite = @()
+        [AllowEmptyCollection()] [string[]]$CoveringSuite = @(),
+        # The self config's sandboxSubtrees: what a mutant's tests can read, as data or as code.
+        [AllowEmptyCollection()] [string[]]$SandboxSubtree = @()
     )
     $gates = 'SelfMutation', 'Compatibility'
     $paths = @($ChangedPath | Where-Object { $_ })
@@ -1035,7 +1076,9 @@ function Get-PSMutantGatePlan {
     if ($EventName -ne 'pull_request' -or $paths.Count -eq 0) {
         $why = $EventName -ne 'pull_request' ? "a $EventName run checks everything" : 'no changed files could be read'
         foreach ($g in $gates) { $plan[$g] = $true; $reason.Add("${g}: runs -- $why.") }
-        return [pscustomobject]@{ SelfMutation = $true; Compatibility = $true; Reason = $reason.ToArray() }
+        $reuse = Get-PSMutantReusePlan -Planned $false -SelfMutation $true -ChangedPath @() -SandboxSubtree $SandboxSubtree
+        $reason.Add($reuse.Reason)
+        return [pscustomobject]@{ SelfMutation = $true; Compatibility = $true; Reuse = $false; Reason = $reason.ToArray() }
     }
     foreach ($g in $gates) {
         $reads = @($paths | Where-Object { -not (Test-PSMutantSkipSafePath -Path $_ -Gate $g -CoveringSuite $CoveringSuite) })
@@ -1048,5 +1091,7 @@ function Get-PSMutantGatePlan {
             $reason.Add("${g}: skipped -- none of the $($paths.Count) changed file(s) is something it reads.")
         }
     }
-    return [pscustomobject]@{ SelfMutation = $plan.SelfMutation; Compatibility = $plan.Compatibility; Reason = $reason.ToArray() }
+    $reuse = Get-PSMutantReusePlan -Planned $true -SelfMutation $plan.SelfMutation -ChangedPath $paths -SandboxSubtree $SandboxSubtree
+    $reason.Add($reuse.Reason)
+    return [pscustomobject]@{ SelfMutation = $plan.SelfMutation; Compatibility = $plan.Compatibility; Reuse = $reuse.Reuse; Reason = $reason.ToArray() }
 }

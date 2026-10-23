@@ -734,9 +734,10 @@ Describe 'Get-PSMutantVersionListFault' {
 Describe 'Get-PSMutantGatePlan' {
     BeforeAll {
         $script:covering = @('tests/Runner.Tests.ps1', 'tests/Config.Tests.ps1')
+        $script:subtrees = @('src', 'tests', 'schemas/')
         function script:Plan {
             param([string[]]$Path, [string]$EventName = 'pull_request')
-            Get-PSMutantGatePlan -EventName $EventName -ChangedPath $Path -CoveringSuite $script:covering
+            Get-PSMutantGatePlan -EventName $EventName -ChangedPath $Path -CoveringSuite $script:covering -SandboxSubtree $script:subtrees
         }
     }
 
@@ -821,6 +822,39 @@ Describe 'Get-PSMutantGatePlan' {
         $p = Plan @('src/a.ps1', 'src/b.ps1', 'src/c.ps1', 'src/d.ps1', 'src/e.ps1')
         $p.Reason[0] | Should-Be 'SelfMutation: runs -- it reads src/a.ps1, src/b.ps1, src/c.ps1 and 2 more.'
         (Plan @('src/a.ps1')).Reason[0] | Should-Be 'SelfMutation: runs -- it reads src/a.ps1.'
+    }
+
+    It 'lets a pull request reuse main''s verdicts when it changes only scripts and files outside the sandbox' {
+        $p = Plan @('src/PSMutation.Runner.ps1', 'PSMutant.psm1', 'tests/Runner.Tests.ps1', 'README.md', 'psmutant.self.config.json')
+        Should-BeTrue -Actual $p.Reuse
+        $p.Reason[-1] | Should-Be "Reuse: yes -- main's verdicts for every file whose key is unchanged."
+        Should-BeTrue -Actual (Plan @('src\PSMutation.Glob.psm1')).Reuse
+    }
+
+    It 'evaluates every mutant when a pull request changes a file a test may read as data' {
+        # A reuse key hashes what a suite RUNS; a schema or a vendored fixture it reads is invisible
+        # to it. Each sandbox subtree counts, whether or not the config spells it with a slash.
+        foreach ($f in 'schemas/v1/config.schema.json', 'tests/vendor/x/schema.json', 'src/data.txt', 'src\fixture.json') {
+            $p = Plan @('src/PSMutation.Runner.ps1', $f)
+            Should-BeTrue -Actual $p.SelfMutation -Because $f
+            Should-BeFalse -Actual $p.Reuse -Because "$f is data inside the sandbox"
+        }
+        (Plan @('schemas/v1/config.schema.json')).Reason[-1] |
+            Should-Be 'Reuse: no -- schemas/v1/config.schema.json is a file a test may read as data, which a reuse key cannot see.'
+        # A name that only BEGINS like a subtree is outside it.
+        Should-BeTrue -Actual (Plan @('src/a.ps1', 'srcnotes/x.json', 'testsuite.md')).Reuse
+    }
+
+    It 'never reuses outside a pull request, or when self-mutation does not run' {
+        foreach ($e in 'push', 'workflow_dispatch') {
+            $p = Plan @('src/a.ps1') -EventName $e
+            Should-BeFalse -Actual $p.Reuse -Because "event '$e'"
+            $p.Reason[-1] | Should-Be 'Reuse: no -- this run evaluates every mutant and records the keys a pull request reuses.'
+        }
+        Should-BeFalse -Actual (Plan @()).Reuse
+        $p = Plan @('README.md')
+        Should-BeFalse -Actual $p.Reuse
+        $p.Reason[-1] | Should-Be 'Reuse: no -- self-mutation does not run.'
     }
 }
 
