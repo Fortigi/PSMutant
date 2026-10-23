@@ -149,6 +149,85 @@ Describe 'Get-PSMutationSuiteDependency' {
         Mock Invoke-Pester { throw 'must not run' }
         @(Get-PSMutationSuiteDependency -Suite @('t.Tests.ps1') -Source @() -SandboxRoot ([System.IO.Path]::GetTempPath())).Count | Should-Be 0
     }
+
+    It 'throws, naming the suite, when the suite does not pass -- and leaves the caller''s exit code alone (#305)' {
+        # A suite that failed part-way may have run fewer files than it does, so its list is not a
+        # key anyone may trust. And Pester sets the GLOBAL exit code, which a CI step exits with.
+        $root = NewTree @{ 'src/a.ps1' = 'function Get-A { 1 }'; 'tests/f.Tests.ps1' = 'Describe ''f'' { It ''fails'' { 1 | Should-Be 2 } }' }
+        $suite = @((Join-Path $root 'tests/f.Tests.ps1'))
+        $global:LASTEXITCODE = 7
+        try {
+            { Get-PSMutationSuiteDependency -Suite $suite -Source @('src/a.ps1') -SandboxRoot $root } |
+                Should-Throw -ExceptionMessage 'could not measure what tests/f.Tests.ps1 runs: *'
+            # Every file of a two-file suite, comma-separated.
+            $two = @($suite[0], (Join-Path $root 'tests/g.Tests.ps1'))
+            Set-Content -LiteralPath $two[1] -Value 'Describe ''g'' { It ''ok'' { 1 | Should-Be 1 } }'
+            { Get-PSMutationSuiteDependency -Suite $two -Source @('src/a.ps1') -SandboxRoot $root } |
+                Should-Throw -ExceptionMessage 'could not measure what tests/f.Tests.ps1, tests/g.Tests.ps1 runs: *'
+            $global:LASTEXITCODE | Should-Be 7
+        }
+        finally { $global:LASTEXITCODE = 0 }
+    }
+
+    It 'throws, naming the path, for a suite Pester cannot find -- the shape #304 hit' {
+        # Under -ErrorAction Stop, so an error Pester wrote rather than captured would surface here
+        # as itself instead of as the measurement's own message.
+        $root = NewTree @{ 'src/a.ps1' = 'function Get-A { 1 }' }
+        $global:LASTEXITCODE = 3
+        try {
+            { Get-PSMutationSuiteDependency -Suite @((Join-Path $root 'tests/gone.Tests.ps1')) -Source @('src/a.ps1') -SandboxRoot $root -ErrorAction Stop } |
+                Should-Throw -ExceptionMessage 'could not measure what tests/gone.Tests.ps1 runs: *'
+            $global:LASTEXITCODE | Should-Be 3
+        }
+        finally { $global:LASTEXITCODE = 0 }
+    }
+
+    It 'measures a passing suite whose tests provoke errors on purpose' {
+        # The regression #306's first CI run found: a Should-Throw writes an error, and treating
+        # that as a failed measurement left every real suite unmeasured.
+        $root = NewTree @{
+            'src/a.ps1'         = 'function Get-A { param($x) if (-not $x) { throw ''no x'' }; $x }'
+            'tests/a.Tests.ps1' = 'BeforeAll { . "$PSScriptRoot/../src/a.ps1" }; Describe ''a'' { It ''throws'' { { Get-A } | Should-Throw -ExceptionMessage ''no x'' }; It ''ok'' { Get-A 1 | Should-Be 1 } }'
+        }
+        Get-PSMutationSuiteDependency -Suite @((Join-Path $root 'tests/a.Tests.ps1')) -Source @('src/a.ps1') -SandboxRoot $root |
+            Should-Be 'src/a.ps1'
+    }
+
+    It 'leaves the caller''s exit code alone after a measurement that passed' {
+        $root = NewTree @{ 'src/a.ps1' = 'function Get-A { 1 }'; 'tests/a.Tests.ps1' = 'BeforeAll { . "$PSScriptRoot/../src/a.ps1" }; Describe ''a'' { It ''ok'' { Get-A | Should-Be 1 } }' }
+        $global:LASTEXITCODE = 5
+        try {
+            Get-PSMutationSuiteDependency -Suite @((Join-Path $root 'tests/a.Tests.ps1')) -Source @('src/a.ps1') -SandboxRoot $root |
+                Should-Be 'src/a.ps1'
+            $global:LASTEXITCODE | Should-Be 5
+        }
+        finally { $global:LASTEXITCODE = 0 }
+    }
+}
+
+Describe 'Get-PSMutationDependencyFault (#305)' {
+    It 'says nothing for a run that passed and wrote nothing' {
+        Should-BeNull -Actual (Get-PSMutationDependencyFault -Result ([pscustomobject]@{ Result = 'Passed' }) -Written @())
+    }
+
+    It 'trusts a run that passed, whatever its tests caused to be written' {
+        # Every Should-Throw writes an error. Read as faults, they left no suite of this repo with
+        # a key on #306's first CI run.
+        Should-BeNull -Actual (Get-PSMutationDependencyFault -Result ([pscustomobject]@{ Result = 'Passed' }) -Written @('provoked'))
+    }
+
+    It 'explains a run with no result by the first error it wrote -- one error is enough' {
+        Get-PSMutationDependencyFault -Result $null -Written @('first', 'second') | Should-Be 'first'
+        Get-PSMutationDependencyFault -Result $null -Written @('only') | Should-Be 'only'
+    }
+
+    It 'says when Pester returned nothing, or the run did not pass' {
+        Get-PSMutationDependencyFault -Result $null -Written @() | Should-Be 'Pester returned no result'
+        Get-PSMutationDependencyFault -Result ([pscustomobject]@{ Result = 'Failed' }) -Written @('x') |
+            Should-Be "the suite's run ended 'Failed'"
+        Get-PSMutationDependencyFault -Result ([pscustomobject]@{ Result = 'Failed' }) -Written @() |
+            Should-Be "the suite's run ended 'Failed'"
+    }
 }
 
 Describe 'Read-PSMutationIncrementalPrior' {
@@ -242,6 +321,17 @@ Describe 'Get-PSMutationCoveringSuitePath' {
     }
 }
 
+Describe 'Get-PSMutationUnmeasuredLine' {
+    It 'warns once per failed suite, sorted, and not for a suite that was measured' {
+        $m = @{ s1 = @{ Fault = 'b failed' }; s2 = @{ Files = @('src/x.ps1') }; s3 = @{ Fault = 'a failed' }; s4 = @{ Fault = 'b failed' } }
+        @(Get-PSMutationUnmeasuredLine -Measured $m | ForEach-Object Text) | Should-BeCollection @(
+            '  INCREMENTAL: a failed. The files it covers get no key, so the next run evaluates them in full.'
+            '  INCREMENTAL: b failed. The files it covers get no key, so the next run evaluates them in full.')
+        (@(Get-PSMutationUnmeasuredLine -Measured $m | ForEach-Object Text) -join '|') | Should-BeLikeString '*a failed*|*b failed*'
+        @(Get-PSMutationUnmeasuredLine -Measured @{ s = @{ Files = @() } }).Count | Should-Be 0
+    }
+}
+
 Describe 'Get-PSMutationIncrementalEntry' {
     It 'measures a two-file suite as two paths, and keys it the same way twice' {
         # The key must not depend on the run: before the fix it held the sandbox's random name.
@@ -253,6 +343,19 @@ Describe 'Get-PSMutationIncrementalEntry' {
         $e = Get-PSMutationIncrementalEntry -File $a -Plan $plan -SandboxRoot $root -Source @('src/a.ps1') -Measured @{}
         @($script:measured) | Should-BeCollection @($t1, $t2)
         $e.key | Should-Be (Get-PSMutationIncrementalKey -Path 'src/a.ps1', 'tests/a.Tests.ps1', 'tests/a2.Tests.ps1' -SandboxRoot $root)
+    }
+
+    It 'records no key for a file whose suite could not be measured, and measures that suite once (#305)' {
+        $root = NewTree @{ 'src/a.ps1' = 'a'; 'src/b.ps1' = 'b'; 'tests/ab.Tests.ps1' = 't' }
+        $a = Join-Path $root 'src/a.ps1'; $b = Join-Path $root 'src/b.ps1'; $t = Join-Path $root 'tests/ab.Tests.ps1'
+        $script:measures = 0
+        Mock Get-PSMutationSuiteDependency { $script:measures++; throw 'could not measure what tests/ab.Tests.ps1 runs: boom' }
+        $plan = @{ Mutate = @($a, $b); TestsByFile = @{ $a = @($t); $b = @($t) }; AllTests = @($t) }
+        $measured = @{}
+        Should-BeNull -Actual (Get-PSMutationIncrementalEntry -File $a -Plan $plan -SandboxRoot $root -Source @('src/a.ps1') -Measured $measured)
+        Should-BeNull -Actual (Get-PSMutationIncrementalEntry -File $b -Plan $plan -SandboxRoot $root -Source @('src/a.ps1') -Measured $measured)
+        $script:measures | Should-Be 1
+        @($measured.Values)[0].Fault | Should-Be 'could not measure what tests/ab.Tests.ps1 runs: boom'
     }
 
     It 'drops the file itself from its dependencies, but not a file whose name differs only in case' {
@@ -304,6 +407,19 @@ Describe 'Get-PSMutationIncrementalState' {
             Get-PSMutationIncrementalState -Incremental $On -Candidates $Tree.Cands -Plan $Tree.Plan -SandboxRoot $Tree.Root `
                 -ReportPath $ReportPath -Basis (Basis)
         }
+    }
+
+    It 'evaluates a file whose suite could not be measured, records no key for it, and says why (#305)' {
+        $t = StateTree
+        Mock Get-PSMutationSuiteDependency {
+            if (@($Suite)[0] -like '*ab.Tests.ps1') { throw 'could not measure what tests/ab.Tests.ps1 runs: boom' }
+            [string[]]@()
+        }
+        $s = State $t (Join-Path $t.Root 'none.json')
+        @($s.Candidates).Count | Should-Be 4
+        @($s.Record.files.Keys) | Should-BeCollection @('src/c.ps1')
+        $warn = @($s.Lines | Where-Object Role -eq 'Warn')
+        @($warn.Text) | Should-BeCollection @('  INCREMENTAL: could not measure what tests/ab.Tests.ps1 runs: boom. The files it covers get no key, so the next run evaluates them in full.')
     }
 
     It 'hands an ordinary run its candidates back, reuses nothing, records nothing and says nothing' {

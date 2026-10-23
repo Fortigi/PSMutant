@@ -117,6 +117,19 @@ function Get-PSMutationSuiteDependency {
         file counts once any command in it ran. Breakpoints, as the baseline uses, for the reason it
         gives: the profiler tracer fails a test that touches a class. The suite's own test files are
         left out -- each key names them anyway.
+
+        THROWS when the measurement cannot be trusted (#305): Pester returned nothing (the first error
+        it wrote then says why), threw, or the suite did not pass. An error a passing test provokes
+        is not one of those. Each of those is a run that may have executed less than
+        the suite does, and a dependency list short of a file is a key that later calls a changed
+        verdict unchanged. What Pester writes is captured rather than left on the error stream,
+        because there it failed a CI step whose run had scored fine -- a pwsh step on GitHub fails on
+        any error written, for a measurement that only decides what the NEXT run may reuse.
+
+        And the caller's $LASTEXITCODE is put back. Pester sets the GLOBAL one -- to the number of
+        failed tests, or -1 when it could not run -- and a GitHub pwsh step ends `exit
+        $LASTEXITCODE`, so the measurement failed the step even with its errors captured. Measured:
+        that, not the error stream, is what turned #304's first run red after it had scored 100%.
     #>
     [OutputType([string[]])]
     [CmdletBinding()]
@@ -136,9 +149,38 @@ function Get-PSMutationSuiteDependency {
     # In the sandbox, which the run removes, as the baseline's is.
     $cfg.CodeCoverage.OutputPath = Join-Path $SandboxRoot 'coverage-dependencies.xml'
     Set-PSMutationCoverageBreakpoint -CodeCoverage $cfg.CodeCoverage
-    $result = Invoke-Pester -Configuration $cfg
+    $names = @(foreach ($s in $Suite) { ConvertFrom-PSMutationSandboxPath -Path $s -SandboxRoot $SandboxRoot }) -join ', '
+    $written = $null
+    $exitBefore = $global:LASTEXITCODE
+    # No catch: even "no test files were found" arrives as a written error under SilentlyContinue,
+    # and anything Pester still throws is caught by the caller, which treats it as unmeasured too.
+    try { $result = Invoke-Pester -Configuration $cfg -ErrorAction SilentlyContinue -ErrorVariable written }
+    finally { $global:LASTEXITCODE = $exitBefore }
+    $fault = Get-PSMutationDependencyFault -Result $result -Written @($written)
+    if ($fault) { throw "could not measure what $names runs: $fault" }
     $ran = foreach ($c in $result.CodeCoverage.CommandsExecuted) { ConvertFrom-PSMutationSandboxPath -Path $c.File -SandboxRoot $SandboxRoot }
     return [string[]]@($ran | Sort-Object -Unique -CaseSensitive)
+}
+
+function Get-PSMutationDependencyFault {
+    # Why one measuring run cannot be trusted, or nothing when it can. Pure.
+    #
+    # The RESULT decides, never the error stream alone. -ErrorVariable collects every error written
+    # during the run, and that includes the ones a passing test provokes on purpose -- each
+    # Should-Throw writes one. Read as faults they marked every real suite of this repo unmeasured
+    # on #306's first CI run, so nothing got a key and nothing could ever be reused. A written error
+    # is only the explanation when there is no result to judge by.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [AllowNull()] $Result,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Written
+    )
+    if ($null -eq $Result) {
+        if ($Written.Count -gt 0) { return [string]$Written[0] }
+        return 'Pester returned no result'
+    }
+    if ($Result.Result -ne 'Passed') { return "the suite's run ended '$($Result.Result)'" }
 }
 
 function Read-PSMutationIncrementalPrior {
@@ -231,13 +273,32 @@ function Get-PSMutationIncrementalState {
             continue
         }
         foreach ($c in $mine) { $evaluate.Add($c) }
-        $files[$rel] = Get-PSMutationIncrementalEntry -File $f -Plan $Plan -SandboxRoot $SandboxRoot -Source $source -Measured $measured
+        # No entry at all for a file whose suite could not be measured: with no key recorded, the
+        # next run has nothing to match and evaluates it, which is the safe answer.
+        $entry = Get-PSMutationIncrementalEntry -File $f -Plan $Plan -SandboxRoot $SandboxRoot -Source $source -Measured $measured
+        if ($entry) { $files[$rel] = $entry }
     }
     return [pscustomobject]@{
         Candidates = $evaluate.ToArray(); Reused = $reused.ToArray()
         Record     = [ordered]@{ basis = $Basis; files = $files }
-        Lines      = @(Get-PSMutationIncrementalLine -ReportPath $ReportPath -Reason $prior.Reason `
-                -Reused $reused.Count -ReusedFiles $reusedFiles -Evaluate $evaluate.Count)
+        Lines      = @(@(Get-PSMutationIncrementalLine -ReportPath $ReportPath -Reason $prior.Reason `
+                    -Reused $reused.Count -ReusedFiles $reusedFiles -Evaluate $evaluate.Count) +
+            @(Get-PSMutationUnmeasuredLine -Measured $measured))
+    }
+}
+
+function Get-PSMutationUnmeasuredLine {
+    # One warning per covering suite whose dependencies could not be measured (#305), sorted so two
+    # runs print them alike. Pure.
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [hashtable]$Measured)
+    # No `if ($m.Fault)`: a measured suite's Fault is $null, and Sort-Object passes no $null on, so
+    # the guard was a branch nothing could tell from its absence. The test keeps a measured suite
+    # beside the failed ones to pin exactly that.
+    $faults = foreach ($m in $Measured.Values) { $m.Fault }
+    foreach ($f in @($faults | Sort-Object -Unique)) {
+        New-PSMutationLine -Role 'Warn' -Text "  INCREMENTAL: $f. The files it covers get no key, so the next run evaluates them in full."
     }
 }
 
@@ -299,9 +360,13 @@ function Get-PSMutationIncrementalEntry {
     $suite = Get-PSMutationCoveringSuitePath -File $File -Plan $Plan -SandboxRoot $SandboxRoot
     $suiteKey = $suite.Suite -join "`n"
     if (-not $Measured.ContainsKey($suiteKey)) {
-        $Measured[$suiteKey] = Get-PSMutationSuiteDependency -Suite $suite.Suite -Source $Source -SandboxRoot $SandboxRoot
+        # Caught here, not in the measurement: it is this function that decides what an
+        # unmeasured suite means, and the answer is no key -- the next run evaluates the file.
+        try { $Measured[$suiteKey] = @{ Files = @(Get-PSMutationSuiteDependency -Suite $suite.Suite -Source $Source -SandboxRoot $SandboxRoot) } }
+        catch { $Measured[$suiteKey] = @{ Fault = $_.Exception.Message } }
     }
-    $deps = [string[]]@($Measured[$suiteKey] | Where-Object { $_ -cne $rel })
+    if ($Measured[$suiteKey].Fault) { return $null }
+    $deps = [string[]]@($Measured[$suiteKey].Files | Where-Object { $_ -cne $rel })
     return [ordered]@{ key = (Get-PSMutationIncrementalKey -Path (@($rel) + $suite.Relative + $deps) -SandboxRoot $SandboxRoot); dependsOn = $deps }
 }
 
