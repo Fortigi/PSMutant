@@ -508,8 +508,11 @@ function Set-PSMutationWorkerNullStdio {
     $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
         [System.Reflection.AssemblyName]::new('PSMutantNullStdio'), 'Run')
     $type = $assembly.DefineDynamicModule('PSMutantNullStdio').DefineType('PSMutantNullStdio', 'Public, Abstract, Sealed')
-    [void]$type.DefinePInvokeMethod($plan.Entry, $plan.Library, 'Public, Static, PinvokeImpl', 'Standard',
+    $builder = $type.DefinePInvokeMethod($plan.Entry, $plan.Library, 'Public, Static, PinvokeImpl', 'Standard',
         [type]$plan.Return, [type[]]@(foreach ($name in $plan.Parameters) { [type]$name }), 'Winapi', 'Auto')
+    # The return value as the function gives it. Without PreserveSig it is read as an HRESULT, and the
+    # -1 of a dup2 that failed throws: the Linux leg found it, where a FALSE from SetStdHandle reads as S_OK.
+    $builder.SetImplementationFlags($builder.GetMethodImplementationFlags() -bor [System.Reflection.MethodImplAttributes]::PreserveSig)
     $method = $type.CreateType().GetMethod($plan.Entry)
     $device = [System.IO.File]::OpenHandle($plan.Path, 'Open', 'ReadWrite', $plan.Share)
     $value = @{ handle = $device.DangerousGetHandle() -as [type]$plan.Handle }
