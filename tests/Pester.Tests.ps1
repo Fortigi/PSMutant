@@ -764,3 +764,67 @@ Describe 'a worker in a process of its own (#256)' {
         $script:PSMutationWarmProcess.ContainsKey(25) | Should-BeFalse
     }
 }
+
+Describe 'the standard handles of a worker process (#309)' {
+    AfterEach { Close-PSMutationWarmRunspacePool }
+
+    It 'gives a child of a worker process the null device for each stream it does not redirect, and the worker stays usable' {
+        # One child, nothing redirected, all three streams at once: each pwsh started costs every
+        # mutant of Pester.ps1. On 0.9.0 its read of the input read the remoting channel and never
+        # ended, and each of its writes broke the runspace.
+        $shell = Get-PSMutationWarmShell -WorkerId 30 -Process
+        $shell.Commands.Clear()
+        [void]$shell.AddScript({
+                $start = [System.Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+                foreach ($a in '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+                    '$n = [Console]::In.ReadToEnd().Length; [Console]::Error.WriteLine("to the error output"); [Console]::Out.WriteLine("to the output"); exit (7 + $n)') {
+                    $start.ArgumentList.Add($a)
+                }
+                $start.UseShellExecute = $false
+                $child = [System.Diagnostics.Process]::Start($start)
+                if (-not $child.WaitForExit(15000)) { $child.Kill(); return 'the child did not end' }
+                $child.ExitCode
+            }.ToString())
+        $async = $shell.BeginInvoke()
+        Should-BeTrue -Actual $async.AsyncWaitHandle.WaitOne(30000)
+        # 7: the input was empty, and both writes left the channel alone.
+        @($shell.EndInvoke($async))[-1] | Should-Be 7
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('$PID')
+        $shell.Invoke()[0] | Should-Be $script:PSMutationWarmProcess[30].Process.Id
+    }
+
+    It 'leaves the handles of this process alone for a runspace in it' {
+        # They are the caller's console, not a channel, and the caller still reads them.
+        Mock Get-PSMutationNullStdioPlan { throw 'a runspace in this process asked for the plan' }
+        $null = Get-PSMutationWarmShell -WorkerId 31
+        $script:PSMutationWarmProcess.ContainsKey(31) | Should-BeFalse
+    }
+
+    It 'names SetStdHandle on the three standard handles for Windows, and dup2 onto 0, 1 and 2 for Unix' {
+        # Pinned for both platforms on either, because each CI leg runs only one of them.
+        $windows = Get-PSMutationNullStdioPlan -Platform 'Win32NT'
+        "$($windows.Library) $($windows.Entry) $($windows.Return) $($windows.Order -join ',') $($windows.Parameters -join ',') $($windows.Targets -join ',')" |
+            Should-Be 'kernel32.dll SetStdHandle bool target,handle int,IntPtr -10,-11,-12'
+        "$($windows.Path) $($windows.Share) $($windows.Handle)" | Should-Be 'NUL ReadWrite, Inheritable IntPtr'
+        $unix = Get-PSMutationNullStdioPlan -Platform 'Unix'
+        "$($unix.Library) $($unix.Entry) $($unix.Return) $($unix.Order -join ',') $($unix.Parameters -join ',') $($unix.Targets -join ',')" |
+            Should-Be 'libc dup2 int handle,target int,int 0,1,2'
+        "$($unix.Path) $($unix.Share) $($unix.Handle)" | Should-Be '/dev/null ReadWrite int'
+    }
+
+    It 'does nothing when the library of the plan does not load' {
+        # The worker is then as it was before: a run that works for most suites, not one that
+        # cannot start. Called here, in this process, which it must therefore leave alone.
+        $plan = (Get-PSMutationNullStdioPlan -Platform ([string][System.Environment]::OSVersion.Platform)).PSObject.Copy()
+        $plan.Library = 'psmutant-no-such-library'
+        Should-BeNull -Actual (Set-PSMutationWorkerNullStdio -plan $plan)
+    }
+
+    It 'goes on past a target that the platform refuses' {
+        # -1 is no standard handle and no descriptor, so the call fails and changes nothing here.
+        $plan = (Get-PSMutationNullStdioPlan -Platform ([string][System.Environment]::OSVersion.Platform)).PSObject.Copy()
+        $plan.Targets = @(-1, -1)
+        Should-BeNull -Actual (Set-PSMutationWorkerNullStdio -plan $plan)
+    }
+}

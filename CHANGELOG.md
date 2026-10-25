@@ -1,3 +1,19 @@
+## [0.9.1] - 2026-10-25
+
+### For consumers
+
+**A child process of the code under test no longer hangs or stops a run with more than one
+worker.** Each worker is a pwsh process whose standard input and output are the remoting channel,
+and whose standard error the client reads as an error of the runspace. A child that the code under
+test started without redirecting a stream inherited that stream: a child reading its input read the
+channel and never ended -- Git for Windows does that on a missing object, and the run waited out
+the deadline -- and one line written to its error output or its output broke the runspace, with
+"The background process reported an error with the following message: ..." or "There is an error
+processing data from the background process", and stopped the run. A worker now gives its standard
+handles to the null device before a suite runs there, so such a child reads an empty input and
+writes where nobody reads, as a child of a service does. A child that redirects a stream, a run
+with one worker and a native command called with `&` are as before.
+
 ## [0.9.0] - 2026-10-19
 
 ### For consumers

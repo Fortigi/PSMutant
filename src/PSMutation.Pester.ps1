@@ -387,6 +387,13 @@ function Get-PSMutationWarmShell {
     # would read it from there.
     [void]$shell.AddScript('param($pester, $cwd) Set-Location -LiteralPath $cwd; Import-Module $pester -Force -ErrorAction Stop').
         AddParameter('pester', (Get-PSMutationPesterPath)).AddParameter('cwd', [System.Environment]::CurrentDirectory)
+    # A worker process gives its standard handles to the null device before any suite runs there
+    # (#309): they are its remoting channel, and a child process the code under test starts would
+    # inherit them. Its text runs there, as Invoke-PSMutationChild's does.
+    if ($Process) {
+        [void]$shell.AddStatement().AddScript(${function:Set-PSMutationWorkerNullStdio}.ToString()).
+            AddParameter('plan', (Get-PSMutationNullStdioPlan -Platform ([string][System.Environment]::OSVersion.Platform)))
+    }
     # Caught and re-thrown with context, not swallowed. The child's -ErrorAction Stop makes a
     # failed import TERMINATING, so this arrives as an exception from Invoke() rather than on the
     # error stream -- which is why there is no HadErrors check beside it: with the import
@@ -424,6 +431,95 @@ function New-PSMutationWorkerRunspace {
     $script:PSMutationWarmProcess[$WorkerId] = $instance
     return [runspacefactory]::CreateOutOfProcessRunspace(
         [System.Management.Automation.Runspaces.TypeTable]::LoadDefaultTypeFiles(), $instance)
+}
+
+# How a worker process gives its standard handles to the null device (#309), keyed by
+# [Environment]::OSVersion.Platform, which .NET gives as Win32NT or Unix (macOS too). DATA rather
+# than an `if ($IsWindows)`: the self-mutation gate runs on one platform, and every mutant of the
+# other platform's branch would survive there. A test pins both entries instead.
+#
+# Each entry names a native function, its library, the order of its two arguments by name and
+# their types, and the targets to call it with:
+#   Win32NT  SetStdHandle(nStdHandle, hHandle) for STD_INPUT_HANDLE (-10), STD_OUTPUT_HANDLE (-11)
+#            and STD_ERROR_HANDLE (-12). INHERITABLE: a child gets a standard handle that its
+#            parent may not pass on as an invalid one.
+#   Unix     dup2(oldfd, newfd) onto 0, 1 and 2. 'libc', which .NET resolves to the C library on
+#            Linux and macOS. Not inheritable: dup2 makes the new descriptors inheritable anyway,
+#            and the one it copies is not needed by a child.
+$script:PSMutationNullStdioPlan = @{
+    Win32NT = [pscustomobject]@{
+        Path = 'NUL'; Share = 'ReadWrite, Inheritable'; Library = 'kernel32.dll'; Entry = 'SetStdHandle'
+        Return = 'bool'; Handle = 'IntPtr'; Order = @('target', 'handle'); Parameters = @('int', 'IntPtr')
+        Targets = @(-10, -11, -12)
+    }
+    Unix    = [pscustomobject]@{
+        Path = '/dev/null'; Share = 'ReadWrite'; Library = 'libc'; Entry = 'dup2'
+        Return = 'int'; Handle = 'int'; Order = @('handle', 'target'); Parameters = @('int', 'int')
+        Targets = @(0, 1, 2)
+    }
+}
+
+function Get-PSMutationNullStdioPlan {
+    # The entry of $script:PSMutationNullStdioPlan for one platform, as Set-PSMutationWorkerNullStdio
+    # takes it. A function so the tests can ask for either platform on any platform.
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Platform)
+    return $script:PSMutationNullStdioPlan[$Platform]
+}
+
+function Set-PSMutationWorkerNullStdio {
+    <#
+    .SYNOPSIS
+        Give the standard input, output and error of a worker PROCESS to the null device (#309).
+    .DESCRIPTION
+        Runs IN the worker process: Get-PSMutationWarmShell hands this function's text to it, as
+        the runner hands Invoke-PSMutationChild's. A worker process is the server end of an
+        out-of-process runspace, and its standard input and output ARE the remoting channel; the
+        client reads anything on its standard error as an error of the runspace. A child process
+        the code under test starts without redirecting a stream inherits that stream. Measured on
+        0.9.0, with two workers:
+
+        - a child that reads its input reads the channel and never ends -- Git for Windows reads it
+          on a missing object, and the run hung until its deadline;
+        - a child that writes one line to its error output breaks the runspace with "The
+          background process reported an error with the following message: ...", and the run
+          stops;
+        - a child that writes to its output breaks it with "There is an error processing data from
+          the background process".
+
+        The server reads and writes the channel through streams it opened when it started, which
+        hold the handles they were given -- duplicates of the descriptors on Unix -- so the
+        process's standard handles can be changed under it, measured. A child started after this
+        inherits the null device: an input that is empty, and outputs nobody reads, which is what
+        a child of a service gets. A child that redirects a stream is not affected.
+
+        Does nothing when the plan's library does not load, which leaves the worker as it was
+        before this existed: a run that works for most suites rather than one that cannot start.
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Changes the standard handles of a worker process this module owns; there is no user state to confirm.')]
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $plan)
+    $loaded = [IntPtr]::Zero
+    if (-not [System.Runtime.InteropServices.NativeLibrary]::TryLoad($plan.Library, [ref]$loaded)) { return }
+    # Emitted, not Add-Type: no compiler in a process that starts again every few hundred mutants.
+    $assembly = [System.Reflection.Emit.AssemblyBuilder]::DefineDynamicAssembly(
+        [System.Reflection.AssemblyName]::new('PSMutantNullStdio'), 'Run')
+    $type = $assembly.DefineDynamicModule('PSMutantNullStdio').DefineType('PSMutantNullStdio', 'Public, Abstract, Sealed')
+    [void]$type.DefinePInvokeMethod($plan.Entry, $plan.Library, 'Public, Static, PinvokeImpl', 'Standard',
+        [type]$plan.Return, [type[]]@(foreach ($name in $plan.Parameters) { [type]$name }), 'Winapi', 'Auto')
+    $method = $type.CreateType().GetMethod($plan.Entry)
+    $device = [System.IO.File]::OpenHandle($plan.Path, 'Open', 'ReadWrite', $plan.Share)
+    $value = @{ handle = $device.DangerousGetHandle() -as [type]$plan.Handle }
+    foreach ($target in $plan.Targets) {
+        $value.target = [int]$target
+        [void]$method.Invoke($null, [object[]]@(foreach ($name in $plan.Order) { $value[$name] }))
+    }
+    # Never closed. On Windows it IS each standard handle now, and a finalizer closing it would hand
+    # every later child an invalid one; on Unix it is one descriptor more, closed on exec.
+    $device.SetHandleAsInvalid()
 }
 
 function Get-PSMutationWarmPesterScript {

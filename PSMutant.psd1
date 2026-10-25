@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.9.0'
+    ModuleVersion     = '0.9.1'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -40,14 +40,11 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = 'PSMutant 0.9.0
+            ReleaseNotes = 'PSMutant 0.9.1
 
-- Two opt-in operators reach the numbers and arithmetic the defaults never touched.
-- Every mutant can be written in the format Stryker''s tools read.
-- -Incremental now reuses a file covered by more than one test file.
-- A dependency measurement that fails no longer fails the run''s CI step.
+- A child process of the code under test no longer hangs or stops a run with more than one worker.
 
-Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.0'
+Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.1'
         }
     }
 }
