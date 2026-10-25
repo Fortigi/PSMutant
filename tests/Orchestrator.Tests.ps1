@@ -628,6 +628,18 @@ Describe 'Invoke-PSMutation' {
             Should-Be 40
     }
 
+    It 'multiplies the deadline from the solo baseline by the workers, and not one that was measured in them (#310)' {
+        # Two workers. The 2s baseline ran alone: max(15, 2 x 4 x 2) = 16. x.ps1's 10s ran in both
+        # workers at once, so the load is in it already: 10 x 4 = 40, where 0.9.0 gave 80.
+        $cfg = Get-Content $script:configFile -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName workers -NotePropertyValue 2
+        $cfg | ConvertTo-Json -Depth 6 | Set-Content $script:configFile -Encoding utf8
+        Mock New-PSMutationWorkerSandbox { @(Join-Path $script:root 'sandbox-1') }
+        Mock Assert-PSMutationWorkerGreen { @{ 'x.ps1' = 10.0 } }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet | Out-Null
+        Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { $TimeoutByFile['x.ps1'] -eq 40 -and $TimeoutSeconds -eq 16 }
+    }
+
     It 'passes the resolved operator list and timeout down to the mutation loop' {
         # The orchestrator is wiring, so what can break here is a crossed wire: the
         # right values computed and then handed to the wrong parameter.

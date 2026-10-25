@@ -1077,6 +1077,13 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   The FLOOR is not scaled. It exists for suites so fast that the factor gives a near-zero budget,
   and a fast suite is still fast under contention.
 
+  **Only a time measured ALONE is scaled** (#310). Each file's deadline (#253) and a first pass's
+  (#254) come from times measured in the workers while the others ran -- the green check runs each
+  suite in every worker at once and keeps the slowest copy -- so the contention is in them already.
+  Both were multiplied by the workers too, which counted the load twice and made a deadline grow
+  with its square: a consumer's run with 32 workers waited 5.6 hours on a hung mutant whose suite
+  took 2.6 minutes. The argument above is about a solo measurement, and holds only for one.
+
 - **The scheduler waits on the SOONEST deadline, not on a fixed poll interval.**
   `Get-PSMutationWaitBudget` returns the least budget any in-flight mutant has left, and `WaitAny`
   is given exactly that -- so a mutant is cut off on its own clock rather than whenever the next

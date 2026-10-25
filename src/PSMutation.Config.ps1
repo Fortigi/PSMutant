@@ -1338,20 +1338,26 @@ function Get-PSMutationWorkerSandboxCount {
 
 function Get-PSMutationTimeoutByFile {
     # Each mutate file's own per-mutant deadline (#253): the same rule as the run-wide one --
-    # factor, workers, floor, and the refusal below it -- applied to the time its covering suite
-    # took in the unmutated check rather than to the whole baseline. A mutant runs only its file's
-    # suite, without coverage, so the whole baseline overstated it by as much as the suite is
-    # large, and a mutant looping forever burned minutes before it was cut off.
+    # factor, floor, and the refusal below it -- applied to the time its covering suite took in
+    # the unmutated check rather than to the whole baseline. A mutant runs only its file's suite,
+    # without coverage, so the whole baseline overstated it by as much as the suite is large, and
+    # a mutant looping forever burned minutes before it was cut off.
+    #
+    # NOT times the workers (#310). The run-wide deadline scales by them because the baseline is
+    # measured alone; these seconds are not. Assert-PSMutationWorkerGreen runs each suite in every
+    # worker at once and takes the slowest copy, so the contention the factor of workers stands in
+    # for is already in them. Scaled again, a deadline grew with the square of the load: measured
+    # on a consumer's run with 32 workers, a mutant that hung waited 5.6 hours -- 4 x 32 times a
+    # suite of about 2.6 minutes -- where 4 times it is about 10 minutes.
     [OutputType([hashtable])]
     [CmdletBinding()]
     param(
         $Cfg,
-        [Parameter(Mandatory)] [hashtable]$FileSeconds,
-        [Parameter(Mandatory)] [int]$Workers
+        [Parameter(Mandatory)] [hashtable]$FileSeconds
     )
     $out = @{}
     foreach ($f in $FileSeconds.Keys) {
-        $out[$f] = Get-PSMutationTimeout -Cfg $Cfg -BaselineSeconds $FileSeconds[$f] -Workers $Workers
+        $out[$f] = Get-PSMutationTimeout -Cfg $Cfg -BaselineSeconds $FileSeconds[$f] -Workers 1
     }
     return $out
 }

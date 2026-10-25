@@ -1773,18 +1773,21 @@ Describe 'Get-PSMutationInputFault' {
 
 Describe 'per-file deadlines (#253)' {
     It 'sizes each file by the same rule as the run-wide deadline, from its own suite''s time' {
-        # Factor 4, one worker, floor 15: 10s -> 40, 0.2s -> the floor. The rule is not restated
-        # here; these are the same numbers Get-PSMutationTimeout gives for those baselines.
-        $map = Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{}) -FileSeconds @{ 'a.ps1' = 10.0; 'b.ps1' = 0.2 } -Workers 1
+        # Factor 4, floor 15: 10s -> 40, 0.2s -> the floor. The rule is not restated here; these
+        # are the same numbers Get-PSMutationTimeout gives for those baselines with one worker.
+        $map = Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{}) -FileSeconds @{ 'a.ps1' = 10.0; 'b.ps1' = 0.2 }
         "$($map['a.ps1'])/$($map['b.ps1'])" | Should-Be '40/15'
     }
 
-    It 'scales with the worker count, as the run-wide deadline does' {
-        (Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{}) -FileSeconds @{ 'a.ps1' = 10.0 } -Workers 3)['a.ps1'] | Should-Be 120
+    It 'gives a file its measured seconds times the factor, which already hold the load of the workers (#310)' {
+        # The run-wide deadline is times the workers, because its baseline ran alone. These seconds
+        # ran in every worker at once; the orchestrator's test with two workers shows the wiring.
+        (Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{ timeoutFactor = 2 }) -FileSeconds @{ 'a.ps1' = 30.0 })['a.ps1'] |
+            Should-Be 60
     }
 
     It 'is empty when nothing was measured' {
-        (Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{}) -FileSeconds @{} -Workers 1).Count | Should-Be 0
+        (Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{}) -FileSeconds @{}).Count | Should-Be 0
     }
 
     It 'reports the largest deadline given, or the run-wide one when no file was measured' {

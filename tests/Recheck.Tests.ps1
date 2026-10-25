@@ -645,10 +645,11 @@ Describe 'a recheck sizes each deadline as a full run does (#253)' {
         $prov = @{ PerMutantTimeoutSeconds = 15 }
         $null = Invoke-PSMutationRecheckRun -RecheckFrom $report -Candidates @('a') -Plan @{ TestsByFile = @{}; AllTests = @('t.ps1') } `
             -SourceHashes @{} -Operators @('BinaryOperator') -TimeoutSeconds 15 -SandboxRoot $TestDrive `
-            -ReportPath (Join-Path $TestDrive 'out253.json') -Workers 2 -ProvenanceArgs $prov -Quiet
-        # 10s, factor 4, TWO workers: 80.
-        Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { $TimeoutByFile['x.ps1'] -eq 80 }
-        $prov.PerMutantTimeoutSeconds | Should-Be 80
+            -ReportPath (Join-Path $TestDrive 'out253.json') -WorkerSandbox @($TestDrive) -ProvenanceArgs $prov -Quiet
+        # 10s, factor 4: 40, with TWO workers as with one (#310). The 10s were measured in both
+        # workers at once; 80 was the load counted twice.
+        Should-Invoke Invoke-PSMutationLoop -Exactly 1 -ParameterFilter { $TimeoutByFile['x.ps1'] -eq 40 }
+        $prov.PerMutantTimeoutSeconds | Should-Be 40
     }
 }
 

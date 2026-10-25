@@ -128,9 +128,10 @@ function Complete-PSMutationProof {
 }
 
 function Get-PSMutationFirstPassTimeout {
-    # The deadline of a first pass over these names, in whole seconds: the rule every deadline
-    # follows -- the slowest name's proof time, times the factor and the workers sharing the
-    # machine, never under the floor -- and never over the whole run's own deadline, Cap.
+    # The deadline of a first pass over these names, in whole seconds: the slowest name's proof
+    # time times the factor, never under the floor, and never over Cap -- the deadline of the whole
+    # files. Not times the workers (#310): a proof runs in a worker while the others run their
+    # mutants, so its time already holds the load, as each file's does (Get-PSMutationTimeoutByFile).
     [OutputType([int])]
     [CmdletBinding()]
     param(
@@ -138,10 +139,9 @@ function Get-PSMutationFirstPassTimeout {
         [Parameter(Mandatory)] [string[]]$Name,
         # { Factor; Floor }: the run's timeoutFactor and timeoutFloorSeconds.
         [Parameter(Mandatory)] $Rule,
-        [Parameter(Mandatory)] [int]$Workers,
         [Parameter(Mandatory)] [int]$Cap
     )
     $slowest = ($Name | ForEach-Object { $Memory.Seconds[$_] } | Measure-Object -Maximum).Maximum
-    $sized = [math]::Max([double]$Rule.Floor, $slowest * $Rule.Factor * $Workers)
+    $sized = [math]::Max([double]$Rule.Floor, $slowest * $Rule.Factor)
     return [int][math]::Min($Cap, [math]::Ceiling($sized))
 }
