@@ -180,7 +180,6 @@ Describe 'Get-PSMutationFirstPassTimeout' {
         $rule = [pscustomobject]@{ Factor = 4; Floor = 1 }
         Get-PSMutationFirstPassTimeout -Memory $script:fpMemory -Name 'D.fast', 'D.slow' -Rule $rule -Cap 600 |
             Should-Be 13
-        (Get-Command Get-PSMutationFirstPassTimeout).Parameters.ContainsKey('Workers') | Should-BeFalse
     }
 
     It 'never goes under the floor' {

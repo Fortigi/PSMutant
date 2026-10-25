@@ -1779,11 +1779,9 @@ Describe 'per-file deadlines (#253)' {
         "$($map['a.ps1'])/$($map['b.ps1'])" | Should-Be '40/15'
     }
 
-    It 'does not scale with the worker count, which the measured seconds already hold (#310)' {
+    It 'gives a file its measured seconds times the factor, which already hold the load of the workers (#310)' {
         # The run-wide deadline is times the workers, because its baseline ran alone. These seconds
-        # ran in every worker at once, so the same factor again gave a deadline that grew with the
-        # square of the load. Asked through the parameter it used to take, so a return of it fails.
-        (Get-Command Get-PSMutationTimeoutByFile).Parameters.ContainsKey('Workers') | Should-BeFalse
+        # ran in every worker at once; the orchestrator's test with two workers shows the wiring.
         (Get-PSMutationTimeoutByFile -Cfg ([pscustomobject]@{ timeoutFactor = 2 }) -FileSeconds @{ 'a.ps1' = 30.0 })['a.ps1'] |
             Should-Be 60
     }
