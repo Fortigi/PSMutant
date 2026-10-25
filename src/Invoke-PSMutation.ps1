@@ -343,7 +343,7 @@ function Invoke-PSMutationRun {
         $provArgs = $ctx.ProvenanceArgs
         $provenance = { New-PSMutationProvenance @provArgs -TotalSeconds $runClock.Elapsed.TotalSeconds }
         if ($RecheckFrom) {
-            return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance -Cfg $cfg -Workers $ctx.Workers -ProvenanceArgs $provArgs -MergeIntoBaseline:$MergeIntoBaseline -WorkerSandbox $workerSandbox
+            return Invoke-PSMutationRecheckRun @exec @doc -RecheckFrom $RecheckFrom -Plan $t -Provenance $provenance -Cfg $cfg -ProvenanceArgs $provArgs -MergeIntoBaseline:$MergeIntoBaseline -WorkerSandbox $workerSandbox
         }
 
         # Said before the loop, because that is when it can still be acted on -- the cost it
@@ -383,7 +383,7 @@ function Invoke-PSMutationRun {
         # what its perMutantTimeoutSeconds means; $provArgs is read when the provenance is built.
         $fileSeconds = Assert-PSMutationWorkerGreen -Candidates $cands -TestsByFile $t.TestsByFile -AllTests $t.AllTests `
             -TimeoutSeconds $ctx.TimeoutSeconds -SandboxRoot $sandbox -WorkerSandbox $workerSandbox
-        $timeoutByFile = Get-PSMutationTimeoutByFile -Cfg $cfg -FileSeconds $fileSeconds -Workers $ctx.Workers
+        $timeoutByFile = Get-PSMutationTimeoutByFile -Cfg $cfg -FileSeconds $fileSeconds
         $provArgs.PerMutantTimeoutSeconds = Get-PSMutationLargestTimeout -TimeoutByFile $timeoutByFile -Fallback $ctx.TimeoutSeconds
         $partial = [System.Collections.Generic.List[object]]::new()
         $done = $false

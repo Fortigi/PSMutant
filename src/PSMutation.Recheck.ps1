@@ -587,7 +587,6 @@ function Invoke-PSMutationRecheckRun {
         [scriptblock]$Provenance = { @{} },
         # What sizes each mutant's deadline from its suite's measured time (#253), as a full run does.
         $Cfg,
-        [int]$Workers = 1,
         # The values $Provenance reads, so the deadline it records is the largest one actually
         # given. The caller's own table, updated in place.
         [hashtable]$ProvenanceArgs = @{},
@@ -617,7 +616,7 @@ function Invoke-PSMutationRecheckRun {
     # be proven green where the mutants run (#248).
     $fileSeconds = Assert-PSMutationWorkerGreen -Candidates $targets -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
         -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox
-    $timeoutByFile = Get-PSMutationTimeoutByFile -Cfg $Cfg -FileSeconds $fileSeconds -Workers $Workers
+    $timeoutByFile = Get-PSMutationTimeoutByFile -Cfg $Cfg -FileSeconds $fileSeconds
     $ProvenanceArgs.PerMutantTimeoutSeconds = Get-PSMutationLargestTimeout -TimeoutByFile $timeoutByFile -Fallback $TimeoutSeconds
     $results = Invoke-PSMutationLoop -Candidates $targets -Sink $rows -TestsByFile $Plan.TestsByFile -AllTests $Plan.AllTests `
         -TimeoutByFile $timeoutByFile -TimeoutSeconds $TimeoutSeconds -SandboxRoot $SandboxRoot -WorkerSandbox $WorkerSandbox -Quiet:$Quiet `

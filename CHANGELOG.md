@@ -1,3 +1,19 @@
+## [0.9.1] - 2026-10-25
+
+### For consumers
+
+**A mutant that hangs is cut off after its factor, and no longer after the factor times the
+workers.** Each file's deadline comes from the time its covering tests took unmutated, in every
+worker at once, and the slowest copy is the one kept -- so that time already holds the contention
+of the workers. It was then multiplied by `workers` too, as the deadline from the solo baseline is,
+which counted the load twice: a run with 32 workers gave a hung mutant 128 times its tests' time,
+and one measured run waited 5.6 hours on a mutant whose tests took 2.6 minutes. A file's deadline
+is now `max(floor, seconds x factor)`, and the first pass of the tests that killed a neighbour gets
+the same rule. The deadline of a file that was not measured is still scaled by `workers`, because
+its baseline ran alone. With the default factor of 4 and one worker nothing changes; with more, a
+slow mutant that used to pass inside the larger deadline can now be scored Timeout, which counts
+as killed -- raise `timeoutFactor` if a suite really is that uneven.
+
 ## [0.9.0] - 2026-10-19
 
 ### For consumers

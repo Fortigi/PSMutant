@@ -495,8 +495,8 @@ function are mostly killed by the same few tests. So once a mutant is killed, it
 remembered, and each later mutant in the same function, then the same file, first runs up to three of
 them alone. If one fails, the mutant is killed and nothing else runs. If none does, the whole files
 run as they always did, so a survivor pays one short extra run. The first pass has its own
-deadline, by the same rule as every other -- `max(floor, seconds × factor × workers)` -- with
-`seconds` the slowest of its tests run alone, and never longer than the whole files' deadline. When
+deadline, by the same rule as each file's -- `max(floor, seconds × factor)` -- with `seconds` the
+slowest of its tests run alone, and never longer than the whole files' deadline. When
 it runs out, the whole files run; a mutant that hangs the first pass is still judged by them.
 
 Measured on this repo's own runner file, interleaved, two rounds each way with three workers: 307
@@ -597,7 +597,7 @@ The tests did not pass, and the run goes on. With one worker, which runs in PSMu
 such a mutant ends the run, as it always has. An unmutated covering suite that ends its worker is
 refused before the first mutant.
 
-**The per-mutant timeout is multiplied by `workers`.** The baseline is measured once, alone, with
+**The run-wide per-mutant timeout is multiplied by `workers`.** The baseline is measured once, alone, with
 the machine to itself; N mutants sharing it are slower for reasons that have nothing to do with the
 fault injected in them — and an overrun is scored **Killed**, so a budget sized for a solo run turns
 ordinary contention into kills and the score goes **up**. A repo adopting parallelism to make the
@@ -610,8 +610,11 @@ mutant runs only the tests mapped to its file, so a deadline sized from the whol
 also pays for coverage instrumentation -- let a mutant looping forever run for minutes on a repo
 with many test files. Before the first mutant, each covering suite runs once, unmutated, in every
 worker (the same pass that refuses a suite green only in your session), and that time sets the
-deadline for the files it covers, by the same rule and floor. The report's
-`durations.perMutantTimeoutSeconds` is the largest deadline any mutant got.
+deadline for the files it covers: `max(floor, seconds × factor)`. It is **not** multiplied by
+`workers` again: every worker ran the suite at the same time, and the slowest copy's time is the
+one taken, so the contention is already in it. Multiplied again, a hung mutant of a run with 32
+workers waited 128 times its suite. The report's `durations.perMutantTimeoutSeconds` is the
+largest deadline any mutant got.
 
 ## Operators
 
@@ -684,7 +687,7 @@ schema cannot give.
 | `ignoreCalls` | Commands whose arguments are never mutated. Default: the logging commands `Write-Verbose`, `Write-Debug`, `Write-Information`, `Write-Host` and `Write-Progress`, whose text rarely says anything about your tests. `[]` mutates inside every call. Every mutant inside such a call is skipped, from any operator, and the number is printed beside the score and written to the report as `skippedAsIgnoredCall`, with the list as `ignoreCalls`. Matched by name, ignoring case and a module qualifier. `Write-Warning`, `Write-Error` and `throw` are not in the default, because tests often assert those messages. |
 | `sandboxSubtrees` | Directories copied into the sandbox (default `["src","tests"]`; set to your layout). |
 | `workers` | How many mutants to evaluate at once, each in its own sandbox copy and its own Pester runspace -- in a `pwsh` process of its own when there is more than one. Default `1`; `0` means this machine (`ProcessorCount - 1`). See [Running mutants in parallel](#running-mutants-in-parallel) — it is opt-in for a reason. |
-| `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, seconds × factor × workers)`, where `seconds` is how long the mutant's own covering tests took unmutated (defaults 4 / 15). A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
+| `timeoutFactor` / `timeoutFloorSeconds` | Per-mutant timeout = `max(floor, seconds × factor)`, where `seconds` is how long the mutant's own covering tests took unmutated, in every worker at once (defaults 4 / 15). A file whose tests were not measured gets `max(floor, baseline × factor × workers)`, from the baseline run alone. A non-terminating mutant is cut off and counted Killed, so the run never hangs. |
 | `equivalents` | `file:function:description` → reason, for mutants that provably cannot change behaviour. Excluded from the denominator. The run fails if a declaration is killed, matches nothing, **or matches more than one mutant** — a declaration argues about one mutant, so matching several is ambiguous rather than a broader claim. `description` is `<original> -> <mutated>`, taken from the source. `file:line:description` is still accepted, and is the only form available for code outside any function; prefer the function form, because a line number moves whenever anything above it is edited. |
 | `thresholds.high` / `thresholds.low` | Colour bands for the console score: green at or above `high`, yellow at or above `low`, red below (defaults 85 / 70). They affect the printed colour only, never the exit code. |
 | `thresholds.break` | `null` = report-only. A number fails the run (`ExitCode 1`) below it. |

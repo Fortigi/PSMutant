@@ -1069,8 +1069,7 @@ function Start-PSMutationWorkerJob {
         $job | Add-Member -NotePropertyName WholeTimeout -NotePropertyValue $timeout
         $job | Add-Member -NotePropertyName Tests -NotePropertyValue $tests
         $job | Add-Member -NotePropertyName Root -NotePropertyValue $root
-        $timeout = Get-PSMutationFirstPassTimeout -Memory $Context.Killers -Name $first -Rule $Context.TimeoutRule `
-            -Workers $Context.Roots.Count -Cap $timeout
+        $timeout = Get-PSMutationFirstPassTimeout -Memory $Context.Killers -Name $first -Rule $Context.TimeoutRule -Cap $timeout
     }
     $job | Add-Member -NotePropertyName TimeoutSeconds -NotePropertyValue $timeout -Force
     $job | Add-Member -NotePropertyName TestOriginals -NotePropertyValue @($marked) -Force

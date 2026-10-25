@@ -174,16 +174,21 @@ Describe 'Get-PSMutationFirstPassTimeout' {
         $script:fpRule = [pscustomobject]@{ Factor = 4; Floor = 15 }
     }
 
-    It 'sizes from the SLOWEST name: its proof time, times the factor and the workers, rounded up' {
-        Get-PSMutationFirstPassTimeout -Memory $script:fpMemory -Name 'D.fast', 'D.slow' -Rule $script:fpRule -Workers 2 -Cap 600 |
-            Should-Be 26
+    It 'sizes from the SLOWEST name: its proof time times the factor, rounded up' {
+        # 3.2 x 4 = 12.8 -> 13 with a floor of 1. Not times the workers (#310): a proof ran while the
+        # other workers ran their mutants, so its time already holds the load.
+        $rule = [pscustomobject]@{ Factor = 4; Floor = 1 }
+        Get-PSMutationFirstPassTimeout -Memory $script:fpMemory -Name 'D.fast', 'D.slow' -Rule $rule -Cap 600 |
+            Should-Be 13
+        (Get-Command Get-PSMutationFirstPassTimeout).Parameters.ContainsKey('Workers') | Should-BeFalse
     }
 
     It 'never goes under the floor' {
-        Get-PSMutationFirstPassTimeout -Memory $script:fpMemory -Name 'D.fast' -Rule $script:fpRule -Workers 1 -Cap 600 | Should-Be 15
+        Get-PSMutationFirstPassTimeout -Memory $script:fpMemory -Name 'D.fast' -Rule $script:fpRule -Cap 600 | Should-Be 15
     }
 
     It 'never goes over the whole run''s own deadline' {
-        Get-PSMutationFirstPassTimeout -Memory $script:fpMemory -Name 'D.slow' -Rule $script:fpRule -Workers 3 -Cap 20 | Should-Be 20
+        Get-PSMutationFirstPassTimeout -Memory $script:fpMemory -Name 'D.slow' -Rule ([pscustomobject]@{ Factor = 40; Floor = 15 }) -Cap 20 |
+            Should-Be 20
     }
 }
