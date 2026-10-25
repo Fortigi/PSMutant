@@ -264,6 +264,11 @@ function Get-PSMutationSandboxOwnerId {
     # sandbox and goes with it, so this arm is TRANSITIONAL: it exists to reclaim what earlier
     # versions left behind, and can be deleted once no machine plausibly still has any.
     if ($Name -match '^psmut-coverage-(\d+)\.xml$') { return [int]$Matches[1] }
+    # A worker process's directory (#309), "psmut-worker-<pid>-<worker>-<random>", and on Unix the
+    # socket file of its pipe beside it. Closing a worker removes both, but on Windows Start-Process
+    # holds the redirected files open until the garbage collector releases them -- measured -- so
+    # the directory can outlive the close, and is reclaimed here once its run has ended.
+    if ($Name -match '^(CoreFxPipe_)?psmut-worker-(\d+)-\d+-[0-9a-f]+$') { return [int]$Matches[2] }
     return          # emits nothing, so the caller's variable is $null
 }
 
@@ -370,7 +375,8 @@ function Clear-PSMutationStaleSandbox {
         # answers for both -- Test-PSMutationSandboxAbandoned reads Name and LastWriteTime, which a
         # FileInfo carries exactly as a DirectoryInfo does.
         @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Directory -Filter 'psmut-sandbox-*' -ErrorAction SilentlyContinue) +
-        @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -File -Filter 'psmut-coverage-*.xml' -ErrorAction SilentlyContinue) |
+        @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -File -Filter 'psmut-coverage-*.xml' -ErrorAction SilentlyContinue) +
+        @(Get-ChildItem ([System.IO.Path]::GetTempPath()) -Filter '*psmut-worker-*' -ErrorAction SilentlyContinue) |
             # A reparse point is skipped rather than swept. Temp is world-writable, so anyone can
             # leave a symlink named like a sandbox; recursively removing one asks the sweep to
             # follow a path an attacker chose. Nothing this module creates is ever a link, so
