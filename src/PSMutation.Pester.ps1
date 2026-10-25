@@ -473,7 +473,7 @@ function Start-PSMutationWorkerProcess {
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [int]$WorkerId)
-    $name = 'psmut-worker-{0}-{1}-{2}' -f $PID, $WorkerId, [guid]::NewGuid().ToString('N').Substring(0, 8)
+    $name = 'psmut-worker-{0}-{1}-{2}' -f $PID, $WorkerId, (New-Guid).ToString('N').Substring(0, 8)
     $dir = Join-Path ([System.IO.Path]::GetTempPath()) $name
     $null = New-Item -ItemType Directory -Path $dir
     $stdin = Join-Path $dir 'stdin'

@@ -24,7 +24,7 @@ reached over a named pipe of their own (`-CustomPipeName`, as `Enter-PSHostProce
 standard streams are files nobody reads, so such a child reads an empty input and writes where
 nobody looks. A worker also ends by itself once the run that started it is gone, and what it leaves
 in the temp directory is reclaimed by the next run. A run with one worker is as before. Thanks to
-@alexey-petrov-ext for the report and the test that pins it (#309).
+@alexey-petrov-ext for reporting it, and for the test that pins it.
 
 ## [0.9.0] - 2026-10-19
 
