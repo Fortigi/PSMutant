@@ -794,11 +794,26 @@ Describe 'the standard handles of a worker process (#309)' {
         $shell.Invoke()[0] | Should-Be $script:PSMutationWarmProcess[30].Process.Id
     }
 
-    It 'leaves the handles of this process alone for a runspace in it' {
-        # They are the caller's console, not a channel, and the caller still reads them.
-        Mock Get-PSMutationNullStdioPlan { throw 'a runspace in this process asked for the plan' }
-        $null = Get-PSMutationWarmShell -WorkerId 31
-        $script:PSMutationWarmProcess.ContainsKey(31) | Should-BeFalse
+    It 'leaves the output of the caller to a child it starts, when its worker runs in the caller' {
+        # One worker runs in PSMutant's own process, whose handles are the caller's console and not a
+        # channel. Asked in a pwsh of its own, so that the handles at stake are not this process's,
+        # and through its output: a child it starts after the warm-up must still write there.
+        $probe = Join-Path $TestDrive 'in-process-probe.ps1'
+        Set-Content -LiteralPath $probe -Value @'
+param($Source, $Pester)
+Import-Module $Pester
+. $Source
+$null = Get-PSMutationWarmShell -WorkerId 0
+$start = [System.Diagnostics.ProcessStartInfo]::new((Get-Process -Id $PID).Path)
+foreach ($a in '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', '[Console]::Out.Write("from the child")') { $start.ArgumentList.Add($a) }
+$start.UseShellExecute = $false
+[void][System.Diagnostics.Process]::Start($start).WaitForExit(15000)
+'@
+        $source = Join-Path (Split-Path -Parent $PSScriptRoot) 'src' -AdditionalChildPath 'PSMutation.Pester.ps1'
+        # The pwsh a worker process runs, which this process need not be: a dotnet tool runs as dotnet.
+        $pwsh = Join-Path $PSHOME ($IsWindows ? 'pwsh.exe' : 'pwsh')
+        $out = & $pwsh -NoLogo -NoProfile -NonInteractive -File $probe -Source $source -Pester (Get-PSMutationPesterPath)
+        "$out" | Should-BeString 'from the child'
     }
 
     It 'names SetStdHandle on the three standard handles for Windows, and dup2 onto 0, 1 and 2 for Unix' {
