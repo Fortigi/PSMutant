@@ -21,15 +21,30 @@
 # as a whole; FIRST_TIME_CONTRIBUTOR a first one to this repository; NONE a reporter with no commit.
 $script:PSMutantOutsideAssociation = @('CONTRIBUTOR', 'FIRST_TIME_CONTRIBUTOR', 'FIRST_TIMER', 'NONE')
 
+# The repository permissions that make someone the team (#317). Asked as well as the association,
+# because the association depends on who asks: to the workflow's token a PRIVATE organisation
+# membership is invisible, and a maintainer then reads CONTRIBUTOR -- the 0.9.1 release thanked one.
+$script:PSMutantTeamPermission = @('admin', 'maintain', 'write')
+
+function Test-PSMutantTeamPermission {
+    # True for a permission on this repository that only the team holds. Pure.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyString()] [string]$Permission)
+    return $script:PSMutantTeamPermission -contains $Permission
+}
+
 function Test-PSMutantOutsideAuthor {
-    # True for an author worth thanking: outside the team, and a person.
+    # True for an author worth thanking: outside the team by association AND by permission, and a
+    # person.
     [OutputType([bool])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [AllowEmptyString()] [string]$Association,
-        [bool]$IsBot = $false
+        [bool]$IsBot = $false,
+        [bool]$IsTeam = $false
     )
-    return (-not $IsBot) -and ($script:PSMutantOutsideAssociation -contains $Association)
+    return (-not $IsBot) -and (-not $IsTeam) -and ($script:PSMutantOutsideAssociation -contains $Association)
 }
 
 function Get-PSMutantOutsideContribution {
@@ -37,7 +52,7 @@ function Get-PSMutantOutsideContribution {
     .SYNOPSIS
         Pure: per outside contributor, the issues they reported and the pull requests they wrote.
     .PARAMETER PullRequest
-        The merged pull requests of the release: { Number; Author; Association; IsBot; Closes },
+        The merged pull requests of the release: { Number; Author; Association; IsBot; IsTeam; Closes },
         where Closes holds the issues it closes in the same shape, without Closes.
     .OUTPUTS
         { Login; Reported; Authored }, ordered by login, numbers ascending and each once.
@@ -48,7 +63,8 @@ function Get-PSMutantOutsideContribution {
     $by = @{}
     $note = {
         param($Item, $Kind)
-        if (-not (Test-PSMutantOutsideAuthor -Association ([string]$Item.Association) -IsBot ([bool]$Item.IsBot))) { return }
+        $outside = Test-PSMutantOutsideAuthor -Association ([string]$Item.Association) -IsBot ([bool]$Item.IsBot) -IsTeam ([bool]$Item.IsTeam)
+        if (-not $outside) { return }
         if (-not $by.ContainsKey($Item.Author)) { $by[$Item.Author] = @{ Reported = @(); Authored = @() } }
         $by[$Item.Author][$Kind] += [int]$Item.Number
     }
@@ -149,15 +165,25 @@ function Get-PSMutantReleaseContribution {
     $query = 'query($o:String!,$r:String!,$n:Int!){repository(owner:$o,name:$r){pullRequest(number:$n){' +
     'number authorAssociation author{__typename login} closingIssuesReferences(first:50){nodes{' +
     'number authorAssociation author{__typename login}}}}}}'
+    # Each author's permission here, asked once: a 404 -- no collaborator, or a bot -- is no permission.
+    $team = @{}
+    $isTeam = {
+        param($Login)
+        if (-not $team.ContainsKey($Login)) {
+            $permission = gh api "repos/$Repository/collaborators/$Login/permission" --jq '.permission' 2>$null
+            $team[$Login] = Test-PSMutantTeamPermission -Permission ([string]$permission)
+        }
+        $team[$Login]
+    }
     foreach ($n in $numbers) {
         $pr = (gh api graphql -f query=$query -F o=$owner -F r=$name -F n=$n | ConvertFrom-Json).data.repository.pullRequest
         [pscustomobject]@{
             Number = $pr.number; Author = $pr.author.login; Association = $pr.authorAssociation
-            IsBot = $pr.author.__typename -eq 'Bot'
+            IsBot = $pr.author.__typename -eq 'Bot'; IsTeam = & $isTeam $pr.author.login
             Closes = @(foreach ($i in $pr.closingIssuesReferences.nodes) {
                     [pscustomobject]@{
                         Number = $i.number; Author = $i.author.login; Association = $i.authorAssociation
-                        IsBot = $i.author.__typename -eq 'Bot'
+                        IsBot = $i.author.__typename -eq 'Bot'; IsTeam = & $isTeam $i.author.login
                     }
                 })
         }
