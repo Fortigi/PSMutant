@@ -808,7 +808,8 @@ Describe 'the standard streams of a worker process (#309)' {
         Get-PSMutationSandboxOwnerId -Name (Split-Path -Leaf $worker.Directory) | Should-Be $PID
         Get-PSMutationSandboxOwnerId -Name "CoreFxPipe_$($worker.PipeName)" | Should-Be $PID
         Close-PSMutationWarmRunspace -WorkerId 31
-        Should-BeTrue -Actual $worker.Process.HasExited
+        # Ended, not waited for: closing kills and moves on, as the other process tests show.
+        Should-BeTrue -Actual $worker.Process.WaitForExit(5000)
         Test-Path -LiteralPath (Join-Path ([System.IO.Path]::GetTempPath()) "CoreFxPipe_$($worker.PipeName)") | Should-BeFalse
     }
 
