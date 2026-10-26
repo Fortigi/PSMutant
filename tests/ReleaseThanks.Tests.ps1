@@ -3,8 +3,8 @@
 BeforeAll {
     . (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'tools' -AdditionalChildPath 'ReleaseThanks.ps1')
 
-    function script:New-ThanksItem([int]$Number, [string]$Author, [string]$Association, [bool]$IsBot = $false) {
-        [pscustomobject]@{ Number = $Number; Author = $Author; Association = $Association; IsBot = $IsBot }
+    function script:New-ThanksItem([int]$Number, [string]$Author, [string]$Association, [bool]$IsBot = $false, [bool]$IsTeam = $false) {
+        [pscustomobject]@{ Number = $Number; Author = $Author; Association = $Association; IsBot = $IsBot; IsTeam = $IsTeam }
     }
     function script:New-ThanksPr([int]$Number, [string]$Author, [string]$Association, [object[]]$Closes = @(), [bool]$IsBot = $false) {
         $p = New-ThanksItem $Number $Author $Association $IsBot
@@ -26,10 +26,32 @@ Describe 'Test-PSMutantOutsideAuthor' {
         }
         # A bot is not thanked even when GitHub calls it a contributor, which dependabot is.
         Test-PSMutantOutsideAuthor -Association 'CONTRIBUTOR' -IsBot $true | Should-BeFalse
+        # Nor anyone with write access here, whatever association the asking token was shown (#317).
+        Test-PSMutantOutsideAuthor -Association 'CONTRIBUTOR' -IsTeam $true | Should-BeFalse
+    }
+}
+
+Describe 'Test-PSMutantTeamPermission' {
+    It 'calls write, maintain and admin the team, and nothing else' {
+        foreach ($p in 'admin', 'maintain', 'write') { Test-PSMutantTeamPermission -Permission $p | Should-BeTrue }
+        foreach ($p in 'triage', 'read', 'none', '') { Test-PSMutantTeamPermission -Permission $p | Should-BeFalse }
     }
 }
 
 Describe 'Get-PSMutantOutsideContribution' {
+    It 'leaves out a maintainer whose private membership makes them look like a contributor (#317)' {
+        # The 0.9.1 release: to the workflow's token a private org member reads CONTRIBUTOR.
+        $prs = @(
+            New-ThanksPr 313 'taeke' 'CONTRIBUTOR' @(New-ThanksItem 309 'alexey' 'CONTRIBUTOR'; New-ThanksItem 314 'taeke' 'CONTRIBUTOR' $false $true) $false
+            New-ThanksPr 312 'alexey' 'CONTRIBUTOR'
+        )
+        $prs[0].IsTeam = $true
+        $c = @(Get-PSMutantOutsideContribution -PullRequest $prs)
+        ($c | ForEach-Object Login) -join ',' | Should-Be 'alexey'
+        $c[0].Reported -join ',' | Should-Be '309'
+        $c[0].Authored -join ',' | Should-Be '312'
+    }
+
     It 'credits an outside reporter for the issue an inside pull request closes' {
         $c = @(Get-PSMutantOutsideContribution -PullRequest @(New-ThanksPr 313 'taeke' 'MEMBER' @(New-ThanksItem 309 'alexey' 'CONTRIBUTOR')))
         $c.Count | Should-Be 1
