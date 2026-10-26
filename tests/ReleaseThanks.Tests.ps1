@@ -98,9 +98,9 @@ Describe 'Format-PSMutantThankYou' {
             [pscustomobject]@{ Login = 'cas'; Reported = [int[]]@(400); Authored = [int[]]@() }
         )
         Format-PSMutantThankYou -Contribution $c | Should-Be ("### Thank you`n`n" +
-            "Thank you to @alexey for reporting #309 and #310, and for #312.`n" +
-            "Thank you to @bea for #316.`n" +
-            'Thank you to @cas for reporting #400.')
+            "- @alexey for reporting #309 and #310, and for #312.`n" +
+            "- @bea for #316.`n" +
+            '- @cas for reporting #400.')
     }
 
     It 'adds no section when nobody outside contributed' {
