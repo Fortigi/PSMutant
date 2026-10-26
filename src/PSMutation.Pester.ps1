@@ -262,12 +262,11 @@ function Close-PSMutationWorkerProcess {
     $script:PSMutationWarmProcess.Remove($WorkerId)
     # Ended, not asked to end: a worker stuck in a blocking call does not answer a request.
     Stop-Process -InputObject $worker.Process -Force -ErrorAction Ignore
-    # Waited for briefly, so its own hold on its files is gone before they are removed. A killed
-    # process is gone in milliseconds.
-    $worker.Process | Wait-Process -Timeout 5 -ErrorAction Ignore
-    # Best effort. On Windows Start-Process keeps the redirected files open in THIS process until a
-    # garbage collection releases them -- measured -- so the directory may stay; its name carries
-    # this process's id, and Clear-PSMutationStaleSandbox reclaims it once this process has ended.
+    # Best effort, and not waited for. On Unix an open file can be removed anyway; on Windows
+    # Start-Process keeps the redirected files open in THIS process until a garbage collection
+    # releases them -- measured -- so waiting for the worker to exit would not make them removable.
+    # The directory's name carries this process's id, and Clear-PSMutationStaleSandbox reclaims
+    # what stays once this process has ended.
     Remove-Item -LiteralPath $worker.Directory -Recurse -Force -ErrorAction Ignore
     # On Unix the pipe is a socket file, which a killed server never removes.
     Remove-Item -LiteralPath (Join-Path ([System.IO.Path]::GetTempPath()) "CoreFxPipe_$($worker.PipeName)") -Force -ErrorAction Ignore
@@ -454,6 +453,7 @@ function New-PSMutationWorkerRunspace {
 # a loaded CI machine starting several at once can take several times that.
 $script:PSMutationWorkerOpenTimeoutMs = 60000
 
+
 function Start-PSMutationWorkerProcess {
     <#
     .SYNOPSIS
@@ -464,23 +464,26 @@ function Start-PSMutationWorkerProcess {
         that started it is gone, so a run that is killed does not leave its workers behind -- which
         a PowerShellProcessInstance's worker did on its own, by losing its standard input.
 
-        The pipe name is unique to the worker AND to this start: a renewed worker must not meet
-        the pipe of the one it replaces. It stays short, because on Unix the pipe is a socket
-        file in the temp directory and its path has a length limit (104 bytes on macOS).
+        The pipe name is unique to this process AND to this start. It stays short, because on Unix
+        the pipe is a socket file in the temp directory and its path has a length limit (104 bytes
+        on macOS).
     #>
     [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
         Justification = 'Starts a worker process this module owns and ends; there is no user state to confirm.')]
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [int]$WorkerId)
-    $name = 'psmut-worker-{0}-{1}-{2}' -f $PID, $WorkerId, (New-Guid).ToString('N').Substring(0, 8)
+    # Random, so a renewed worker never meets the pipe of the one it replaces, and short: Get-Random
+    # gives at most ten digits.
+    $name = 'psmut-worker-{0}-{1}-{2}' -f $PID, $WorkerId, (Get-Random)
     $dir = Join-Path ([System.IO.Path]::GetTempPath()) $name
     $null = New-Item -ItemType Directory -Path $dir
     $stdin = Join-Path $dir 'stdin'
     $null = New-Item -ItemType File -Path $stdin
     # The pwsh running this one, so the same PowerShell version -- and not this process's own path,
-    # which is dotnet when PowerShell runs as a dotnet tool.
-    $pwsh = Join-Path $PSHOME ($IsWindows ? 'pwsh.exe' : 'pwsh')
+    # which is dotnet when PowerShell runs as a dotnet tool. No .exe: Windows supplies it (measured),
+    # and one name for every platform leaves no branch that only one CI leg could judge.
+    $pwsh = Join-Path $PSHOME 'pwsh'
     $watch = "while (Get-Process -Id $PID -ErrorAction Ignore) { Start-Sleep -Seconds 1 }"
     # -NoNewWindow: on Windows the process then has no console of its own; without it every worker
     # would open a window.

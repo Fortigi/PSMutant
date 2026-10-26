@@ -812,6 +812,20 @@ Describe 'the standard streams of a worker process (#309)' {
         Test-Path -LiteralPath (Join-Path ([System.IO.Path]::GetTempPath()) "CoreFxPipe_$($worker.PipeName)") | Should-BeFalse
     }
 
+    It 'gives a renewed worker a pipe of its own, never the one it replaces' {
+        $null = Get-PSMutationWarmShell -WorkerId 32 -Process
+        $first = $script:PSMutationWarmProcess[32].PipeName
+        Close-PSMutationWarmRunspace -WorkerId 32
+        $null = Get-PSMutationWarmShell -WorkerId 32 -Process
+        $script:PSMutationWarmProcess[32].PipeName | Should-NotBe $first
+    }
+
+    It 'waits a minute for a worker to open its pipe' {
+        # A decision, pinned as the process lifetime is: a cold pwsh opens in a second or two, and a
+        # loaded CI machine starting several at once in several times that.
+        $script:PSMutationWorkerOpenTimeoutMs | Should-Be 60000
+    }
+
     It 'ends a worker process by itself once the process that started it is gone' {
         # A run that is killed must not leave its workers behind. Asked of a pwsh of its own, which
         # starts a worker and is then killed.
