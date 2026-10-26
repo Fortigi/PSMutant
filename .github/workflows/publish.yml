@@ -267,12 +267,17 @@ jobs:
     timeout-minutes: 5
     permissions:
       contents: write
+      # Only to thank outside contributors on their issues and pull requests (#314).
+      issues: write
+      pull-requests: write
     steps:
       # The tag's own CHANGELOG.md, which the release body is taken from. No credentials left in
-      # the checkout: this job's token can write, and gh reads it from GH_TOKEN.
+      # the checkout: this job's token can write, and gh reads it from GH_TOKEN. The whole history,
+      # so the previous tag can be found and the release's range thanked (#314).
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
+          fetch-depth: 0
 
       - name: Create the GitHub release
         shell: pwsh
@@ -288,7 +293,25 @@ jobs:
           # The generated list of merged pull requests follows it.
           . ./tools/GateDecisions.ps1
           $section = Get-PSMutantReleaseSection -Changelog (Get-Content ./CHANGELOG.md -Raw) -Version $env:TAG.TrimStart('v')
+          # The outside contributors whose issues and pull requests went into it are thanked (#314):
+          # in the body, and on each item once the release exists. Best effort -- a question GitHub
+          # will not answer must not hold back a release the gallery has already accepted.
+          . ./tools/ReleaseThanks.ps1
+          $thanks = @()
+          $previous = git describe --tags --abbrev=0 "$env:TAG^" 2>$null
+          if ($previous) {
+            try {
+              $thanks = @(Get-PSMutantOutsideContribution -PullRequest @(Get-PSMutantReleaseContribution -Repository $env:GITHUB_REPOSITORY -Previous $previous -Tag $env:TAG))
+              $section = (@($section, (Format-PSMutantThankYou -Contribution $thanks)) | Where-Object { $_ }) -join "`n`n"
+            }
+            catch { Write-Host "::warning::Could not work out whom to thank for ${env:TAG}: $($_.Exception.Message)" }
+          }
           $body = Join-Path $env:RUNNER_TEMP 'release-body.md'
           Set-Content -LiteralPath $body -Value $section -Encoding utf8
           gh release create $env:TAG --repo $env:GITHUB_REPOSITORY --verify-tag --title $env:TAG --notes-file $body --generate-notes --latest
           if ($LASTEXITCODE -ne 0) { throw "Could not create the release for $env:TAG." }
+          $url = "$env:GITHUB_SERVER_URL/$env:GITHUB_REPOSITORY/releases/tag/$env:TAG"
+          foreach ($c in (Get-PSMutantThanksComment -Contribution $thanks -Tag $env:TAG -ReleaseUrl $url)) {
+            gh issue comment $c.Number --repo $env:GITHUB_REPOSITORY --body $c.Body
+            if ($LASTEXITCODE -ne 0) { Write-Host "::warning::Could not thank on #$($c.Number)." }
+          }
