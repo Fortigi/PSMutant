@@ -12,7 +12,8 @@ is now `max(floor, seconds x factor)`, and the first pass of the tests that kill
 the same rule. The deadline of a file that was not measured is still scaled by `workers`, because
 its baseline ran alone. With the default factor of 4 and one worker nothing changes; with more, a
 slow mutant that used to pass inside the larger deadline can now be scored Timeout, which counts
-as killed -- raise `timeoutFactor` if a suite really is that uneven.
+as killed -- raise `timeoutFactor` if a suite really is that uneven. Thanks to @alexey-petrov-ext,
+who reported it and fixed it.
 
 **A child process of the code under test no longer hangs or stops a run with more than one
 worker.** A worker process used to be reached over its standard input and output, which made them
