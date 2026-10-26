@@ -302,7 +302,7 @@ jobs:
           if ($previous) {
             try {
               $thanks = @(Get-PSMutantOutsideContribution -PullRequest @(Get-PSMutantReleaseContribution -Repository $env:GITHUB_REPOSITORY -Previous $previous -Tag $env:TAG))
-              $section = (@($section, (Format-PSMutantThanks -Contribution $thanks)) | Where-Object { $_ }) -join "`n`n"
+              $section = (@($section, (Format-PSMutantThankYou -Contribution $thanks)) | Where-Object { $_ }) -join "`n`n"
             }
             catch { Write-Host "::warning::Could not work out whom to thank for ${env:TAG}: $($_.Exception.Message)" }
           }

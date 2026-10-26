@@ -3,11 +3,11 @@
 BeforeAll {
     . (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'tools' -AdditionalChildPath 'ReleaseThanks.ps1')
 
-    function script:Item([int]$Number, [string]$Author, [string]$Association, [bool]$IsBot = $false) {
+    function script:New-ThanksItem([int]$Number, [string]$Author, [string]$Association, [bool]$IsBot = $false) {
         [pscustomobject]@{ Number = $Number; Author = $Author; Association = $Association; IsBot = $IsBot }
     }
-    function script:Pr([int]$Number, [string]$Author, [string]$Association, [object[]]$Closes = @(), [bool]$IsBot = $false) {
-        $p = Item $Number $Author $Association $IsBot
+    function script:New-ThanksPr([int]$Number, [string]$Author, [string]$Association, [object[]]$Closes = @(), [bool]$IsBot = $false) {
+        $p = New-ThanksItem $Number $Author $Association $IsBot
         $p | Add-Member -NotePropertyName Closes -NotePropertyValue $Closes
         $p
     }
@@ -31,7 +31,7 @@ Describe 'Test-PSMutantOutsideAuthor' {
 
 Describe 'Get-PSMutantOutsideContribution' {
     It 'credits an outside reporter for the issue an inside pull request closes' {
-        $c = @(Get-PSMutantOutsideContribution -PullRequest @(Pr 313 'taeke' 'MEMBER' @(Item 309 'alexey' 'CONTRIBUTOR')))
+        $c = @(Get-PSMutantOutsideContribution -PullRequest @(New-ThanksPr 313 'taeke' 'MEMBER' @(New-ThanksItem 309 'alexey' 'CONTRIBUTOR')))
         $c.Count | Should-Be 1
         $c[0].Login | Should-Be 'alexey'
         $c[0].Reported -join ',' | Should-Be '309'
@@ -40,12 +40,12 @@ Describe 'Get-PSMutantOutsideContribution' {
 
     It 'gathers one person''s reports and pull requests, each once and in order, and leaves the team out' {
         $prs = @(
-            Pr 312 'alexey' 'CONTRIBUTOR' @(Item 310 'alexey' 'CONTRIBUTOR')
-            Pr 313 'taeke' 'MEMBER' @(Item 309 'alexey' 'CONTRIBUTOR'; Item 305 'taeke' 'MEMBER')
+            New-ThanksPr 312 'alexey' 'CONTRIBUTOR' @(New-ThanksItem 310 'alexey' 'CONTRIBUTOR')
+            New-ThanksPr 313 'taeke' 'MEMBER' @(New-ThanksItem 309 'alexey' 'CONTRIBUTOR'; New-ThanksItem 305 'taeke' 'MEMBER')
             # The same issue closed twice must not be credited twice.
-            Pr 315 'taeke' 'MEMBER' @(Item 309 'alexey' 'CONTRIBUTOR')
-            Pr 308 'dependabot' 'CONTRIBUTOR' @() $true
-            Pr 316 'bea' 'FIRST_TIME_CONTRIBUTOR'
+            New-ThanksPr 315 'taeke' 'MEMBER' @(New-ThanksItem 309 'alexey' 'CONTRIBUTOR')
+            New-ThanksPr 308 'dependabot' 'CONTRIBUTOR' @() $true
+            New-ThanksPr 316 'bea' 'FIRST_TIME_CONTRIBUTOR'
         )
         $c = @(Get-PSMutantOutsideContribution -PullRequest $prs)
         ($c | ForEach-Object Login) -join ',' | Should-Be 'alexey,bea'
@@ -55,7 +55,7 @@ Describe 'Get-PSMutantOutsideContribution' {
     }
 
     It 'returns nothing for a release with no outside work, or no pull requests at all' {
-        @(Get-PSMutantOutsideContribution -PullRequest @(Pr 1 'taeke' 'OWNER' @(Item 2 'wim' 'MEMBER'))).Count | Should-Be 0
+        @(Get-PSMutantOutsideContribution -PullRequest @(New-ThanksPr 1 'taeke' 'OWNER' @(New-ThanksItem 2 'wim' 'MEMBER'))).Count | Should-Be 0
         @(Get-PSMutantOutsideContribution -PullRequest @()).Count | Should-Be 0
     }
 }
@@ -68,21 +68,21 @@ Describe 'Join-PSMutantItemList' {
     }
 }
 
-Describe 'Format-PSMutantThanks' {
+Describe 'Format-PSMutantThankYou' {
     It 'thanks a reporter for the report, an author for the change, and someone who did both for both' {
         $c = @(
             [pscustomobject]@{ Login = 'alexey'; Reported = [int[]]@(309, 310); Authored = [int[]]@(312) }
             [pscustomobject]@{ Login = 'bea'; Reported = [int[]]@(); Authored = [int[]]@(316) }
             [pscustomobject]@{ Login = 'cas'; Reported = [int[]]@(400); Authored = [int[]]@() }
         )
-        Format-PSMutantThanks -Contribution $c | Should-Be ("### Thank you`n`n" +
+        Format-PSMutantThankYou -Contribution $c | Should-Be ("### Thank you`n`n" +
             "Thank you to @alexey for reporting #309 and #310, and for #312.`n" +
             "Thank you to @bea for #316.`n" +
             'Thank you to @cas for reporting #400.')
     }
 
     It 'adds no section when nobody outside contributed' {
-        Should-BeNull -Actual (Format-PSMutantThanks -Contribution @())
+        Should-BeNull -Actual (Format-PSMutantThankYou -Contribution @())
     }
 }
 

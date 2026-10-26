@@ -75,7 +75,7 @@ function Join-PSMutantItemList {
     return ($refs[0..($refs.Count - 2)] -join ', ') + ' and ' + $refs[-1]
 }
 
-function Format-PSMutantThanks {
+function Format-PSMutantThankYou {
     <#
     .SYNOPSIS
         Pure: the "Thank you" section of a GitHub release, or $null when nobody outside contributed.
@@ -106,7 +106,7 @@ function Get-PSMutantThanksComment {
         One comment per issue or pull request, never two: an item is either reported or authored by
         one person. Posted once the release exists, so the link in it resolves.
     #>
-    [OutputType([pscustomobject[]])]
+    [OutputType([object[]])]
     [CmdletBinding()]
     param(
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Contribution,
