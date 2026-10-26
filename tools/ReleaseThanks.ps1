@@ -96,7 +96,7 @@ function Format-PSMutantThankYou {
     .SYNOPSIS
         Pure: the "Thank you" section of a GitHub release, or $null when nobody outside contributed.
     .DESCRIPTION
-        One sentence per person, naming what they did, so a reporter is credited for the report and
+        One list item per person, naming what they did, so a reporter is credited for the report and
         an author for the change. Markdown, because the GitHub release renders it and an @mention
         there notifies the person; the gallery notes are plain text and are not given this.
     #>
@@ -108,7 +108,8 @@ function Format-PSMutantThankYou {
         $what = @()
         if (@($c.Reported).Count) { $what += "reporting $(Join-PSMutantItemList -Number $c.Reported)" }
         if (@($c.Authored).Count) { $what += Join-PSMutantItemList -Number $c.Authored }
-        if ($what.Count) { "Thank you to @$($c.Login) for $($what -join ', and for ')." }
+        # The heading already says thank you, so each line names the person and what they did.
+        if ($what.Count) { "- @$($c.Login) for $($what -join ', and for ')." }
     }
     if (-not $lines) { return $null }
     return "### Thank you`n`n" + (@($lines) -join "`n")
