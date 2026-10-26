@@ -43,6 +43,7 @@
             ReleaseNotes = 'PSMutant 0.9.1
 
 - A mutant that hangs is cut off after its factor, and no longer after the factor times the workers.
+- A child process of the code under test no longer hangs or stops a run with more than one worker.
 
 Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.1'
         }

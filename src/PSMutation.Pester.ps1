@@ -194,11 +194,12 @@ $script:PSMutationWarmUses = @{}
 # 16, with equal times at one worker. A process also gives each worker its own environment block
 # and its own $PID, which removes both documented parallel-safety hazards.
 #
-# worker id -> its PowerShellProcessInstance; absent for an in-process runspace. The out-of-process
-# runspace never notices that its process died -- measured on Windows and Linux: killed, or ended
-# by [Environment]::Exit, the pipeline stays Running and disposing the runspace hangs -- so the
-# runner watches the process itself, and a dead or killed worker is released through this instance
-# alone, whose Dispose ends the process and returns at once.
+# worker id -> { Process; PipeName; Directory } from Start-PSMutationWorkerProcess; absent for an
+# in-process runspace. A runspace in another process cannot be trusted to notice that its process
+# died -- measured on Windows and Linux for the stdio transport before #309: killed, or ended by
+# [Environment]::Exit, the pipeline stayed Running and disposing the runspace hung -- so the runner
+# watches the process itself, and a dead or killed worker is released through this entry alone,
+# by Close-PSMutationWorkerProcess, which ends the process and returns at once.
 $script:PSMutationWarmProcess = @{}
 
 # Runspaces taken out of the pool after a timeout, whose stop has been REQUESTED and may not have
@@ -257,8 +258,18 @@ function Close-PSMutationWorkerProcess {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [int]$WorkerId)
     if (-not $script:PSMutationWarmProcess.ContainsKey($WorkerId)) { return }
-    $script:PSMutationWarmProcess[$WorkerId].Dispose()
+    $worker = $script:PSMutationWarmProcess[$WorkerId]
     $script:PSMutationWarmProcess.Remove($WorkerId)
+    # Ended, not asked to end: a worker stuck in a blocking call does not answer a request.
+    Stop-Process -InputObject $worker.Process -Force -ErrorAction Ignore
+    # Best effort, and not waited for. On Unix an open file can be removed anyway; on Windows
+    # Start-Process keeps the redirected files open in THIS process until a garbage collection
+    # releases them -- measured -- so waiting for the worker to exit would not make them removable.
+    # The directory's name carries this process's id, and Clear-PSMutationStaleSandbox reclaims
+    # what stays once this process has ended.
+    Remove-Item -LiteralPath $worker.Directory -Recurse -Force -ErrorAction Ignore
+    # On Unix the pipe is a socket file, which a killed server never removes.
+    Remove-Item -LiteralPath (Join-Path ([System.IO.Path]::GetTempPath()) "CoreFxPipe_$($worker.PipeName)") -Force -ErrorAction Ignore
 }
 
 function Resume-PSMutationWorkerBreakpoint {
@@ -419,11 +430,67 @@ function New-PSMutationWorkerRunspace {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [int]$WorkerId, [switch]$Process)
     if (-not $Process) { return [runspacefactory]::CreateRunspace() }
-    # The process running this one, by default: the same pwsh, so the same PowerShell version.
-    $instance = [System.Management.Automation.Runspaces.PowerShellProcessInstance]::new()
-    $script:PSMutationWarmProcess[$WorkerId] = $instance
-    return [runspacefactory]::CreateOutOfProcessRunspace(
-        [System.Management.Automation.Runspaces.TypeTable]::LoadDefaultTypeFiles(), $instance)
+    # Reached over a NAMED PIPE, not over the process's standard streams (#309). A
+    # PowerShellProcessInstance makes the worker's standard input and output the remoting channel,
+    # and its standard error an error of the runspace; a child process the code under test starts
+    # without redirecting a stream inherits it, and then reads the channel (the mutant hangs) or
+    # writes into it (the runspace breaks and the run stops). Measured on 0.9.0: Git for Windows
+    # reads its input on a missing object. Over a pipe the streams are plain files that nobody
+    # reads, so a child inherits an empty input and outputs that go nowhere, as a child of a
+    # service does. Public PowerShell API only: -CustomPipeName and NamedPipeConnectionInfo are
+    # what Enter-PSHostProcess uses, on every supported version from 7.0.
+    $worker = Start-PSMutationWorkerProcess -WorkerId $WorkerId
+    $script:PSMutationWarmProcess[$WorkerId] = $worker
+    $info = [System.Management.Automation.Runspaces.NamedPipeConnectionInfo]::new($worker.PipeName)
+    # The pipe exists once the process has started, which takes about a second; Open waits for it
+    # this long before it gives up.
+    $info.OpenTimeout = $script:PSMutationWorkerOpenTimeoutMs
+    return [runspacefactory]::CreateRunspace($info, $null,
+        [System.Management.Automation.Runspaces.TypeTable]::LoadDefaultTypeFiles())
+}
+
+# How long a worker process may take to open its pipe. A cold pwsh starts in one to two seconds;
+# a loaded CI machine starting several at once can take several times that.
+$script:PSMutationWorkerOpenTimeoutMs = 60000
+
+
+function Start-PSMutationWorkerProcess {
+    <#
+    .SYNOPSIS
+        Start one worker's pwsh process, serving a runspace on a named pipe of its own (#309).
+    .DESCRIPTION
+        Its standard input is an empty file and its outputs are files, all in a directory of its
+        own that Close-PSMutationWorkerProcess removes. The process ends by itself once the process
+        that started it is gone, so a run that is killed does not leave its workers behind -- which
+        a PowerShellProcessInstance's worker did on its own, by losing its standard input.
+
+        The pipe name is unique to this process AND to this start. It stays short, because on Unix
+        the pipe is a socket file in the temp directory and its path has a length limit (104 bytes
+        on macOS).
+    #>
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Starts a worker process this module owns and ends; there is no user state to confirm.')]
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$WorkerId)
+    # Random, so a renewed worker never meets the pipe of the one it replaces, and short: Get-Random
+    # gives at most ten digits.
+    $name = 'psmut-worker-{0}-{1}-{2}' -f $PID, $WorkerId, (Get-Random)
+    $dir = Join-Path ([System.IO.Path]::GetTempPath()) $name
+    $null = New-Item -ItemType Directory -Path $dir
+    $stdin = Join-Path $dir 'stdin'
+    $null = New-Item -ItemType File -Path $stdin
+    # The pwsh running this one, so the same PowerShell version -- and not this process's own path,
+    # which is dotnet when PowerShell runs as a dotnet tool. No .exe: Windows supplies it (measured),
+    # and one name for every platform leaves no branch that only one CI leg could judge.
+    $pwsh = Join-Path $PSHOME 'pwsh'
+    $watch = "while (Get-Process -Id $PID -ErrorAction Ignore) { Start-Sleep -Seconds 1 }"
+    # -NoNewWindow: on Windows the process then has no console of its own; without it every worker
+    # would open a window.
+    $proc = Start-Process -FilePath $pwsh -PassThru -NoNewWindow `
+        -ArgumentList '-NoLogo', '-NoProfile', '-NonInteractive', '-CustomPipeName', $name, '-Command', $watch `
+        -RedirectStandardInput $stdin -RedirectStandardOutput (Join-Path $dir 'stdout') -RedirectStandardError (Join-Path $dir 'stderr')
+    return [pscustomobject]@{ Process = $proc; PipeName = $name; Directory = $dir }
 }
 
 function Get-PSMutationWarmPesterScript {

@@ -273,11 +273,19 @@ Describe 'Get-PSMutationSandboxOwnerId' {
         Get-PSMutationSandboxOwnerId -Name 'psmut-coverage-1234.xml' | Should-Be 1234
     }
 
+    It 'reads the process id out of a worker process directory and its pipe (#309)' {
+        # The worker id sits beside the process id; reading the wrong group would hand the sweep
+        # a worker number as an owner, so both are asserted against a worker id that is not it.
+        Get-PSMutationSandboxOwnerId -Name 'psmut-worker-1234-7-0a1b2c3d' | Should-Be 1234
+        Get-PSMutationSandboxOwnerId -Name 'CoreFxPipe_psmut-worker-1234-7-0a1b2c3d' | Should-Be 1234
+    }
+
     It 'returns nothing for a name the runner never produces' {
         # The runner only ever creates psmut-sandbox-<pid>. Anything else under that
         # prefix belongs to somebody else -- including this suite's own fixtures --
         # and must not be treated as a sandbox to reclaim.
-        foreach ($n in 'psmut-sandbox-test-abc', 'psmut-sandbox-', 'psmut-sandbox-12ab', 'unrelated') {
+        foreach ($n in 'psmut-sandbox-test-abc', 'psmut-sandbox-', 'psmut-sandbox-12ab', 'unrelated',
+            'psmut-worker-1234', 'psmut-worker-1234-7-', 'Other_psmut-worker-1234-7-0a1b2c3d') {
             Should-BeNull -Actual (Get-PSMutationSandboxOwnerId -Name $n)
         }
     }

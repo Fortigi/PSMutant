@@ -571,6 +571,13 @@ function Receive-PSMutationJob {
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] $Job)
+    # A worker process that died under the job (#309). Over a named pipe the invocation FAILS with
+    # a transport error as the process ends, where over its standard streams it stayed Running
+    # (#256) -- so it reaches here as finished, and its only "verdict" is the broken pipe. That is
+    # the crash the exited check would have reported a moment later, and is scored as one.
+    if ($Job.Shell.InvocationStateInfo.Reason -is [System.Management.Automation.Remoting.PSRemotingTransportException]) {
+        return Stop-PSMutationJob -Job $Job -Outcome Crashed
+    }
     $result = $Job.Shell.EndInvoke($Job.Async) | Select-Object -Last 1
     $outcome = [string]$result.Result
     if (-not $outcome) {

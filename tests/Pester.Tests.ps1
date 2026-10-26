@@ -764,3 +764,91 @@ Describe 'a worker in a process of its own (#256)' {
         $script:PSMutationWarmProcess.ContainsKey(25) | Should-BeFalse
     }
 }
+
+Describe 'the standard streams of a worker process (#309)' {
+    # The child-process scenarios are Alexey Petrov's, from the report and from PR #311.
+    BeforeAll { . (Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'src' -AdditionalChildPath 'PSMutation.Sandbox.ps1') }
+    AfterEach { Close-PSMutationWarmRunspacePool }
+
+    It 'lets a child of a worker process read and write the streams it does not redirect, and the worker stays usable' {
+        # One child, nothing redirected, all three streams at once: each pwsh started costs every
+        # mutant of Pester.ps1. On 0.9.0 its read of the input read the remoting channel and never
+        # ended, and each of its writes broke the runspace.
+        $shell = Get-PSMutationWarmShell -WorkerId 30 -Process
+        $shell.Commands.Clear()
+        [void]$shell.AddScript({
+                $start = [System.Diagnostics.ProcessStartInfo]::new((Join-Path $PSHOME ($IsWindows ? 'pwsh.exe' : 'pwsh')))
+                foreach ($a in '-NoLogo', '-NoProfile', '-NonInteractive', '-Command',
+                    '$n = [Console]::In.ReadToEnd().Trim().Length; [Console]::Error.WriteLine("to the error output"); [Console]::Out.WriteLine("to the output"); exit (7 + $n)') {
+                    $start.ArgumentList.Add($a)
+                }
+                $start.UseShellExecute = $false
+                $child = [System.Diagnostics.Process]::Start($start)
+                if (-not $child.WaitForExit(15000)) { $child.Kill(); return 'the child did not end' }
+                $child.ExitCode
+            }.ToString())
+        $async = $shell.BeginInvoke()
+        Should-BeTrue -Actual $async.AsyncWaitHandle.WaitOne(30000)
+        # 7: nothing but whitespace was read, and both writes left the channel alone. Trimmed,
+        # because a pwsh reading an empty redirected input is handed one newline -- measured with
+        # /dev/null and with an empty file alike, with no worker involved.
+        @($shell.EndInvoke($async))[-1] | Should-Be 7
+        $shell.Commands.Clear()
+        [void]$shell.AddScript('$PID')
+        $shell.Invoke()[0] | Should-Be $script:PSMutationWarmProcess[30].Process.Id
+    }
+
+    It 'names what a worker process leaves on disk after this process, so a later sweep can reclaim it' {
+        # Closing removes the directory where the platform allows it; on Windows Start-Process holds
+        # the redirected files open until a garbage collection, so what makes it safe is that the
+        # name says whose it is -- Clear-PSMutationStaleSandbox reclaims it once this process is gone.
+        $null = Get-PSMutationWarmShell -WorkerId 31 -Process
+        $worker = $script:PSMutationWarmProcess[31]
+        Test-Path -LiteralPath $worker.Directory | Should-BeTrue
+        Get-PSMutationSandboxOwnerId -Name (Split-Path -Leaf $worker.Directory) | Should-Be $PID
+        Get-PSMutationSandboxOwnerId -Name "CoreFxPipe_$($worker.PipeName)" | Should-Be $PID
+        Close-PSMutationWarmRunspace -WorkerId 31
+        # Ended, not waited for: closing kills and moves on, as the other process tests show.
+        Should-BeTrue -Actual $worker.Process.WaitForExit(5000)
+        Test-Path -LiteralPath (Join-Path ([System.IO.Path]::GetTempPath()) "CoreFxPipe_$($worker.PipeName)") | Should-BeFalse
+    }
+
+    It 'gives a renewed worker a pipe of its own, never the one it replaces' {
+        $null = Get-PSMutationWarmShell -WorkerId 32 -Process
+        $first = $script:PSMutationWarmProcess[32].PipeName
+        Close-PSMutationWarmRunspace -WorkerId 32
+        $null = Get-PSMutationWarmShell -WorkerId 32 -Process
+        $script:PSMutationWarmProcess[32].PipeName | Should-NotBe $first
+    }
+
+    It 'waits a minute for a worker to open its pipe' {
+        # A decision, pinned as the process lifetime is: a cold pwsh opens in a second or two, and a
+        # loaded CI machine starting several at once in several times that.
+        $script:PSMutationWorkerOpenTimeoutMs | Should-Be 60000
+    }
+
+    It 'ends a worker process by itself once the process that started it is gone' {
+        # A run that is killed must not leave its workers behind. Asked of a pwsh of its own, which
+        # starts a worker and is then killed.
+        $probe = Join-Path $TestDrive 'orphan-probe.ps1'
+        Set-Content -LiteralPath $probe -Value @'
+param($Source, $Pester)
+Import-Module $Pester
+. $Source
+$null = Get-PSMutationWarmShell -WorkerId 0 -Process
+$script:PSMutationWarmProcess[0].Process.Id
+Start-Sleep -Seconds 60
+'@
+        $source = Join-Path (Split-Path -Parent $PSScriptRoot) 'src' -AdditionalChildPath 'PSMutation.Pester.ps1'
+        $pwsh = Join-Path $PSHOME ($IsWindows ? 'pwsh.exe' : 'pwsh')
+        $out = Join-Path $TestDrive 'orphan-probe.out'
+        $parent = Start-Process -FilePath $pwsh -PassThru -NoNewWindow -RedirectStandardOutput $out `
+            -ArgumentList '-NoLogo', '-NoProfile', '-NonInteractive', '-File', $probe, '-Source', $source, '-Pester', (Get-PSMutationPesterPath)
+        $sw = [System.Diagnostics.Stopwatch]::StartNew()
+        while (-not (Get-Content -LiteralPath $out -ErrorAction Ignore) -and $sw.Elapsed.TotalSeconds -lt 60) { Start-Sleep -Milliseconds 200 }
+        $workerId = [int](Get-Content -LiteralPath $out | Select-Object -First 1)
+        $worker = Get-Process -Id $workerId
+        Stop-Process -InputObject $parent -Force
+        Should-BeTrue -Actual $worker.WaitForExit(15000)
+    }
+}

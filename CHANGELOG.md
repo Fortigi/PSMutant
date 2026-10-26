@@ -12,7 +12,20 @@ is now `max(floor, seconds x factor)`, and the first pass of the tests that kill
 the same rule. The deadline of a file that was not measured is still scaled by `workers`, because
 its baseline ran alone. With the default factor of 4 and one worker nothing changes; with more, a
 slow mutant that used to pass inside the larger deadline can now be scored Timeout, which counts
-as killed -- raise `timeoutFactor` if a suite really is that uneven.
+as killed -- raise `timeoutFactor` if a suite really is that uneven. Thanks to @alexey-petrov-ext,
+who reported it and fixed it.
+
+**A child process of the code under test no longer hangs or stops a run with more than one
+worker.** A worker process used to be reached over its standard input and output, which made them
+the remoting channel, and its standard error was read as an error of the run. A child that the code
+under test started without redirecting a stream inherited that stream: a child reading its input
+read the channel and never ended -- Git for Windows does that on a missing object -- and one line
+written to its output or its error output broke the worker and stopped the run. Workers are now
+reached over a named pipe of their own (`-CustomPipeName`, as `Enter-PSHostProcess` uses), and their
+standard streams are files nobody reads, so such a child reads an empty input and writes where
+nobody looks. A worker also ends by itself once the run that started it is gone, and what it leaves
+in the temp directory is reclaimed by the next run. A run with one worker is as before. Thanks to
+@alexey-petrov-ext for reporting it, and for the test that pins it.
 
 ## [0.9.0] - 2026-10-19
 
