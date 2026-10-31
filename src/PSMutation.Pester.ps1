@@ -519,8 +519,7 @@ function Get-PSMutationWarmPesterScript {
         Pester rather than the other way round.
 
         Detected rather than version-compared, because the question is whether this Pester supports
-        the property, not what it is called -- and a version comparison would have encoded 5.5,
-        which is what this comment said before the versions were actually measured.
+        the property, not what it is called.
     .OUTPUTS
         [string] the script text.
     #>

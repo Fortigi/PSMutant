@@ -63,13 +63,10 @@ function Get-PSMutationEquivalentKey {
     # configs keep working -- a fix for key churn that invalidated every key would be a
     # poor trade.
     #
-    # Code at FILE SCOPE has no function to be addressed by, and used to keep only the line
-    # form for that reason. It churned exactly as the paragraph above says it would: this
-    # repo's own `$script:PSMutationWarmUses = 0` declaration was re-keyed twice in one day,
-    # 154 -> 167 -> 181, by two unrelated edits, the second of which was comment-only and
-    # changed no code at all (#179). A declaration re-keyed by hand invites updating the
-    # number without re-reading the argument, which is how it stops being a claim anyone has
-    # checked.
+    # Code at FILE SCOPE has no function to be addressed by, and the line form alone churns
+    # there exactly as the paragraph above says it would (#179). A declaration re-keyed by hand
+    # invites updating the number without re-reading the argument, which is how it stops being
+    # a claim anyone has checked.
     #
     # So file scope gets a stable NAME instead: `<script-body>`, the same synthetic the
     # sibling uses for a unit with no enclosing function. It is not unique within a file --
@@ -531,10 +528,9 @@ function Get-PSMutationCoverageExclusion {
         Ignored              = $ignored
         IgnoreCall           = [string[]]@($IgnoreCall)
         FilesWithNoMutants   = Get-PSMutationFileEmptiedByCoverage -PerFile $PerFile
-        # The OTHER vacuous 100%, and it used to be reported by nobody. This field's sibling is
-        # named for what coverage removed; a file no operator matched was removed by nothing and
-        # so appeared in neither -- while the schema's description of the sibling claimed to
-        # cover it. Two sets, because the fixes differ: one is a test to write, the other is a
+        # The OTHER vacuous 100%. This field's sibling is named for what coverage removed; a file
+        # no operator matched was removed by nothing, so it is not in that set.
+        # Two sets, because the fixes differ: one is a test to write, the other is a
         # file that does not belong in `mutate` or holds nothing this module can mutate.
         FilesWithNoCandidate = Get-PSMutationFileWithNoCandidate -PerFile $PerFile
     }
@@ -797,7 +793,7 @@ function Save-PSMutationReportDocument {
     )
     # Both statements below are NON-TERMINATING by default, and that is the whole point of
     # this function. A reportPath that is absolute, holds a wildcard bracket, is read-only or
-    # is locked used to print "Report: <path>" for a file nothing had written, and exit 0 --
+    # is locked must not print "Report: <path>" for a file nothing has written, and exit 0 --
     # a green run with no artifact, in the one durable thing a consumer's CI reads.
     #
     # .NET rather than New-Item for the directory: New-Item has no -LiteralPath, so a bracket
@@ -825,9 +821,8 @@ function ConvertTo-PSMutationList {
         `$x = Get-PSMutationUnmappedMutateFile ...` binds $null however carefully that function
         types its output.
 
-        Used for every array the report writes, not only the field that was wrong. The sibling
-        fields escaped by accident -- their sources happen to be initialised collections today --
-        and an accident is not a property.
+        Used for every array the report writes: a source that happens to be an initialised
+        collection today is an accident, and an accident is not a property.
     #>
     [OutputType([object[]])]
     [CmdletBinding()]
@@ -1370,7 +1365,7 @@ function ConvertTo-PSMutationRunResult {
     # line -Quiet suppresses -- which is to say, in CI, nowhere.
     #
     # Mode is on BOTH shapes so a caller that did not choose the mode can still tell which one it
-    # received. The two used to share no field at all.
+    # received.
     [OutputType([pscustomobject])]
     [CmdletBinding()]
     param(
