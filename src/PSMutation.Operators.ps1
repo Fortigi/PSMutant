@@ -763,11 +763,11 @@ function Get-PSMutationConditionCandidate {
         vacuous 100%. Forcing the condition asks the only question that matters about it: does any
         test notice which way this decision went?
 
-        Three constructs, one operator name. It used to be `if`/`elseif` alone, which meant a
-        `switch` -- the idiomatic PowerShell multi-way decision, and precisely the shape where a
-        wrong branch is a real bug -- and a ternary were invisible to every operator. A consumer
-        whose code leans on either would see ConditionForcing report almost nothing and reasonably
-        conclude their code was well covered.
+        Three constructs, one operator name. Without the last two, a `switch` -- the idiomatic
+        PowerShell multi-way decision, and precisely the shape where a wrong branch is a real bug
+        -- and a ternary are invisible to every operator. A consumer whose code leans on either
+        would see ConditionForcing report almost nothing and reasonably conclude their code was
+        well covered.
 
         Loop conditions are excluded by the shared no-mutate zone -- forcing `while (X)` to $true
         is an unconditional hang, not a fault worth reporting.

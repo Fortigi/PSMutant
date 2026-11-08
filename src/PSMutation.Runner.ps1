@@ -483,7 +483,7 @@ function Start-PSMutantEvaluation {
         Splice one mutant into ITS WORKER'S sandbox file and set the covering tests running,
         without waiting for them.
     .DESCRIPTION
-        Half of what used to be one synchronous function, and the split is what makes parallel
+        One half of a start and a collect, and the split is what makes parallel
         evaluation possible: the caller can have one of these in flight per worker and collect
         whichever finishes first.
 

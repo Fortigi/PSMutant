@@ -8,9 +8,8 @@
 # for CI annotations or markdown maps the same roles to its own vocabulary, and gets the
 # structured Data a survivor line carries rather than having to parse the text back out.
 
-# Which STREAM each role goes to. Everything this module said used to go to the host, so
-# -Verbose produced no extra information at all on a run measured in minutes -- the usual first
-# move when something behaves oddly told you nothing.
+# Which STREAM each role goes to. Not everything goes to the host, because -Verbose has to add
+# something on a run measured in minutes: it is the usual first move when something behaves oddly.
 #
 # A role rather than a per-call decision, so the routing is one table a reader can check rather
 # than a judgement repeated at every emitter. `Warn` deliberately stays on the host: it is also the

@@ -729,6 +729,11 @@ lets the self-mutation gate stay in the single digits of minutes.
   upgrade for nothing. The packaged README catches up at the next release that ships code. This is
   decided the same way in both Fortigi modules, which gate each other; a rule one states and the
   other contradicts is the drift the parity rules exist to stop for workflows.
+
+  **A change to comments in `src/` alone takes no bump either**, although `src/` is staged, and for
+  the same reason: nothing a consumer runs is different. The packaged files catch up at the next
+  release that ships code. A comment-only change has no `### For consumers` entry to write, and the
+  gate would force one that says nothing.
 - `CHANGELOG.md` is maintained by hand here (unlike some projects, where automation owns
   it).
 - **ASCII only** in `src/`, `tests/` and `tools/`. Non-ASCII without a BOM trips
@@ -2119,6 +2124,25 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
 
   Main staying un-reused is the point, not caution for its own sake: what a release tags must be a
   full measurement, so any blind spot the keys have is caught there, at most one merge late.
+
+- **A comment says why the code is right; why it was once wrong goes in the CHANGELOG or the
+  issue.** State the invariant and the wrong assumption it kills. "Used to", "this comment
+  previously claimed" and how a bug was found are history, and history in a comment goes stale
+  without anything failing: `PSMutant.psm1` said nothing enforced the layering long after
+  `tests/Layering.Tests.ps1` did, and `PSComplexity.psm1` said "these four" over fifteen files.
+  `CLAUDE.md` is not a home a comment can lean on for a reader of the package, because it does not
+  ship. Where the wrong assumption is genuinely tempting -- the sandbox name, Pester left out of
+  `RequiredModules` -- keep the whole argument: beside the code is the only place it gets read.
+
+- **The root module stays a dot-sourced list. `NestedModules` and classes were weighed and
+  declined**, so neither needs arguing again without new evidence. A nested Output module would
+  turn one direction of `tests/Layering.Tests.ps1` into a property of the module system, but the
+  test stays for every other edge, for acyclicity and for the one `Write-Host`, so it buys almost
+  nothing -- and `Get-PSMutantUnloadedFile` requires every shipped `src/` file to be dot-sourced by
+  the root module. Classes, even data-only ones for the candidate, config and report record, fall
+  to two things this module already knows: a compiled script keeps a type literal bound to the
+  first class it saw (#270), and a `using module` of the code under test cannot be reloaded (#249).
+  `New-PSMutationCandidate` and the schema-validated config already give most of the typing benefit.
 
 ## Writing tests here
 

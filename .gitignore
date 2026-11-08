@@ -11,6 +11,7 @@ psmutant.scoped.config.json
 # it dirties the tree every time -- the runner already steers its OWN coverage to
 # temp for this reason (see PSMutation.Runner.ps1).
 coverage.xml
+coverage-dependencies.xml
 
 # Agent skills fetched with `gh skills install` (github/awesome-copilot). Third-party,
 # unverified, and reinstallable on demand -- not part of the project source.

@@ -476,7 +476,7 @@ function Test-PSMutationCoverageNeeded {
     .SYNOPSIS
         Whether this run's baseline has to be instrumented for coverage.
     .DESCRIPTION
-        Two runs do not need it, and both used to pay for it anyway.
+        Two runs do not need it.
 
         A run with `coveredLinesOnly` off never reads a covered line, so the tracer is pure
         surcharge -- measured here at +24% on the baseline suite.
@@ -958,11 +958,9 @@ function Resolve-PSMutationOutputPath {
     # artifacts directory above the source root is a reasonable thing to ask for.
     #
     # An ABSOLUTE path is honoured as given. PowerShell's Join-Path CONCATENATES rather than
-    # letting a rooted right-hand side win, so `/var/artifacts/r.json` used to come back as
+    # letting a rooted right-hand side win, so a blind join turns `/var/artifacts/r.json` into
     # `<SourceRoot>/var/artifacts/r.json` -- the report written somewhere the caller did not ask
     # for, with no error, and INSIDE the tree this module otherwise takes care never to write to.
-    # Observed for real: a run created a directory chain under the repo being mutated, which came
-    # within one `git add -A` of being committed.
     #
     # `../shared/r.json` already worked and still does; it was only the rooted form that was
     # silently rewritten. The same guard, and the same reason, that any path-mapping layer needs

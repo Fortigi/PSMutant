@@ -17,12 +17,11 @@
 function New-PSMutationSandboxName {
     # A sandbox directory name no other local user can predict.
     #
-    # The name used to be exactly "psmut-sandbox-$PID", in a world-writable temp directory. That is
-    # guessable -- process ids are small, visible, and a watcher can simply wait -- so another local
-    # user could create that path FIRST, as a symlink to a directory they own. The run then copied
-    # the source through it. Reproduced end to end on Linux with the sticky bit set and
-    # fs.protected_symlinks=1, which does not help here: that guard only covers the FINAL path
-    # component, and the planted symlink is an intermediate one.
+    # Temp is world-writable, and a name built from the process id alone is guessable -- process ids
+    # are small, visible, and a watcher can simply wait -- so another local user could create that
+    # path FIRST, as a symlink to a directory they own, and the run would copy the source through
+    # it. The sticky bit and fs.protected_symlinks=1 do not help: that guard only covers the FINAL
+    # path component, and the planted symlink is an intermediate one.
     #
     # The process id stays in the name because the stale sweep identifies an owner by it. What makes
     # the name unguessable is the suffix, and it comes from a cryptographic RNG rather than
@@ -257,12 +256,10 @@ function Get-PSMutationSandboxOwnerId {
     [CmdletBinding()]
     param([Parameter(Mandatory)] [string]$Name)
     if ($Name -match '^psmut-sandbox-(\d+)(-[0-9a-f]+)?$') { return [int]$Matches[1] }
-    # The other artefact a run used to leave named after its process: Pester's coverage XML, which
-    # older versions wrote to temp as "psmut-coverage-<pid>.xml". Nothing ever deleted it -- the
-    # sweep looked only at DIRECTORIES named psmut-sandbox-*, so it could not match by construction,
-    # and they accumulated for the life of the machine. The coverage file now lives inside the
-    # sandbox and goes with it, so this arm is TRANSITIONAL: it exists to reclaim what earlier
-    # versions left behind, and can be deleted once no machine plausibly still has any.
+    # Pester's coverage XML as older versions left it in temp, "psmut-coverage-<pid>.xml". The file
+    # now lives inside the sandbox and goes with it, so this arm is TRANSITIONAL: it exists to
+    # reclaim what earlier versions left behind, and can be deleted once no machine plausibly still
+    # has any.
     if ($Name -match '^psmut-coverage-(\d+)\.xml$') { return [int]$Matches[1] }
     # A worker process's directory (#309), "psmut-worker-<pid>-<worker>-<random>", and on Unix the
     # socket file of its pipe beside it. Closing a worker removes both, but on Windows Start-Process
@@ -285,13 +282,10 @@ function Test-PSMutationSandboxAbandoned {
     param([Parameter(Mandatory)] $Directory)
     $owner = Get-PSMutationSandboxOwnerId -Name $Directory.Name
     if ($null -eq $owner) { return $false }
-    # NO CARVE-OUT FOR OUR OWN ID, and its removal is the point of this change. It used to
-    # return $true here, on the argument that "a directory already holding our id is a leftover
-    # from a previous process that happened to get it, and we are about to recreate it anyway".
-    # That was true while the name was exactly psmut-sandbox-<pid>, where a new run DID land on
-    # the same path. Since the name gained 128 bits of randomness the second half stopped being
-    # true -- a new run creates a different directory -- and all the first half did was make this
-    # process's OWN live sandboxes reclaimable. Measured: with the carve-out, a sibling run's
+    # NO CARVE-OUT FOR OUR OWN ID. A directory holding our id looks like a leftover from a previous
+    # process that happened to get it, but the name carries 128 bits of randomness, so a new run
+    # creates a different directory rather than recreating this one. All a carve-out would do is
+    # make this process's OWN live sandboxes reclaimable. Measured: with one, a sibling run's
     # sandbox and the caller's own both read as abandoned.
     #
     # Falling through instead answers correctly for both. Our process is alive, so Get-Process

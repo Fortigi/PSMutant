@@ -381,11 +381,11 @@ function Write-PSMutationRecheckReport {
     }
     Save-PSMutationReportDocument -Document $document -ReportPath $ReportPath
     # ExitCode and FailureReason are here so the two shapes share a field a caller can branch on
-    # without first knowing which mode it asked for. They used to have no field in common at all,
-    # so `if ($result.ExitCode -ne 0) { throw }` -- the idiom this module's own README teaches --
-    # compared $null against 0 and threw on a perfectly successful recheck, while `exit
-    # $result.ExitCode` became `exit $null`, which is 0, and passed even with every prior survivor
-    # still alive. One shape failed loudly and the other passed silently, from the same absence.
+    # without first knowing which mode it asked for. With no field in common,
+    # `if ($result.ExitCode -ne 0) { throw }` -- the idiom this module's own README teaches --
+    # compares $null against 0 and throws on a perfectly successful recheck, while `exit
+    # $result.ExitCode` becomes `exit $null`, which is 0, and passes even with every prior survivor
+    # still alive. One shape fails loudly and the other passes silently, from the same absence.
     #
     # Always 0, because a recheck applies no thresholds by design: it answers "is this one dead
     # yet", over a set somebody chose, and a verdict over a chosen subset is the filtered number
