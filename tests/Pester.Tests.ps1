@@ -545,6 +545,15 @@ Describe 'fixture' {
         $guarded | Should-BeCollection -Count 1
         $guarded[0].Clauses[0].Item1.Extent.Text | Should-MatchString 'recordAllKillers'
     }
+
+    It 'asks Pester for no CI output of its own' {
+        # A run that fails as a whole would otherwise reach the pull request as a Pester error
+        # annotation, once per mutant, against a file that is not the consumer's.
+        Mock Invoke-Pester { [pscustomobject]@{ Result = 'Passed'; PassedCount = 1; FailedCount = 0 } }
+        $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $false -sandboxRoot $TestDrive
+        $out.Result | Should-Be 'Passed'
+        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter { $Configuration.Output.CIFormat.Value -eq 'None' }
+    }
 }
 
 Describe 'the child script, given a filter (#254)' {

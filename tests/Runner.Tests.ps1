@@ -668,6 +668,23 @@ Describe 'Invoke-PSMutationBaseline' {
         Should-Invoke Invoke-PSMutationIsolatedPester -Exactly 1 -ParameterFilter { $Configuration.CodeCoverage.UseBreakpoints.Value -eq $true }
     }
 
+    It 'asks Pester for no CI output of its own' {
+        Mock Invoke-PSMutationIsolatedPester { [pscustomobject]@{ Result = 'Passed'; CodeCoverage = $null } }
+        Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir | Out-Null
+        Should-Invoke Invoke-PSMutationIsolatedPester -Exactly 1 -ParameterFilter { $Configuration.Output.CIFormat.Value -eq 'None' }
+    }
+
+    It 'turns CI output off where the Pester has the setting, and adds nothing where it does not' {
+        # Both arms against stand-ins: every Pester CI installs for the suite has CIFormat, so the
+        # false arm would otherwise never run. Pester 5.2.2 does not have it (measured).
+        $new = [pscustomobject]@{ Verbosity = 'None'; CIFormat = 'Auto' }
+        Set-PSMutationCiFormatOff -Output $new
+        $new.CIFormat | Should-Be 'None'
+        $old = [pscustomobject]@{ Verbosity = 'None' }
+        Set-PSMutationCiFormatOff -Output $old
+        $old.PSObject.Properties['CIFormat'] | Should-BeNull
+    }
+
     It 'leaves the setting alone on a Pester that does not have it' {
         # Pester 5.2.2 has no UseBreakpoints (measured): it only ever had breakpoints, and
         # assigning a property that is not there would fail the run for nothing.

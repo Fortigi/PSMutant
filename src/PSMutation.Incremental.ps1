@@ -144,6 +144,7 @@ function Get-PSMutationSuiteDependency {
     $cfg.Run.Path = $Suite
     $cfg.Run.PassThru = $true
     $cfg.Output.Verbosity = 'None'
+    Set-PSMutationCiFormatOff -Output $cfg.Output
     $cfg.CodeCoverage.Enabled = $true
     $cfg.CodeCoverage.Path = [string[]]@(foreach ($s in $Source) { Join-Path $SandboxRoot $s })
     # In the sandbox, which the run removes, as the baseline's is.
