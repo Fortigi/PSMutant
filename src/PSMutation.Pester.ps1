@@ -119,6 +119,13 @@ function Get-PSMutationPesterPath {
     if (-not $loaded) {
         throw 'Pester is not loaded in this session, so a mutant cannot be run against it.'
     }
+    # The MANIFEST, not the .psm1 that Path names (#322). Imported by its .psm1, Pester loads as
+    # version 0.0, and a test file that opens with `#Requires -Modules @{ ModuleName = 'Pester';
+    # ModuleVersion = '5.0.0' }` -- 82 of one consumer's 85 -- then cannot run: the container fails,
+    # and a mutant whose tests never ran was scored Killed. Measured: a mutant its tests do not
+    # notice reported as killed, with no test named.
+    $manifest = Join-Path $loaded.ModuleBase 'Pester.psd1'
+    if (Test-Path -LiteralPath $manifest) { return $manifest }
     return $loaded.Path
 }
 
@@ -163,6 +170,45 @@ function Get-PSMutationRunspaceError {
     $messages = @($Runspace.Streams.Error | ForEach-Object { $_.Exception.Message })
     if (-not $messages) { return 'the child runspace reported no error' }
     return ($messages -join '; ')
+}
+
+function Invoke-PSMutationIsolatedPester {
+    <#
+    .SYNOPSIS
+        Invoke-Pester in a runspace of its own, with nothing of this module on the call stack (#322).
+    .DESCRIPTION
+        Called in place, a suite runs inside PSMutant's stack, and two things reach it that the
+        consumer's own CI never shows it. A mock made without -ModuleName belongs to whoever called
+        Invoke-Pester -- this module -- so `Mock Write-Host -ModuleName $null` captured nothing. And a
+        variable a test does not define is looked up through every caller: a parameter filter reading
+        `$ConfigFile` for a parameter its call never bound found Invoke-PSMutation's own -ConfigFile.
+        Measured on a real suite: green under Pester, refused here, with the tests blamed.
+
+        A fresh runspace is where a mutant already runs, so the baseline and the mutants see the
+        suite under the same conditions. It starts at the caller's location, imports the Pester this
+        process loaded by path (see Get-PSMutationPesterPath), and is disposed afterwards. In this
+        process rather than another, so the result -- coverage included -- comes back as the object.
+    .OUTPUTS
+        Pester's result object.
+    #>
+    [OutputType([pscustomobject])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Configuration)
+    $rs = [runspacefactory]::CreateRunspace()
+    $shell = [PowerShell]::Create()
+    try {
+        $rs.Open()
+        $shell.Runspace = $rs
+        [void]$shell.AddScript('param($pester, $cwd, $configuration) Set-Location -LiteralPath $cwd; Import-Module $pester -Force -ErrorAction Stop; Invoke-Pester -Configuration $configuration').
+            AddParameter('pester', (Get-PSMutationPesterPath)).AddParameter('cwd', (Get-Location -PSProvider FileSystem).ProviderPath).
+            AddParameter('configuration', $Configuration)
+        $result = $shell.Invoke() | Select-Object -Last 1
+        # Thrown rather than handed on: a missing result read as a red suite would send the reader to
+        # tests that never ran.
+        if ($null -eq $result) { throw "Pester returned no result: $(Get-PSMutationRunspaceError -Runspace $shell)" }
+        return $result
+    }
+    finally { $shell.Dispose(); $rs.Dispose() }
 }
 
 # --- WARM RUNSPACE POOL ---------------------------------------------------------------------

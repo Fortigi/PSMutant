@@ -1,3 +1,23 @@
+## [0.9.2] - 2026-11-08
+
+### For consumers
+
+**A suite that passes under Invoke-Pester now passes PSMutant's baseline too.** The baseline used to
+call Pester from inside PSMutant, and Pester runs a suite in the session state of whoever calls it.
+So `Mock Write-Host -ModuleName $null` captured nothing, and a mock's parameter filter that read a
+parameter its call did not bind, such as `$ConfigFile`, found `Invoke-PSMutation`'s own. Both made a
+green suite fail the baseline and refuse the run. The baseline now runs in a runspace of its own,
+which costs about 0.4 seconds per run. A suite that passes the baseline but fails where the mutants
+run is still refused, and the refusal now says what can differ between the two instead of blaming
+the calling session.
+
+**A test file that requires a version of Pester is run, not scored as a kill.** Mutants were run
+against Pester imported by its `.psm1`, which reports version 0.0, so a file opening with
+`#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }` failed to load. Before 0.7.0
+each such mutant was scored Killed with no test named; since then the run refused, blaming the
+suite. PSMutant now imports Pester by its manifest. If an older report shows kills with no killer
+named, run it again: some of those mutants may survive.
+
 ## [0.9.1] - 2026-10-26
 
 ### For consumers

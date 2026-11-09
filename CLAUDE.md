@@ -314,9 +314,9 @@ Four things about it are easy to undo:
   estate pin and every compatibility leg -- has the property, so the false arm would otherwise
   never execute.
 
-**The baseline proves the suite green in the CALLER'S session; `Assert-PSMutationWorkerGreen` proves
-it green where the mutants run** (#248). They are different places: the session carries its modules,
-global functions, `$ErrorActionPreference` and strict mode, and a worker runspace has only Pester. A
+**The baseline proves the suite green in a fresh runspace over the primary sandbox;
+`Assert-PSMutationWorkerGreen` proves it green where the mutants run** (#248, #322). They are
+different places: each worker has its own sandbox copy and its own runspace or process. A
 suite green in the first and red in the second scores every mutant Killed. So before the loop, each
 distinct covering suite runs once unmutated in every worker -- through `Get-PSMutationSuiteShell`, the
 same shell preparation a mutant uses, so the two cannot drift. Three things about it:
@@ -326,8 +326,18 @@ same shell preparation a mutant uses, so the two cannot drift. Three things abou
   N" -- the wrong account of a run that was refused.
 - **Every worker, not one.** Each has its own sandbox copy, and a suite red in one copy kills that
   worker's mutants only. The workers check in parallel, so it costs one pass, not one per worker.
-- **The baseline stays in the session.** It is what measures coverage, and moving it into a runspace
-  would be a different change with a different cost; the check only has to answer pass or fail.
+- **The baseline runs in a runspace of its own, never through `Invoke-Pester` in this module** (#322).
+  Pester runs a suite in its CALLER'S session state, and called from here that is PSMutant's: a
+  consumer's `Mock Write-Host -ModuleName $null` captured nothing, and a parameter filter reading an
+  unbound `$ConfigFile` found `Invoke-PSMutation`'s own. Both suites were green under Invoke-Pester and
+  red under PSMutant. `Invoke-PSMutationIsolatedPester` costs one runspace and one Pester import,
+  about 0.4s, and coverage still works there -- the end-to-end exact mutant counts under
+  `coveredLinesOnly` say so. `Get-PSMutationSuiteDependency` still calls Pester in the session; it
+  only reads which files a suite touched, and moving it is a separate change.
+- **Pester is handed over by its MANIFEST** (#322). `Get-Module`'s `.Path` names `Pester.psm1`, and
+  imported by that Pester reports version 0.0, so a test file opening with a versioned
+  `#Requires -Modules Pester` cannot load -- 82 of 85 files in one consumer did. Before #248 every such
+  mutant was scored Killed with no killer named, which is the shape to look for in an old report.
 
 **Reuse is safe only for code read from disk afresh, and the child makes it so** (#249). The claim
 above -- "the covering suite dot-sources the file under test" -- was an assumption about the

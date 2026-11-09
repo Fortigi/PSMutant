@@ -595,9 +595,11 @@ Describe 'already broken' { It 'fails' { $true | Should -BeFalse } }
     }
 
     It 'refuses a suite that is green only because of the calling session, before any mutant runs (#248)' {
-        # The baseline runs in THIS session; a mutant runs in a runspace with only Pester. A test
-        # that leans on a function this session defines passes the first and fails the second, so
-        # every mutant would be scored Killed by the missing function -- a 100% nothing flags.
+        # A mutant runs in a runspace with only Pester. A test that leans on a function this session
+        # defines would fail there, so every mutant would be scored Killed by the missing function --
+        # a 100% nothing flags. The baseline runs in a fresh runspace too (#322), so it is the
+        # baseline that refuses, naming the test; the per-worker check stays for what differs
+        # between the primary sandbox and a worker's copy.
         $leaning = Join-Path $script:proj 'tests/session.Tests.ps1'
         @'
 BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'calc.ps1') }
@@ -614,7 +616,7 @@ Describe 'leans on the session' { It 'pos' { Get-PSMutE2ESessionOnly | Should -B
             $p = Join-Path $script:proj 'mutation.session.json'
             $cfg | ConvertTo-Json -Depth 6 | Set-Content $p -Encoding utf8
             { Invoke-PSMutation -ConfigFile $p -SourceRoot $script:proj -Quiet } |
-                Should-Throw -ExceptionMessage '*passes in this session but not in a clean runspace, which is where every mutant runs: tests/session.Tests.ps1 in worker 0. Failed: pos.*'
+                Should-Throw -ExceptionMessage '*Baseline suite is not green*Failed: leans on the session.pos*'
             # Refused, not interrupted: no report of any kind, partial or otherwise.
             Test-Path (Join-Path $script:proj 'reports/session.json') | Should-BeFalse
         }
@@ -1710,6 +1712,8 @@ Describe 'covered lines against a REAL Pester coverage run' {
     BeforeAll {
         $srcDir = Join-Path -Path (Split-Path -Parent $PSScriptRoot) -ChildPath 'src'
         . (Join-Path -Path $srcDir -ChildPath 'PSMutation.Runner.ps1')
+        # The baseline runs the suite through Invoke-PSMutationIsolatedPester, which lives here.
+        . (Join-Path -Path $srcDir -ChildPath 'PSMutation.Pester.ps1')
         $script:covDir = Join-Path $TestDrive ([guid]::NewGuid().ToString('N'))
         New-Item -ItemType Directory -Path $script:covDir | Out-Null
         $script:covSrc = Join-Path $script:covDir 'Msg.ps1'
@@ -1813,5 +1817,57 @@ Describe 'b' { It 'runs' { { Get-Flag 2 } | Should -Not -Throw } }
         Write-Flag "# PSMutant-Equivalent: -gt -> -le: drifted`n"
         { Invoke-PSMutation -ConfigFile $script:inlConfig -SourceRoot $script:inl -Quiet } |
             Should-Throw -ExceptionMessage '*src/b.ps1:1 declares an equivalent mutant, but a blank line separates it*'
+    }
+}
+
+Describe 'a consumer suite the baseline runs exactly as Pester alone would (#322)' {
+    # Three things a consumer's suite does that are ordinary under Invoke-Pester and went red
+    # only under PSMutant, because the baseline ran Pester inside this module: a versioned
+    # `#Requires -Modules Pester`, a `Mock -ModuleName $null` on a script function's call, and a
+    # name that happens to be one of Invoke-PSMutation's own parameters.
+    BeforeAll {
+        $script:iso = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-iso-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:iso 'src'), (Join-Path $script:iso 'tests') -Force | Out-Null
+        @'
+function Write-Warnings { param([string[]]$List) if ($List.Count -gt 0) { foreach ($w in $List) { Write-Host "  WARNING: $w" } } }
+'@ | Set-Content (Join-Path $script:iso 'src/warn.ps1') -Encoding utf8
+        @'
+#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'warn.ps1') }
+Describe 'warn' {
+    It 'prints each warning' {
+        $script:printed = [System.Collections.Generic.List[string]]::new()
+        Mock Write-Host { $script:printed.Add([string]$Object) } -ModuleName $null
+        Write-Warnings -List 'a', 'b'
+        $script:printed -join '|' | Should-Be '  WARNING: a|  WARNING: b'
+    }
+    It 'sees no ConfigFile of anyone else' { $ConfigFile | Should-BeNull }
+}
+'@ | Set-Content (Join-Path $script:iso 'tests/warn.Tests.ps1') -Encoding utf8
+        $script:isoConfig = Join-Path $script:iso 'c.json'
+        [ordered]@{
+            sandboxSubtrees  = @('src', 'tests')
+            mutate           = @('src/warn.ps1')
+            tests            = @{ 'src/warn.ps1' = @('tests/warn.Tests.ps1') }
+            coveredLinesOnly = $true
+            operators        = @('BinaryOperator')
+            thresholds       = @{ high = 85; low = 70; break = 50 }
+            reportPath       = 'reports/r.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $script:isoConfig -Encoding utf8
+        $script:isoRun = Invoke-PSMutation -ConfigFile $script:isoConfig -SourceRoot $script:iso -Quiet
+        $script:isoReport = Get-Content (Join-Path $script:iso 'reports/r.json') -Raw | ConvertFrom-Json
+    }
+
+    AfterAll { Remove-Item $script:iso -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'passes the baseline and scores the one mutant' {
+        $script:isoRun.Total | Should-Be 1
+        $script:isoRun.Killed | Should-Be 1
+    }
+
+    It 'names the test that killed it, which a container failure never does' {
+        $m = @($script:isoReport.mutants)[0]
+        $m.Description | Should-BeLikeString '*-gt -> -le*'
+        @($m.KilledBy) | Should-BeCollection @('prints each warning')
     }
 }
