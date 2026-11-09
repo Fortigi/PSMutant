@@ -623,6 +623,9 @@ function Invoke-PSMutationChild {
     $c.Run.Path = $tests
     $c.Run.PassThru = $true
     $c.Output.Verbosity = 'None'
+    # Runs in the worker, where this module's functions are not loaded, so Set-PSMutationCiFormatOff
+    # is spelled out: no CI error command from a run the module reports itself.
+    if ($c.Output.PSObject.Properties['CIFormat']) { $c.Output.CIFormat = 'None' }
     # Escaped: a filter is a -like pattern, and a test named with a bracket matches nothing
     # unescaped. Matched against the UNEXPANDED name, so a -ForEach test runs every case.
     $c.Filter.FullName = [string[]]@(foreach ($f in $filter) { [WildcardPattern]::Escape($f) })

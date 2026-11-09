@@ -145,6 +145,15 @@ Describe 'Get-PSMutationSuiteDependency' {
         Get-PSMutationSuiteDependency -Suite $suite -Source $source -SandboxRoot $root | Should-BeCollection @('src/a.ps1', 'src/helper.ps1')
     }
 
+    It 'asks Pester for no CI output of its own' {
+        # Under a CI, Pester's Auto prints a run that fails as a whole as an error annotation the
+        # pull request then shows; this measurement reports its own failure, naming the suite.
+        Mock Invoke-Pester { throw 'stopped after the configuration was read' }
+        { Get-PSMutationSuiteDependency -Suite @('t.Tests.ps1') -Source @('src/a.ps1') -SandboxRoot ([System.IO.Path]::GetTempPath()) } |
+            Should-Throw -ExceptionMessage 'stopped after the configuration was read'
+        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter { $Configuration.Output.CIFormat.Value -eq 'None' }
+    }
+
     It 'runs nothing when there is no source to measure' {
         Mock Invoke-Pester { throw 'must not run' }
         @(Get-PSMutationSuiteDependency -Suite @('t.Tests.ps1') -Source @() -SandboxRoot ([System.IO.Path]::GetTempPath())).Count | Should-Be 0

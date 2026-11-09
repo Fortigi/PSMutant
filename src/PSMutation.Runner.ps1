@@ -33,6 +33,23 @@ function Set-PSMutationCoverageBreakpoint {
     if ($CodeCoverage.PSObject.Properties['UseBreakpoints']) { $CodeCoverage.UseBreakpoints = $true }
 }
 
+function Set-PSMutationCiFormatOff {
+    # Every Pester run this module starts is its own instrument, and what it finds is reported by
+    # this module. Left on Auto, Pester reads GITHUB_ACTIONS or TF_BUILD and prints a run that fails
+    # as a whole -- "No test files were found" -- as a CI error command, which the pull request then
+    # shows as an error of the consumer's, against a file that is not theirs. Verbosity 'None' does
+    # not stop it: that path is the catch around the whole run, not the screen output.
+    #
+    # Feature-detected, as UseBreakpoints is: CIFormat arrived in Pester 5.3.0 (measured, 5.2.2 does
+    # not have it), and assigning a property that is not there would fail the run.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Sets a field on an in-memory configuration object.')]
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Output)
+    if ($Output.PSObject.Properties['CIFormat']) { $Output.CIFormat = 'None' }
+}
+
 function Invoke-PSMutationBaseline {
     <#
     .SYNOPSIS
@@ -65,6 +82,7 @@ function Invoke-PSMutationBaseline {
     $cfg.Run.Path = $TestPath
     $cfg.Run.PassThru = $true
     $cfg.Output.Verbosity = 'None'
+    Set-PSMutationCiFormatOff -Output $cfg.Output
     $cfg.CodeCoverage.Enabled = [bool]$Coverage
     $cfg.CodeCoverage.Path = $MutateFiles
     # Coverage is read from the RESULT OBJECT below; this file is never opened. The path exists

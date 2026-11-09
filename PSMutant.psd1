@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.9.2'
+    ModuleVersion     = '0.9.3'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -40,12 +40,11 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = 'PSMutant 0.9.2
+            ReleaseNotes = 'PSMutant 0.9.3
 
-- A suite that passes under Invoke-Pester now passes PSMutant''s baseline too.
-- A test file that requires a version of Pester is run, not scored as a kill.
+- PSMutant''s own Pester runs no longer put error annotations on a pull request.
 
-Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.2'
+Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.3'
         }
     }
 }

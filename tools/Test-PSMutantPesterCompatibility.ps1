@@ -178,6 +178,13 @@ if (@($installed).Count -lt 2) {
     throw "This guard needs at least two Pester versions installed; found: $($installed -join ', '). With one on disk a child runspace cannot resolve the WRONG one, which is the collision being tested."
 }
 
+# The runs below mutate the gate's own fixture, whose survivors are there by design. Under a CI,
+# PSMutant annotates every survivor, and the pull request would carry them as findings in a file
+# that is not in this repository. Hidden from this script and the child processes it starts,
+# which inherit the environment, and restored afterwards.
+$ciFlags = @{ GITHUB_ACTIONS = $env:GITHUB_ACTIONS; TF_BUILD = $env:TF_BUILD }
+$env:GITHUB_ACTIONS = $null
+$env:TF_BUILD = $null
 $root = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-compat-$([System.Guid]::NewGuid().ToString('N'))"
 try {
     # Built ONCE, outside the loop. It is version-independent, and rebuilding it per leg would
@@ -209,4 +216,6 @@ try {
 }
 finally {
     Remove-Item -LiteralPath $root -Recurse -Force -ErrorAction SilentlyContinue
+    $env:GITHUB_ACTIONS = $ciFlags.GITHUB_ACTIONS
+    $env:TF_BUILD = $ciFlags.TF_BUILD
 }

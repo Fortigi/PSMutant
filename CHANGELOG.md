@@ -1,4 +1,16 @@
-## [0.9.2] - 2026-11-08
+## [0.9.3] - 2026-11-09
+
+### For consumers
+
+**PSMutant's own Pester runs no longer put error annotations on a pull request.** Under GitHub
+Actions or Azure Pipelines, Pester prints a run that fails as a whole, such as "No test files were
+found", as a CI error command, even with its output turned off. PSMutant reports those failures
+itself, so the annotation was a duplicate pointing at no file of yours. It was seen with
+`-Incremental` when a suite could not be measured. PSMutant now sets Pester's `CIFormat` to `None`
+for the runs it starts, on every Pester that has the setting (5.3 and later). PSMutant's own
+survivor annotations are unchanged.
+
+## [0.9.2] - 2026-11-09
 
 ### For consumers
 
