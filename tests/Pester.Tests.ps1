@@ -120,13 +120,43 @@ Describe 'Get-PSMutationPesterPath' {
         # Two Pester 5.x releases CAN sit in one process -- the dll guard only rejects a
         # LOWER loaded version -- and the newer is the one actually serving calls.
         # Handing the child the older path reintroduces the collision it exists to stop.
+        $old = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'p580') -Force
+        $new = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'p610') -Force
+        foreach ($d in $old, $new) { Set-Content -LiteralPath (Join-Path $d.FullName 'Pester.psd1') -Value '@{}' }
         Mock Get-Module {
             @(
-                [pscustomobject]@{ Version = [version]'5.8.0'; Path = 'C:\p\5.8.0\Pester.psd1' }
-                [pscustomobject]@{ Version = [version]'6.1.0'; Path = 'C:\p\6.1.0\Pester.psd1' }
+                [pscustomobject]@{ Version = [version]'5.8.0'; Path = (Join-Path $old.FullName 'Pester.psm1'); ModuleBase = $old.FullName }
+                [pscustomobject]@{ Version = [version]'6.1.0'; Path = (Join-Path $new.FullName 'Pester.psm1'); ModuleBase = $new.FullName }
             )
         }
-        Get-PSMutationPesterPath | Should-Be 'C:\p\6.1.0\Pester.psd1'
+        Get-PSMutationPesterPath | Should-Be (Join-Path $new.FullName 'Pester.psd1')
+    }
+
+    It 'hands over the MANIFEST, not the .psm1 the module reports as its path (#322)' {
+        # Get-Module's Path names Pester.psm1. Imported by that, Pester loads as version 0.0, and a
+        # test file opening with a versioned `#Requires -Modules Pester` cannot run -- its mutant
+        # was then scored Killed with no test named.
+        $base = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'withmanifest') -Force
+        Set-Content -LiteralPath (Join-Path $base.FullName 'Pester.psd1') -Value '@{}'
+        Mock Get-Module { [pscustomobject]@{ Version = [version]'6.1.0'; Path = (Join-Path $base.FullName 'Pester.psm1'); ModuleBase = $base.FullName } }
+        Get-PSMutationPesterPath | Should-Be (Join-Path $base.FullName 'Pester.psd1')
+    }
+
+    It 'falls back to the loaded path when no manifest sits beside it' {
+        $base = New-Item -ItemType Directory -Path (Join-Path $TestDrive 'nomanifest') -Force
+        Mock Get-Module { [pscustomobject]@{ Version = [version]'6.1.0'; Path = (Join-Path $base.FullName 'Pester.psm1'); ModuleBase = $base.FullName } }
+        Get-PSMutationPesterPath | Should-Be (Join-Path $base.FullName 'Pester.psm1')
+    }
+
+    It 'gives a fresh runspace the Pester VERSION this process runs (#322)' {
+        # The property the manifest is for, against the real loaded Pester rather than a stand-in.
+        $rs = [runspacefactory]::CreateRunspace(); $rs.Open()
+        $shell = [PowerShell]::Create(); $shell.Runspace = $rs
+        try {
+            [void]$shell.AddScript('param($p) Import-Module $p -Force; [string](Get-Module Pester).Version').AddArgument((Get-PSMutationPesterPath))
+            [string]($shell.Invoke() | Select-Object -Last 1) | Should-Be ([string](Get-PSMutationLoadedPester).Version)
+        }
+        finally { $shell.Dispose(); $rs.Dispose() }
     }
 
     It 'refuses when no Pester is loaded at all' {
@@ -134,6 +164,71 @@ Describe 'Get-PSMutationPesterPath' {
         # whatever is newest on disk -- exactly the behaviour being prevented.
         Mock Get-Module { }
         { Get-PSMutationPesterPath } | Should-Throw -ExceptionMessage '*not loaded*'
+    }
+}
+
+Describe 'Invoke-PSMutationIsolatedPester (#322)' {
+    BeforeAll {
+        function Get-IsolatedFixture([string]$Body) {
+            $f = Join-Path $TestDrive "iso-$([System.Guid]::NewGuid().ToString('N')).Tests.ps1"
+            Set-Content -LiteralPath $f -Value $Body
+            $c = New-PesterConfiguration
+            $c.Run.Path = $f; $c.Run.PassThru = $true; $c.Output.Verbosity = 'None'
+            return $c
+        }
+    }
+
+    It 'runs a suite that declares, by version, the Pester it needs' {
+        $c = Get-IsolatedFixture @'
+#Requires -Modules @{ ModuleName = 'Pester'; ModuleVersion = '5.0.0' }
+Describe 'requires' { It 'runs' { 1 | Should-Be 1 } }
+'@
+        $r = Invoke-PSMutationIsolatedPester -Configuration $c
+        $r.Result | Should-Be 'Passed'
+        $r.PassedCount | Should-Be 1
+    }
+
+    It 'shows the suite none of the caller''s variables' {
+        # A parameter filter reading `$ConfigFile` for a parameter its call never bound found
+        # Invoke-PSMutation's own -ConfigFile, and the suite went red only under PSMutant.
+        $c = Get-IsolatedFixture @'
+Describe 'leak' { It 'sees no ConfigFile' { $ConfigFile | Should-BeNull } }
+'@
+        $ConfigFile = 'leaked.json'
+        $r = Invoke-PSMutationIsolatedPester -Configuration $c
+        $ConfigFile | Should-Be 'leaked.json'
+        $r.Result | Should-Be 'Passed'
+    }
+
+    It 'starts the suite where the caller stands' {
+        $here = New-Item -ItemType Directory -Path (Join-Path $TestDrive "cwd-$([System.Guid]::NewGuid().ToString('N'))") -Force
+        $c = Get-IsolatedFixture @"
+Describe 'cwd' { It 'starts here' { (Get-Location).ProviderPath | Should-Be '$($here.FullName)' } }
+"@
+        Push-Location -LiteralPath $here.FullName
+        try { $r = Invoke-PSMutationIsolatedPester -Configuration $c }
+        finally { Pop-Location }
+        $r.Result | Should-Be 'Passed'
+    }
+
+    It 'refuses a run that produced no result, naming what the runspace wrote' {
+        # A missing result read as a red suite would send the reader to tests that never ran.
+        $fake = Join-Path $TestDrive "fake-$([System.Guid]::NewGuid().ToString('N')).psm1"
+        Set-Content -LiteralPath $fake -Value "function Invoke-Pester { Write-Error 'the fake Pester wrote this' }"
+        Mock Get-PSMutationPesterPath { $fake }
+        { Invoke-PSMutationIsolatedPester -Configuration (New-PesterConfiguration) } |
+            Should-Throw -ExceptionMessage '*Pester returned no result: the fake Pester wrote this*'
+    }
+
+    It 'returns the result object alone, whatever else reached the output first' {
+        # The result is the LAST thing Invoke-Pester emits; anything written to the output before
+        # it would otherwise turn the result into an array whose .Result reads as nothing.
+        $fake = Join-Path $TestDrive "fake-$([System.Guid]::NewGuid().ToString('N')).psm1"
+        Set-Content -LiteralPath $fake -Value "function Invoke-Pester { 'stray output'; [pscustomobject]@{ Result = 'Passed' } }"
+        Mock Get-PSMutationPesterPath { $fake }
+        $r = Invoke-PSMutationIsolatedPester -Configuration (New-PesterConfiguration)
+        @($r).Count | Should-Be 1
+        $r.Result | Should-Be 'Passed'
     }
 }
 

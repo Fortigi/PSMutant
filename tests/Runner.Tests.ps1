@@ -617,7 +617,7 @@ Describe 'Invoke-PSMutationBaseline' {
     # was only ever exercised end-to-end, so its result-shaping was unpinned. Pester
     # itself is mocked here: the point is what this function does with the result.
     It 'reports a passing suite and collapses covered lines per file' {
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{
                 Result       = 'Passed'
                 CodeCoverage = [pscustomobject]@{
@@ -648,13 +648,24 @@ Describe 'Invoke-PSMutationBaseline' {
         $r.DurationSeconds | Should-BeGreaterThanOrEqual 0
     }
 
+    It 'runs the suite in a runspace of its own, never through Invoke-Pester in this module (#322)' {
+        # Called from here, Pester runs the suite in this module's session state: a consumer's
+        # `Mock -ModuleName $null` captures nothing and a parameter filter can read our variables.
+        Mock Invoke-Pester { throw 'the baseline called Invoke-Pester from inside the module' }
+        Mock Invoke-PSMutationIsolatedPester { [pscustomobject]@{ Result = 'Passed'; CodeCoverage = $null } }
+        (Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir).Passed |
+            Should-BeTrue
+        Should-Invoke Invoke-PSMutationIsolatedPester -Exactly 1
+        Should-Invoke Invoke-Pester -Exactly 0
+    }
+
     It 'measures coverage with breakpoints, which survive a class where the tracer does not (#270)' {
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
         }
         Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) `
             -SandboxRoot $script:coverageDir -Coverage | Out-Null
-        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter { $Configuration.CodeCoverage.UseBreakpoints.Value -eq $true }
+        Should-Invoke Invoke-PSMutationIsolatedPester -Exactly 1 -ParameterFilter { $Configuration.CodeCoverage.UseBreakpoints.Value -eq $true }
     }
 
     It 'leaves the setting alone on a Pester that does not have it' {
@@ -674,14 +685,14 @@ Describe 'Invoke-PSMutationBaseline' {
         # object to read at all, and without CodeCoverage enabled every candidate looks
         # uncovered -- so coveredLinesOnly would quietly reduce the run to nothing and
         # report a perfect score over zero mutants.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
         }
 
         Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) `
             -SandboxRoot $script:coverageDir -Coverage | Out-Null
 
-        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter {
+        Should-Invoke Invoke-PSMutationIsolatedPester -Exactly 1 -ParameterFilter {
             $Configuration.Run.PassThru.Value -eq $true -and $Configuration.CodeCoverage.Enabled.Value -eq $true
         }
     }
@@ -690,9 +701,9 @@ Describe 'Invoke-PSMutationBaseline' {
         # The tracer is a +24% surcharge on this repo's own suite, and two run shapes never read
         # a covered line -- a config with coveredLinesOnly off, and any recheck. Off by default
         # so paying for it is a decision rather than the absence of one.
-        Mock Invoke-Pester { [pscustomobject]@{ Result = 'Passed'; CodeCoverage = $null } }
+        Mock Invoke-PSMutationIsolatedPester { [pscustomobject]@{ Result = 'Passed'; CodeCoverage = $null } }
         $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
-        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter { $Configuration.CodeCoverage.Enabled.Value -eq $false }
+        Should-Invoke Invoke-PSMutationIsolatedPester -Exactly 1 -ParameterFilter { $Configuration.CodeCoverage.Enabled.Value -eq $false }
         # An EMPTY map, which is the true answer -- nothing was measured. Reaching this line at
         # all is half the test: Pester reports no CommandsExecuted with the tracer off, and
         # `$null | ForEach-Object` runs its body ONCE with $_ = $null, so the collector used to
@@ -707,7 +718,7 @@ Describe 'Invoke-PSMutationBaseline' {
         Push-Location ([System.IO.Path]::GetTempPath())
         try {
             $leaf = Split-Path $script:fixture -Leaf
-            Mock Invoke-Pester {
+            Mock Invoke-PSMutationIsolatedPester {
                 [pscustomobject]@{
                     Result       = 'Passed'
                     CodeCoverage = [pscustomobject]@{ CommandsExecuted = @([pscustomobject]@{ File = $leaf; Line = 1; StartLine = 1; StartColumn = 1; EndLine = 1 }) }
@@ -722,7 +733,7 @@ Describe 'Invoke-PSMutationBaseline' {
     It 'reports a failing suite so the run can refuse to start' {
         # Mutating against a red suite is meaningless: every mutant "dies" for the
         # reason the suite was already failing.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{ Result = 'Failed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
         }
 
@@ -985,17 +996,17 @@ Describe 'the baseline coverage XML' {
         # construction, and they accumulated for the life of the machine -- 67 of them on the box
         # this was found on. Inside the sandbox it is removed by the cleanup that already exists.
         #
-        # Invoke-Pester is MOCKED, as everywhere else in this Describe. The first draft of this
+        # Pester is MOCKED, as everywhere else in this Describe. The first draft of this
         # test let the real one run, and -TestPath @('tests') is the whole suite -- which contains
         # EndToEnd.Tests.ps1, which starts real mutation runs of its own. The suite went from 33
         # seconds to not finishing.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
         }
 
         Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir | Out-Null
 
-        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter {
+        Should-Invoke Invoke-PSMutationIsolatedPester -Exactly 1 -ParameterFilter {
             $Configuration.CodeCoverage.OutputPath.Value -eq (Join-Path $script:coverageDir 'coverage.xml')
         }
     }
@@ -1003,13 +1014,13 @@ Describe 'the baseline coverage XML' {
     It 'no longer names the file after the process, anywhere' {
         # The other half. Asserting only where it DOES point would pass just as well if the path
         # were built from both -- and the whole complaint is the temp-shaped name.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() } }
         }
 
         Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir | Out-Null
 
-        Should-Invoke Invoke-Pester -Exactly 1 -ParameterFilter {
+        Should-Invoke Invoke-PSMutationIsolatedPester -Exactly 1 -ParameterFilter {
             $Configuration.CodeCoverage.OutputPath.Value -notlike '*psmut-coverage-*'
         }
     }
@@ -1024,7 +1035,7 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
         # And the fixture uses CRLF on purpose: splitting on "`n" alone leaves the carriage
         # return on the end of the first line, which then travels into the exception the gate
         # throws and prints as a stray break in the middle of its one line of output.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{
                 Result       = 'Failed'
                 CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
@@ -1056,7 +1067,7 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
         # That empty reason is the bare test name this field exists to improve on: a -Quiet gate
         # prints one line, and a name with no reason sends the reader to reproduce a failure that
         # is not happening on their machine. Found by an end-to-end test going red on both legs.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{
                 Result       = 'Failed'
                 CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
@@ -1084,7 +1095,7 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
         # index 0 when there are two -- so the boundary was unpinned and the mutation gate found
         # it. With one line and `-gt 1`, the guard falls through to the whole raw message, blank
         # padding and all.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{
                 Result       = 'Failed'
                 CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
@@ -1111,7 +1122,7 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
         #
         # The container's record is deliberately not reached for: it holds Pester's own
         # break/continue guard text, which says nothing about the consumer's failure.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{
                 Result       = 'Failed'
                 CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
@@ -1134,7 +1145,7 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
         # EMPTY ErrorRecord collection. ErrorRecord is a List, and reading .Exception.Message off
         # the list works only by member enumeration -- which yields the inner value for one element
         # and nothing for zero or many. That is why this is read as a collection.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{
                 Result       = 'Failed'
                 CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
@@ -1153,7 +1164,7 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
     It 'counts only the failures that came back with nothing to say' {
         # One of each, so a count that included every failure, or none, is wrong here. The blank
         # message is the second shape of "nothing": an error record whose text is only whitespace.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{
                 Result       = 'Failed'
                 CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }
@@ -1174,7 +1185,7 @@ Describe 'Invoke-PSMutationBaseline, on a red suite' {
         # Failed is null when nothing failed. A pipeline over it runs once with $null and would
         # count a phantom failure -- harmless today, because the guard reads it only when the run
         # is red, and exactly the kind of harmless that stops being so.
-        Mock Invoke-Pester {
+        Mock Invoke-PSMutationIsolatedPester {
             [pscustomobject]@{ Result = 'Passed'; CodeCoverage = [pscustomobject]@{ CommandsExecuted = @() }; Failed = $null }
         }
         $r = Invoke-PSMutationBaseline -TestPath @('tests') -MutateFiles @($script:fixture) -SandboxRoot $script:coverageDir
@@ -1852,13 +1863,13 @@ Describe 'Get-PSMutationWorkerGreenFault' {
         $f | Should-Be 'The unmutated covering suite ran no test in a clean runspace: tests/a.Tests.ps1 in worker 1. Every test in it was skipped or never discovered, so it cannot pass a verdict on any mutant it covers.'
     }
 
-    It 'names the suite, the worker and the failed tests, and what the session may have provided' {
+    It 'names the suite, the worker and the failed tests, and what may differ between the two' {
         $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @('A.one', 'A.two') }) `
             -Suite @('tests/a.Tests.ps1', 'tests/b.Tests.ps1') -WorkerId 2 -TimeoutSeconds 5
         # Anchored at both ends, so a broken concatenation -- which QUOTES the text so far -- cannot match.
-        $f | Should-BeLikeString 'The covering suite passes in this session but not in a clean runspace*'
-        $f | Should-BeLikeString '*: tests/a.Tests.ps1, tests/b.Tests.ps1 in worker 2. Failed: A.one; A.two. It depends on*'
-        $f | Should-BeLikeString '*$ErrorActionPreference, strict mode, $PSDefaultParameterValues*'
+        $f | Should-BeLikeString 'The covering suite passed the baseline but fails in a worker*'
+        $f | Should-BeLikeString '*: tests/a.Tests.ps1, tests/b.Tests.ps1 in worker 2. Failed: A.one; A.two. Both are clean runspaces*'
+        $f | Should-BeLikeString '*a worker runs its own copy, so an absolute path into another copy*'
         $f | Should-BeLikeString '*scored Killed by that failure rather than by a test.'
     }
 
@@ -1866,7 +1877,7 @@ Describe 'Get-PSMutationWorkerGreenFault' {
         $eleven = @(1..11 | ForEach-Object { "T.$_" })
         $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = $eleven }) `
             -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
-        $f | Should-BeLikeString '*Failed: T.1; T.2; T.3; T.4; T.5; T.6; T.7; T.8; T.9; T.10 (and 1 more). It*'
+        $f | Should-BeLikeString '*Failed: T.1; T.2; T.3; T.4; T.5; T.6; T.7; T.8; T.9; T.10 (and 1 more). Both*'
     }
 
     It 'names exactly ten without counting a remainder' {
@@ -1874,14 +1885,14 @@ Describe 'Get-PSMutationWorkerGreenFault' {
         $ten = @(1..10 | ForEach-Object { "T.$_" })
         $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = $ten }) `
             -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
-        $f | Should-BeLikeString '*Failed: T.1;*; T.10. It*'
+        $f | Should-BeLikeString '*Failed: T.1;*; T.10. Both*'
         $f | Should-NotBeLikeString '*more)*'
     }
 
     It 'points at a BeforeAll when no test carried the error' {
         $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @() }) `
             -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
-        $f | Should-BeLikeString '*in worker 0. No test carried the error, so a BeforeAll failed: run the file alone in a new session to see it. It depends on*'
+        $f | Should-BeLikeString '*in worker 0. No test carried the error, so a BeforeAll failed: run the file alone in a new session to see it. Both are clean runspaces*'
     }
 
     It 'says an unmutated suite that ended its worker process would kill every mutant (#256)' {

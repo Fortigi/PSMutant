@@ -90,8 +90,10 @@ function Invoke-PSMutationBaseline {
     # 65s): the tracer is not only fragile but short.
     Set-PSMutationCoverageBreakpoint -CodeCoverage $cfg.CodeCoverage
 
+    # In a runspace of its own, never in this one (#322): called from here, the suite ran inside
+    # this module's stack and saw its scope and its variables, which the consumer's CI never shows it.
     $sw = [System.Diagnostics.Stopwatch]::StartNew()
-    $result = Invoke-Pester -Configuration $cfg
+    $result = Invoke-PSMutationIsolatedPester -Configuration $cfg
     $sw.Stop()
 
     # A foreach STATEMENT, not a pipeline, and that is the whole of a bug this uncovered. With the
@@ -1465,8 +1467,8 @@ function Get-PSMutationWorkerGreenFault {
     if ($Run.Result -eq 'Crashed') {
         return "The unmutated covering suite ended the worker process running it: $where. Something in it calls [Environment]::Exit or overflows the stack, and every mutant it covers would be scored Killed by that rather than by a test."
     }
-    # Named, and capped at ten, as the baseline guard does: a suite that depends on the session
-    # usually fails every test it has, and the first name is the one most likely to explain them.
+    # Named, and capped at ten, as the baseline guard does: a suite that fails in a worker usually
+    # fails every test it has, and the first name is the one most likely to explain them.
     $named = @($Run.Killers)
     $failed = ' No test carried the error, so a BeforeAll failed: run the file alone in a new session to see it.'
     if ($named.Count -gt 0) {
@@ -1474,10 +1476,10 @@ function Get-PSMutationWorkerGreenFault {
         if ($named.Count -gt 10) { $more = " (and $($named.Count - 10) more)" }
         $failed = " Failed: $(@($named | Select-Object -First 10) -join '; ')$more."
     }
-    return ("The covering suite passes in this session but not in a clean runspace, which is where every mutant runs: $where.$failed " +
-        'It depends on something the calling session provides -- a loaded module, a global variable or function, ' +
-        '$ErrorActionPreference, strict mode, $PSDefaultParameterValues -- and every mutant it covers would be scored ' +
-        'Killed by that failure rather than by a test.')
+    return ("The covering suite passed the baseline but fails in a worker, which is where every mutant runs: $where.$failed " +
+        'Both are clean runspaces, so it depends on something that differs between them -- most often the sandbox: ' +
+        'a worker runs its own copy, so an absolute path into another copy, or a port or file another worker holds, ' +
+        'fails there -- and every mutant it covers would be scored Killed by that failure rather than by a test.')
 }
 
 function Start-PSMutationGreenJob {
@@ -1529,11 +1531,11 @@ function Assert-PSMutationWorkerGreen {
         Run every covering suite the candidates will use, unmutated, in every worker, and refuse the
         run if any is not green there (#248).
     .DESCRIPTION
-        The baseline runs in the CALLER'S session: its loaded modules, its global functions and
-        variables, its $ErrorActionPreference and strict mode. A mutant runs in a worker runspace
-        that has only Pester. A suite green only because of the first is red in the second for a
-        reason that has nothing to do with any mutant, and every mutant is then scored Killed -- a
-        perfect score that nothing flags. Stryker's initial test run exists for the same reason.
+        The baseline runs once, in a fresh runspace in this process, over the PRIMARY sandbox. A
+        mutant runs in a worker's warm runspace -- or a worker process -- over that worker's own
+        copy. A suite green in the first and red in the second for a reason that has nothing to do
+        with any mutant scores every mutant Killed -- a perfect score that nothing flags. Stryker's
+        initial test run exists for the same reason.
 
         Through the SAME shell, script and sandbox a mutant uses, so passing here means what a
         mutant's Passed would mean. Every worker, not one: each has its own sandbox copy, and a
