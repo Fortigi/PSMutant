@@ -1769,6 +1769,232 @@ Describe 'Get-PSMutationInputFault' {
         Fault -Changed $false -Files @() | Should-Be ''
         Fault -Changed $true -Files @() | Should-MatchString 'empty list'
     }
+
+    It 'reports an empty -ChangedFile before a -ChangedLine key it cannot hold' {
+        # The key matches nothing in an empty list, but the empty list is the cause.
+        Get-PSMutationInputFault -SourceRoot $script:ifRoot -ListOnly $false -Recheck $false -UpdateBaseline $false `
+            -MergeIntoBaseline $false -Changed $true -ChangedFile @() -ChangedLine @{ 'src/a.ps1' = @(1) } |
+            Should-MatchString 'empty list'
+    }
+
+    It 'reports a -ChangedLine fault when nothing else is wrong' {
+        Get-PSMutationInputFault -SourceRoot $script:ifRoot -ListOnly $false -Recheck $false -UpdateBaseline $false `
+            -MergeIntoBaseline $false -Changed $true -ChangedFile @('src/a.ps1') -ChangedLine @{ 'src/b.ps1' = @(1) } |
+            Should-MatchString "names 'src/b.ps1', which is not in -ChangedFile"
+    }
+
+    It 'accepts a -ChangedLine map that refines -ChangedFile' {
+        Get-PSMutationInputFault -SourceRoot $script:ifRoot -ListOnly $false -Recheck $false -UpdateBaseline $false `
+            -MergeIntoBaseline $false -Changed $true -ChangedFile @('src/a.ps1') -ChangedLine @{ 'src/a.ps1' = @(1) } |
+            Should-Be ''
+    }
+}
+
+Describe 'Get-PSMutationChangedLineFault' {
+    BeforeAll {
+        $script:clRoot = Join-Path $TestDrive 'cl'
+        New-Item -ItemType Directory -Path $script:clRoot -Force | Out-Null
+        function script:LineFault {
+            param($Map, [bool]$Changed = $true, [string[]]$Files = @('src/a.ps1', 'src/b.ps1'))
+            Get-PSMutationChangedLineFault -ChangedLine $Map -Changed $Changed -ChangedFile $Files -SourceRoot $script:clRoot
+        }
+    }
+
+    It 'says nothing when -ChangedLine was not given' {
+        LineFault -Map $null -Changed $false | Should-Be ''
+    }
+
+    It 'says nothing about a map whose keys -ChangedFile names, with whole numbers from 1 up' {
+        # A [long] as well as an [int]: ConvertFrom-Json hands a JSON number back as [long].
+        LineFault -Map @{ 'src/a.ps1' = @(1, [long]40); 'src/b.ps1' = @() } | Should-Be ''
+    }
+
+    It 'accepts a single number given without an array' {
+        LineFault -Map @{ 'src/a.ps1' = 7 } | Should-Be ''
+    }
+
+    It 'refuses -ChangedLine without -ChangedFile, and says to pass the files' {
+        # It names no file of its own; read as a scope, it would make the keys the scope.
+        $f = LineFault -Map @{ 'src/a.ps1' = @(1) } -Changed $false -Files @()
+        $f | Should-MatchString 'was given without -ChangedFile'
+        $f | Should-MatchString 'pass the same files to -ChangedFile'
+    }
+
+    It 'refuses even an empty map without -ChangedFile' {
+        LineFault -Map @{} -Changed $false -Files @() | Should-MatchString 'without -ChangedFile'
+    }
+
+    It 'refuses a key that no -ChangedFile entry names, and names the key' {
+        $f = LineFault -Map @{ 'src/c.ps1' = @(1) }
+        $f | Should-MatchString "names 'src/c.ps1', which is not in -ChangedFile"
+        $f | Should-MatchString 'Add the file to -ChangedFile, or drop the key'
+    }
+
+    It 'matches a key spelled differently from its -ChangedFile entry when both name one file' {
+        # The case and the path form differ; the sandbox-path resolution makes them equal.
+        LineFault -Map @{ 'SRC/./A.ps1' = @(2) } -Files @('src/a.ps1') | Should-Be ''
+    }
+
+    It 'matches a key given relative to a source root that is itself relative' {
+        Push-Location $TestDrive
+        try {
+            Get-PSMutationChangedLineFault -ChangedLine @{ 'src/a.ps1' = @(2) } -Changed $true -ChangedFile @('src/a.ps1') -SourceRoot 'cl' |
+                Should-Be ''
+        }
+        finally { Pop-Location }
+    }
+
+    It 'refuses a line number that is <Name>, naming the number and the file' -ForEach @(
+        @{ Name = 'zero'; Bad = 0; Shown = '0' }
+        @{ Name = 'negative'; Bad = -3; Shown = '-3' }
+        @{ Name = 'a text'; Bad = '3-5'; Shown = '3-5' }
+        @{ Name = 'a fraction'; Bad = 2.5; Shown = '2.5' }
+        @{ Name = 'null'; Bad = $null; Shown = '' }
+    ) {
+        $f = LineFault -Map @{ 'src/a.ps1' = @(4, $Bad) }
+        $f | Should-MatchString ([regex]::Escape("gives '$Shown' as a line of 'src/a.ps1'"))
+        $f | Should-MatchString 'whole number from 1'
+    }
+
+    It 'checks the line numbers of a key after the key itself' {
+        # Both wrong: the key is the more basic fault, and its numbers mean nothing without it.
+        LineFault -Map @{ 'src/c.ps1' = @(0) } | Should-MatchString 'not in -ChangedFile'
+    }
+
+    It 'refuses a bad line number of the last key it reads, after keys whose numbers are good' {
+        # A hashtable enumerates in an order that changes from one process to the next, and also
+        # when the value of a key is set again. So the order comes from a map built the same way,
+        # and the bad number goes into a new map, on the key that is read last.
+        $keys = 'src/a.ps1', 'src/b.ps1'
+        $probe = @{}
+        foreach ($k in $keys) { $probe[$k] = @(1) }
+        $last = @($probe.Keys)[-1]
+        $map = @{}
+        foreach ($k in $keys) { $map[$k] = ($k -eq $last) ? @(3, 0) : @(1) }
+        @($map.Keys)[-1] | Should-Be $last -Because 'the bad number must be on the key read last, or a stop after the first key passes'
+        LineFault -Map $map | Should-MatchString ([regex]::Escape("gives '0' as a line of '$last'"))
+    }
+}
+
+Describe 'Get-PSMutationLineNumberFault' {
+    It 'returns an empty text for <Name>' -ForEach @(
+        @{ Name = 'whole numbers from 1 up'; Value = @(1, [long]9) }
+        @{ Name = 'an empty list'; Value = @() }
+    ) {
+        Get-PSMutationLineNumberFault -File 'src/a.ps1' -Value $Value | Should-Be ''
+    }
+}
+
+Describe 'Test-PSMutationLineNumber' {
+    It 'is true for <Name>' -ForEach @(
+        @{ Name = 'one, the first line'; Value = 1 }
+        @{ Name = 'a larger [int]'; Value = 250 }
+        @{ Name = 'a [long]'; Value = [long]3 }
+    ) {
+        Test-PSMutationLineNumber -Value $Value | Should-BeTrue
+    }
+
+    It 'is false for <Name>' -ForEach @(
+        @{ Name = 'zero'; Value = 0 }
+        @{ Name = 'a negative [long]'; Value = [long]-1 }
+        @{ Name = 'a digit text'; Value = '5' }
+        @{ Name = 'a whole [double]'; Value = [double]5 }
+        @{ Name = 'null'; Value = $null }
+    ) {
+        Test-PSMutationLineNumber -Value $Value | Should-BeFalse
+    }
+}
+
+Describe 'ConvertTo-PSMutationScopedChangedLine' {
+    BeforeAll {
+        $script:sclSb = Join-Path $TestDrive 'sb'
+        $script:sclRoot = Join-Path $TestDrive 'repo'
+        $script:sclA = [System.IO.Path]::GetFullPath((Join-Path $script:sclSb 'src/a.ps1'))
+        $script:sclB = [System.IO.Path]::GetFullPath((Join-Path $script:sclSb 'src/b.ps1'))
+        function script:Scoped { param([string[]]$Mutate, [hashtable]$Map)
+            ConvertTo-PSMutationScopedChangedLine -Mutate $Mutate -ChangedLine $Map -SourceRoot $script:sclRoot -SandboxRoot $script:sclSb
+        }
+    }
+
+    It 'keys each mutate file by its own sandbox path, with its lines as a set' {
+        $out = Scoped -Mutate @($script:sclA, $script:sclB) -Map @{ 'src/a.ps1' = @(3, 5) }
+        @($out.Keys) | Should-BeCollection @($script:sclA)
+        $out[$script:sclA].Contains(3) | Should-BeTrue
+        $out[$script:sclA].Contains(5) | Should-BeTrue
+        $out[$script:sclA].Count | Should-Be 2
+    }
+
+    It 'leaves out a key whose file is not in the scoped mutate set' {
+        # A changed test or document can carry lines too; only a file this run mutates is filtered.
+        $out = Scoped -Mutate @($script:sclA) -Map @{ 'src/a.ps1' = @(1); 'tests/a.Tests.ps1' = @(2) }
+        @($out.Keys) | Should-BeCollection @($script:sclA)
+    }
+
+    It 'joins the lines of two keys that name one file' {
+        $out = Scoped -Mutate @($script:sclA) -Map @{ 'src/a.ps1' = @(1); 'src/./a.ps1' = @(9) }
+        @($out[$script:sclA] | Sort-Object) | Should-BeCollection @(1, 9)
+        $out[$script:sclA].Count | Should-Be 2
+    }
+
+    It 'keeps an empty list as an entry with no line, not as no entry' {
+        # No entry would mutate the file whole; an empty set mutates none of it.
+        $out = Scoped -Mutate @($script:sclA) -Map @{ 'src/a.ps1' = @() }
+        $out.ContainsKey($script:sclA) | Should-BeTrue
+        $out[$script:sclA].Count | Should-Be 0
+    }
+}
+
+Describe 'ConvertTo-PSMutationChangedLineRecord' {
+    BeforeAll {
+        $script:recA = 'C:/sb/src/a.ps1'
+        $script:recB = 'C:/sb/src/b.ps1'
+        $script:recC = 'C:/sb/src/c.ps1'
+        $script:recMap = @{ $script:recA = 'src/a.ps1'; $script:recB = 'src/b.ps1'; $script:recC = 'src/c.ps1' }
+    }
+
+    It 'names each file as the config does, in mutate order, with its lines ascending' {
+        $lines = @{
+            $script:recC = [System.Collections.Generic.HashSet[int]]@(9, 2)
+            $script:recA = [System.Collections.Generic.HashSet[int]]@(30, 4, 17)
+        }
+        $out = ConvertTo-PSMutationChangedLineRecord -ChangedLines $lines -Mutate @($script:recA, $script:recB, $script:recC) -ConfigByPath $script:recMap
+        # The joined text, because Should-BeCollection does not check the order.
+        (@($out.Keys) -join ',') | Should-Be 'src/a.ps1,src/c.ps1'
+        ($out['src/a.ps1'] -join ',') | Should-Be '4,17,30'
+        ($out['src/c.ps1'] -join ',') | Should-Be '2,9'
+    }
+
+    It 'records an empty list as an empty array' {
+        $out = ConvertTo-PSMutationChangedLineRecord -ChangedLines @{ $script:recB = [System.Collections.Generic.HashSet[int]]::new() } `
+            -Mutate @($script:recA, $script:recB) -ConfigByPath $script:recMap
+        @($out.Keys) | Should-BeCollection @('src/b.ps1')
+        $out['src/b.ps1'] -is [array] | Should-BeTrue
+        $out['src/b.ps1'].Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationScopedRunText' {
+    It 'says what a -ChangedFile run measured and where it reports' {
+        Get-PSMutationScopedRunText -ChangedCount 3 -InScopeCount 1 -ChangedLines $null -ReportLeaf 'r.changed.json' |
+            Should-Be '  SCOPED run: 3 changed file(s) given, 1 of them in mutate. The score covers those only, and the report goes to r.changed.json.'
+    }
+
+    It 'adds how many files -ChangedLine limited, even when it limited none' {
+        Get-PSMutationScopedRunText -ChangedCount 3 -InScopeCount 2 -ChangedLines @{ a = 1 } -ReportLeaf 'r.changed.json' |
+            Should-Be '  SCOPED run: 3 changed file(s) given, 2 of them in mutate, 1 of those limited to their changed lines. The score covers those only, and the report goes to r.changed.json.'
+        Get-PSMutationScopedRunText -ChangedCount 1 -InScopeCount 0 -ChangedLines @{} -ReportLeaf 'r.json' |
+            Should-MatchString ([regex]::Escape(', 0 of those limited to their changed lines.'))
+    }
+}
+
+Describe 'ConvertTo-PSMutationChangedPath' {
+    It 'resolves a -ChangedFile entry and a -ChangedLine key to the same sandbox path' {
+        $root = Join-Path $TestDrive 'cp-repo'
+        $sb = Join-Path $TestDrive 'cp-sb'
+        $expected = [System.IO.Path]::GetFullPath((Join-Path $sb 'src/a.ps1'))
+        ConvertTo-PSMutationChangedPath -Path 'src/a.ps1' -SourceRoot $root -SandboxRoot $sb | Should-Be $expected
+        ConvertTo-PSMutationChangedPath -Path 'src/./a.ps1' -SourceRoot $root -SandboxRoot $sb | Should-Be $expected
+    }
 }
 
 Describe 'per-file deadlines (#253)' {

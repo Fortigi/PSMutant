@@ -407,6 +407,124 @@ Describe 'b' { It 'runs' { { Get-Flag 2 } | Should -Not -Throw } }
     }
 }
 
+Describe 'Invoke-PSMutation -ChangedLine end-to-end' {
+    BeforeAll {
+        # Three files: one limited to line 5, one with no key and so mutated whole, and one whose
+        # changed lines are an empty list. Line 5 is the SECOND line of a two-line condition, so the
+        # condition's own mutants start on line 4 and must still be kept.
+        $script:cl = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-cl-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:cl 'src') -Force | Out-Null
+        New-Item -ItemType Directory -Path (Join-Path $script:cl 'tests') -Force | Out-Null
+        @(
+            'function Get-Band {'
+            '    param($n)'
+            '    if ($n -gt 10) { return ''high'' }'
+            '    if ($n -gt 5 -and'
+            '        $n -lt 9) { return ''mid'' }'
+            '    return ''low'''
+            '}'
+        ) | Set-Content (Join-Path $script:cl 'src/c.ps1') -Encoding utf8
+        'function Get-Pos { param($n) return $n -gt 0 }' | Set-Content (Join-Path $script:cl 'src/d.ps1') -Encoding utf8
+        'function Get-Neg { param($n) return $n -lt 0 }' | Set-Content (Join-Path $script:cl 'src/e.ps1') -Encoding utf8
+        @'
+BeforeAll { foreach ($f in 'c.ps1', 'd.ps1', 'e.ps1') { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' $f) } }
+Describe 'all' {
+    It 'bands' { Get-Band 12 | Should -Be 'high'; Get-Band 10 | Should -Be 'low'; Get-Band 7 | Should -Be 'mid'; Get-Band 9 | Should -Be 'low'; Get-Band 5 | Should -Be 'low'; Get-Band 3 | Should -Be 'low' }
+    It 'signs' { Get-Pos 1 | Should -BeTrue; Get-Pos 0 | Should -BeFalse; Get-Neg -1 | Should -BeTrue; Get-Neg 0 | Should -BeFalse }
+}
+'@ | Set-Content (Join-Path $script:cl 'tests/all.Tests.ps1') -Encoding utf8
+        $script:clConfig = Join-Path $script:cl 'c.json'
+        [ordered]@{
+            sandboxSubtrees  = @('src', 'tests')
+            mutate           = @('src/c.ps1', 'src/d.ps1', 'src/e.ps1')
+            tests            = @{ 'src/c.ps1' = @('tests/all.Tests.ps1'); 'src/d.ps1' = @('tests/all.Tests.ps1'); 'src/e.ps1' = @('tests/all.Tests.ps1') }
+            coveredLinesOnly = $true
+            operators        = @('BinaryOperator', 'ConditionForcing')
+            thresholds       = @{ high = 85; low = 70; break = $null }
+            reportPath       = 'reports/r.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $script:clConfig -Encoding utf8
+
+        $script:clChanged = @('src/c.ps1', 'src/d.ps1', 'src/e.ps1')
+        $script:clLines = @{ 'src/c.ps1' = @(5); 'src/e.ps1' = @() }
+        $null = Invoke-PSMutation -ConfigFile $script:clConfig -SourceRoot $script:cl -Quiet
+        $script:clFull = Get-Content (Join-Path $script:cl 'reports/r.json') -Raw | ConvertFrom-Json
+        $script:clResult = Invoke-PSMutation -ConfigFile $script:clConfig -SourceRoot $script:cl -Quiet `
+            -ChangedFile $script:clChanged -ChangedLine $script:clLines
+        $script:clText = [System.IO.File]::ReadAllText((Join-Path $script:cl 'reports/r.changed.json'))
+        $script:clScoped = $script:clText | ConvertFrom-Json
+        function script:Keys { param($Rows) @($Rows | ForEach-Object { "$($_.File)#$($_.Id)" }) -join ',' }
+    }
+
+    AfterAll { Remove-Item $script:cl -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'mutates only the mutants that touch a named line, under the ids a full run gives them' {
+        $fullC = @($script:clFull.mutants | Where-Object File -EQ 'src/c.ps1')
+        # The condition's mutants start on line 4 and end on line 5; the -lt on line 5 is the other.
+        $expected = @($fullC | Where-Object { $_.Line -eq 5 -or ($_.Operator -eq 'ConditionForcing' -and $_.Line -eq 4) })
+        $expected.Count | Should-BeGreaterThan 0
+        $expected.Count | Should-BeLessThan $fullC.Count
+        @($expected | Where-Object Line -EQ 4).Count | Should-BeGreaterThan 0
+        Keys @($script:clScoped.mutants | Where-Object File -EQ 'src/c.ps1') | Should-Be (Keys $expected)
+    }
+
+    It 'mutates a changed file with no key whole, and one with an empty list not at all' {
+        $fullD = @($script:clFull.mutants | Where-Object File -EQ 'src/d.ps1')
+        $fullD.Count | Should-BeGreaterThan 0
+        Keys @($script:clScoped.mutants | Where-Object File -EQ 'src/d.ps1') | Should-Be (Keys $fullD)
+        @($script:clFull.mutants | Where-Object File -EQ 'src/e.ps1').Count | Should-BeGreaterThan 0
+        @($script:clScoped.mutants | Where-Object File -EQ 'src/e.ps1').Count | Should-Be 0
+    }
+
+    It 'records the lines and how many mutants they left out' {
+        @($script:clScoped.changedLines.PSObject.Properties.Name) | Should-BeCollection @('src/c.ps1', 'src/e.ps1')
+        @($script:clScoped.changedLines.'src/c.ps1') | Should-BeCollection @(5)
+        $script:clText | Should-MatchString '"src/e.ps1": \[\]'
+        $script:clScoped.skippedAsUnchanged | Should-Be ($script:clFull.total - $script:clScoped.total)
+        $script:clResult.Total | Should-Be $script:clScoped.total
+        $script:clResult.Mode | Should-Be 'Changed'
+    }
+
+    It 'writes a report the published schema accepts, and refuses a line number below 1' {
+        $schema = Get-Content (Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v3/report.schema.json') -Raw
+        function Test-LineSchema { param([string]$Json) return (Test-Json -Json $Json -Schema $schema -ErrorAction SilentlyContinue) }
+        Should-BeTrue -Actual (Test-LineSchema -Json $script:clText)
+        $bad = $script:clText -replace '(?m)^([ \t]*"src/c\.ps1": \[)[^\]]*\]', '${1}0]'
+        $bad | Should-NotBe $script:clText -Because 'the fixture must actually differ, or this asserts nothing'
+        Should-BeFalse -Actual (Test-LineSchema -Json $bad)
+    }
+
+    It 'previews the same set with -ListOnly' {
+        $p = Invoke-PSMutation -ConfigFile $script:clConfig -SourceRoot $script:cl -Quiet -ListOnly `
+            -ChangedFile $script:clChanged -ChangedLine $script:clLines
+        $p.Total | Should-Be $script:clScoped.total
+        $p.Unchanged | Should-Be $script:clScoped.skippedAsUnchanged
+    }
+
+    It 'does not call a declared equivalent stale when its mutant is on a line it was not given' {
+        # Line 3 is not a changed line, so its mutants are not evaluated, and a declaration about
+        # one of them matched nothing because nothing looked.
+        $m = @($script:clFull.mutants | Where-Object { $_.File -eq 'src/c.ps1' -and $_.Line -eq 3 })[0]
+        $null -eq $m | Should-BeFalse -Because 'the declaration must name a mutant that exists'
+        $cfg = Get-Content $script:clConfig -Raw | ConvertFrom-Json
+        $cfg | Add-Member -NotePropertyName equivalents -NotePropertyValue ([pscustomobject]@{
+                "src/c.ps1:3:$($m.Description)" = 'argued about a mutant on an unchanged line'
+            })
+        $withDecl = Join-Path $script:cl 'c-eq.json'
+        $cfg | ConvertTo-Json -Depth 8 | Set-Content $withDecl -Encoding utf8
+        $r = Invoke-PSMutation -ConfigFile $withDecl -SourceRoot $script:cl -Quiet `
+            -ChangedFile $script:clChanged -ChangedLine $script:clLines
+        $r.StaleEquivalents | Should-BeCollection @()
+        $r.FailureReason | Should-NotBe 'StaleEquivalents'
+        $r.Total | Should-Be $script:clScoped.total
+    }
+
+    It 'refuses -ChangedLine with -RecheckFrom, as -ChangedFile is refused' {
+        { Invoke-PSMutation -ConfigFile $script:clConfig -SourceRoot $script:cl -Quiet -ChangedFile $script:clChanged `
+                -ChangedLine $script:clLines -RecheckFrom (Join-Path $script:cl 'reports/r.json') } |
+            Should-Throw -ExceptionMessage '-ChangedFile scopes the run*-RecheckFrom*'
+    }
+}
+
 Describe 'Invoke-PSMutation -RecheckFrom end-to-end' {
     BeforeAll {
         $script:fullReport = Join-Path $script:proj 'reports/e2e.json'

@@ -611,6 +611,23 @@ Describe 'the contract a consumer actually depends on' {
         finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
     }
 
+    It 'writes exactly those fields and the scope ones on a -ChangedLine run' {
+        $out = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-contract-lines-$PID-$($script:tag)/report.json"
+        try {
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null `
+                -ChangedFiles @('src/a.ps1') -ChangedLines ([ordered]@{ 'src/a.ps1' = [int[]]@(2) }) | Out-Null
+            (Get-Content $out -Raw | ConvertFrom-Json).PSObject.Properties.Name |
+                Should-BeCollection @(
+                    'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
+                    'mutationScore', 'totalMutationScore', 'total', 'killed', 'survived', 'timedOut', 'compileErrors', 'runtimeErrors',
+                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'testFiles', 'perFile', 'skippedAsUncovered', 'skippedAsIgnoredCall', 'ignoreCalls', 'filesWithNoMutants',
+                    'filesWithNoCandidate', 'filesWithoutTestMapping',
+                    'staleEquivalents', 'thresholds', 'operators',
+                    'sourceHashes', 'survivors', 'mutants', 'mode', 'changedFiles', 'changedLines', 'skippedAsUnchanged')
+        }
+        finally { Remove-Item (Split-Path $out -Parent) -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
 }
 
 Describe 'a report that cannot be written must fail the run' {
@@ -1844,6 +1861,113 @@ Describe 'what ignored calls took out (#263)' {
     }
 }
 
+Describe 'what -ChangedLine took out' {
+    BeforeAll {
+        $script:linePerFile = @(
+            [pscustomobject]@{ File = 'a.ps1'; Produced = 4; Kept = 3; Ignored = 1; Unchanged = 2 }
+            [pscustomobject]@{ File = 'b.ps1'; Produced = 2; Kept = 2; Ignored = 0; Unchanged = 5 }
+        )
+    }
+
+    It 'sums the files apart from what coverage and ignored calls removed' {
+        # Skipped and Ignored read exactly as they would without the line filter.
+        $x = Get-PSMutationCoverageExclusion -PerFile $script:linePerFile
+        $x.Unchanged | Should-Be 7
+        $x.Skipped | Should-Be 1
+        $x.Ignored | Should-Be 1
+        @($x.FilesWithNoMutants) | Should-BeCollection @()
+        @($x.FilesWithNoCandidate) | Should-BeCollection @()
+    }
+
+    It 'is zero for a tally without the count, as a run without -ChangedLine gives' {
+        (Get-PSMutationCoverageExclusion -PerFile @([pscustomobject]@{ File = 'a.ps1'; Produced = 1; Kept = 1 })).Unchanged | Should-Be 0
+    }
+
+    It 'says how many, after the ignored calls and before the coverage caveat, and nothing when none' {
+        $x = [pscustomobject]@{ Skipped = 8; Ignored = 3; Unchanged = 4; IgnoreCall = @('Write-Host'); FilesWithNoMutants = @(); FilesWithNoCandidate = @() }
+        Get-PSMutationExclusionLine -Exclusion $x |
+            Should-Be "  3 mutant(s) skipped inside calls to ignored commands (Write-Host)`n  4 mutant(s) skipped on lines -ChangedLine did not name`n  8 mutant(s) skipped as uncovered"
+        $x.Unchanged = 0
+        Get-PSMutationExclusionLine -Exclusion $x | Should-NotMatchString 'ChangedLine'
+    }
+
+    It 'is an empty string, not nothing, when the line filter took nothing out' {
+        $note = Get-PSMutationUnchangedLineNote -Exclusion ([pscustomobject]@{ Unchanged = 0 })
+        Should-BeTrue -Actual ($note -is [string])
+        $note | Should-Be ''
+        Get-PSMutationUnchangedLineNote -Exclusion ([pscustomobject]@{ Unchanged = 1 }) |
+            Should-Be '  1 mutant(s) skipped on lines -ChangedLine did not name'
+    }
+
+    It 'says in the preview how many more the line filter took out, and only when any did' {
+        $rows = @([pscustomobject]@{ File = 'a.ps1'; Produced = 2; Kept = 2; Ignored = 0; Unchanged = 3; ByOperator = [ordered]@{} })
+        $text = (Get-PSMutationMutantListLine -PerFile $rows -CoveredLinesOnly $false -BaselineMeasured $false | ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString ([regex]::Escape('3 more on lines -ChangedLine did not name are not counted above.'))
+        $rows[0].Unchanged = 1
+        $text = (Get-PSMutationMutantListLine -PerFile $rows -CoveredLinesOnly $false -BaselineMeasured $false | ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-MatchString ([regex]::Escape('1 more on lines'))
+        $rows[0].Unchanged = 0
+        $text = (Get-PSMutationMutantListLine -PerFile $rows -CoveredLinesOnly $false -BaselineMeasured $false | ForEach-Object { $_.Text }) -join "`n"
+        $text | Should-NotMatchString 'ChangedLine'
+    }
+
+    It 'counts them on the preview result, apart from Produced' {
+        $r = ConvertTo-PSMutationListResult -PerFile $script:linePerFile -BaselineMeasured $true
+        $r.Unchanged | Should-Be 7
+        $r.Produced | Should-Be 6
+        $r.Ignored | Should-Be 1
+    }
+
+    It 'records the lines and the count in the report only when -ChangedLine was given' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-lines-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            $excl = Get-PSMutationCoverageExclusion -PerFile $script:linePerFile
+            $lines = [ordered]@{ 'src/a.ps1' = [int[]]@(3, 12); 'src/gone.ps1' = [int[]]@() }
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Exclusion $excl `
+                -ChangedFiles @('src/a.ps1', 'src/gone.ps1') -ChangedLines $lines | Out-Null
+            $raw = [System.IO.File]::ReadAllText($out)
+            $doc = $raw | ConvertFrom-Json
+            @($doc.changedLines.'src/a.ps1') | Should-BeCollection @(3, 12)
+            $raw | Should-MatchString '"src/gone.ps1": \[\]'
+            $doc.skippedAsUnchanged | Should-Be 7
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Exclusion $excl `
+                -ChangedFiles @('src/a.ps1') | Out-Null
+            $names = (Get-Content $out -Raw | ConvertFrom-Json).PSObject.Properties.Name
+            $names -contains 'changedLines' | Should-BeFalse
+            $names -contains 'skippedAsUnchanged' | Should-BeFalse
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'writes a one-line list as an array, never as a bare number' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-lines-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null `
+                -ChangedFiles @('src/a.ps1') -ChangedLines ([ordered]@{ 'src/a.ps1' = [int[]]@(5) }) | Out-Null
+            [System.IO.File]::ReadAllText($out) | Should-MatchString '"src/a.ps1": \[\s*5\s*\]'
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'does not fail the run for a declaration about a mutant on a line -ChangedLine did not name' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-lines-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            $eq = [pscustomobject]@{ 'src/a.ps1:Get-Gone:p -> q' = 'argued about a mutant this run did not evaluate' }
+            $unseen = @([pscustomobject]@{ File = 'src/a.ps1'; Function = 'Get-Gone'; Line = 9; Description = 'p -> q' })
+            $judged = Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Equivalents $eq
+            @($judged.StaleEquivalents).Count | Should-Be 1 -Because 'without the rows, the declaration matches nothing'
+            $s = Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Equivalents $eq `
+                -ChangedFiles @('src/a.ps1') -ChangedLines ([ordered]@{ 'src/a.ps1' = [int[]]@(5) }) -Unexamined $unseen
+            @($s.StaleEquivalents).Count | Should-Be 0
+            (Get-Content $out -Raw | ConvertFrom-Json).staleEquivalents.Count | Should-Be 0
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+}
+
 Describe 'Get-PSMutationMutantListLine' {
     BeforeAll {
         $script:listRows = @(
@@ -2136,6 +2260,54 @@ Describe 'Get-PSMutationDeclarationCoverageFault scoping' {
             -InScopeFile @('src/a.ps1')
         @($f).Count | Should-Be 1
         @($f)[0] | Should-MatchString 'src/a\.ps1'
+    }
+}
+
+Describe 'Get-PSMutationDeclarationCoverageFault and the mutants -ChangedLine took out' {
+    BeforeAll {
+        $script:lineDecl = [pscustomobject]@{ 'src/a.ps1:Get-A:x -> y' = 'declared' }
+        $script:lineRow = { param($Line, $Status) [pscustomobject]@{ File = 'src/a.ps1'; Function = 'Get-A'; Description = 'x -> y'; Line = $Line; Status = $Status } }
+    }
+
+    It 'does not call a declaration stale when its mutant was taken out unexamined' {
+        $f = Get-PSMutationDeclarationCoverageFault -Results @() -Equivalents $script:lineDecl -Unexamined @(& $script:lineRow 4 $null)
+        @($f).Count | Should-Be 0
+    }
+
+    It 'still calls it stale when no mutant, examined or not, answers to it' {
+        $other = [pscustomobject]@{ File = 'src/a.ps1'; Function = 'Get-A'; Description = 'p -> q'; Line = 4 }
+        $f = Get-PSMutationDeclarationCoverageFault -Results @() -Equivalents $script:lineDecl -Unexamined @($other)
+        @($f).Count | Should-Be 1
+        @($f)[0] | Should-BeLikeString '*no such mutant exists'
+    }
+
+    It 'still calls it ambiguous when it matched several examined mutants, whatever else it matches' {
+        $rows = @((& $script:lineRow 2 'Survived'), (& $script:lineRow 3 'Survived'))
+        $f = Get-PSMutationDeclarationCoverageFault -Results $rows -Equivalents $script:lineDecl -Unexamined @(& $script:lineRow 4 $null)
+        @($f).Count | Should-Be 1
+        @($f)[0] | Should-BeLikeString '*matches 2 mutants*'
+    }
+
+    It 'matches the key without case, as the declarations are matched' {
+        $upper = [pscustomobject]@{ File = 'SRC/A.ps1'; Function = 'get-a'; Description = 'x -> y'; Line = 4 }
+        $f = Get-PSMutationDeclarationCoverageFault -Results @() -Equivalents $script:lineDecl -Unexamined @($upper)
+        @($f).Count | Should-Be 0
+    }
+}
+
+Describe 'Get-PSMutationEquivalentKeyList' {
+    It 'gives every key a declaration may use for each row' {
+        $rows = @(
+            [pscustomobject]@{ File = 'src/a.ps1'; Function = 'Get-A'; Line = 4; Description = 'x -> y' }
+            [pscustomobject]@{ File = 'src/b.ps1'; Function = ''; Line = 2; Description = 'p -> q' }
+        )
+        $expected = @($rows | ForEach-Object { Get-PSMutationEquivalentKey -Result $_ }) -join '|'
+        (@(Get-PSMutationEquivalentKeyList -Rows $rows) -join '|') | Should-Be $expected
+        (@(Get-PSMutationEquivalentKeyList -Rows $rows) -join '|') | Should-MatchString 'src/a\.ps1:Get-A:x -> y'
+    }
+
+    It 'gives no key for no row' {
+        @(Get-PSMutationEquivalentKeyList -Rows @()).Count | Should-Be 0
     }
 }
 

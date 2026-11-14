@@ -512,9 +512,11 @@ function Get-PSMutationCoverageExclusion {
     # coverage filter removes far more than declarations do and said nothing at all.
     $skipped = 0
     $ignored = 0
+    $unchanged = 0
     foreach ($f in $PerFile) {
         $skipped += $f.Produced - $f.Kept
         $ignored += $f.Ignored
+        $unchanged += $f.Unchanged
     }
     # FilesWithNoMutants is file-level and not just a count for the dangerous case: the file is
     # still listed in `mutate` and still hashed into the report, so nothing downstream can tell
@@ -526,6 +528,8 @@ function Get-PSMutationCoverageExclusion {
         Skipped              = $skipped
         # Taken out inside ignored calls before the coverage filter, so never also in Skipped.
         Ignored              = $ignored
+        # Taken out on the lines a -ChangedLine run left unchanged, before the coverage filter too.
+        Unchanged            = $unchanged
         IgnoreCall           = [string[]]@($IgnoreCall)
         FilesWithNoMutants   = Get-PSMutationFileEmptiedByCoverage -PerFile $PerFile
         # The OTHER vacuous 100%. This field's sibling is named for what coverage removed; a file
@@ -551,8 +555,21 @@ function Get-PSMutationExclusionLine {
     if ($null -eq $Exclusion) { return '' }
     # First, because it is the one exclusion a reader chose rather than one the run found.
     $ignoredNote = Get-PSMutationIgnoredCallNote -Exclusion $Exclusion
+    $unchangedNote = Get-PSMutationUnchangedLineNote -Exclusion $Exclusion
     $rest = Get-PSMutationCoverageLine -Exclusion $Exclusion
-    return (@($ignoredNote, $rest) | Where-Object { $_ }) -join "`n"
+    return (@($ignoredNote, $unchangedNote, $rest) | Where-Object { $_ }) -join "`n"
+}
+
+function Get-PSMutationUnchangedLineNote {
+    <#
+    .SYNOPSIS
+        The caveat naming how many mutants a -ChangedLine run left out on unchanged lines, or nothing.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Exclusion)
+    if ([int]$Exclusion.Unchanged -eq 0) { return '' }
+    return ("  {0} mutant(s) skipped on lines -ChangedLine did not name" -f $Exclusion.Unchanged)
 }
 
 function Get-PSMutationIgnoredCallNote {
@@ -726,6 +743,10 @@ function Get-PSMutationMutantListLine {
     if ($ignored -gt 0) {
         $lines.Add((New-PSMutationLine -Role 'Muted' -Text ("  {0} more inside calls to ignored commands are not counted above." -f $ignored)))
     }
+    $unchanged = [int]($PerFile | Measure-Object -Property Unchanged -Sum).Sum
+    if ($unchanged -gt 0) {
+        $lines.Add((New-PSMutationLine -Role 'Muted' -Text ("  {0} more on lines -ChangedLine did not name are not counted above." -f $unchanged)))
+    }
     # Said only when it is true, and it is the reason the number above may be the wrong one to
     # act on: a preview that skipped coverage is an UPPER bound on what a run would evaluate.
     if ($CoveredLinesOnly -and -not $BaselineMeasured) {
@@ -769,6 +790,8 @@ function ConvertTo-PSMutationListResult {
         Total                  = [int](($PerFile | Measure-Object -Property Kept -Sum).Sum)
         # Taken out inside ignored calls (#263), and not in Produced.
         Ignored                = [int](($PerFile | Measure-Object -Property Ignored -Sum).Sum)
+        # Taken out on the lines -ChangedLine did not name, and not in Produced either.
+        Unchanged              = [int](($PerFile | Measure-Object -Property Unchanged -Sum).Sum)
         # Always arrays, never $null, for the reason ConvertTo-PSMutationRunResult gives about
         # StaleEquivalents: a caller iterating this must not have to tell "none" from "the
         # module stopped reporting it".
@@ -779,6 +802,40 @@ function ConvertTo-PSMutationListResult {
         BaselineMeasured       = $BaselineMeasured
         ExitCode               = 0
         FailureReason          = 'None'
+    }
+}
+
+function Add-PSMutationReportScope {
+    <#
+    .SYNOPSIS
+        Add the fields that say what part of the tree a scoped run measured, and nothing on a
+        whole-tree run.
+    #>
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [object]$Document,
+        [string[]]$ChangedFiles = $null,
+        [System.Collections.IDictionary]$ChangedLines = $null,
+        [int]$Unchanged
+    )
+    # ADDED ONLY ON A SCOPED RUN. Written unconditionally they would put "mode": null on every
+    # full report, which the schema's enum refuses -- absent is how a full run says it measured
+    # everything, and null is not a third answer.
+    #
+    # The two go on TOGETHER: the schema requires changedFiles whenever mode is Changed, because
+    # a percentage over part of a tree that does not say which part is exactly the number this
+    # module exists to stop people quoting.
+    if ($ChangedFiles) {
+        $Document | Add-Member -NotePropertyName mode -NotePropertyValue 'Changed'
+        $Document | Add-Member -NotePropertyName changedFiles -NotePropertyValue (
+            ConvertTo-PSMutationList -Value $ChangedFiles)
+    }
+    # Only when -ChangedLine was given, the same way: absent says every file of the scope was
+    # mutated whole. The count beside it is excluded from total and from both scores, as
+    # skippedAsIgnoredCall is.
+    if ($null -ne $ChangedLines) {
+        $Document | Add-Member -NotePropertyName changedLines -NotePropertyValue ([pscustomobject]$ChangedLines)
+        $Document | Add-Member -NotePropertyName skippedAsUnchanged -NotePropertyValue $Unchanged
     }
 }
 
@@ -885,9 +942,16 @@ function Write-PSMutationReport {
         # answers, and only null may be read as a measurement of everything in `mutate`. The
         # sibling module's report carries the same distinction in the same shape.
         [string[]]$ChangedFiles = $null,
+        # The lines a -ChangedLine run limited its files to, config path -> sorted line numbers;
+        # $null when -ChangedLine was not given. A file of the scope without an entry was mutated
+        # whole, so a reader needs the map to know which files are only partly behind the score.
+        [System.Collections.IDictionary]$ChangedLines = $null,
         # The subset of `mutate` this run covered, as the config spells them; $null on a
         # whole-tree run. Read only to scope equivalence declarations.
         [string[]]$InScopeFile = $null,
+        # The mutants a -ChangedLine run took out without evaluating them, as result rows without
+        # a status. Read only to scope equivalence declarations, as InScopeFile is.
+        [AllowEmptyCollection()] [object[]]$Unexamined = @(),
         # This run continued an interrupted one, and how many of the rows below it did not
         # evaluate itself. A SWITCH plus a count rather than a count with a sentinel: a resume
         # that carried over zero rows -- an interruption before the first mutant finished -- is a
@@ -904,7 +968,7 @@ function Write-PSMutationReport {
     # false arm is indistinguishable from its true arm, since appending nothing changes
     # nothing. Both of that guard's mutants survived.
     $coverage = Get-PSMutationDeclarationCoverageFault -Results $Results -Equivalents $Equivalents `
-        -InScopeFile $InScopeFile
+        -InScopeFile $InScopeFile -Unexamined $Unexamined
     $summary.StaleEquivalents = [string[]]@(@($summary.StaleEquivalents) + @($coverage) | Where-Object { $_ })
     $document = [pscustomobject]@{
         generatedFrom = 'PSMutant'
@@ -985,18 +1049,8 @@ function Write-PSMutationReport {
         $document | Add-Member -NotePropertyName testsWithoutKills -NotePropertyValue (
             ConvertTo-PSMutationList -Value @($MappedTests | Where-Object { -not $killers.Contains($_) }))
     }
-    # ADDED ONLY ON A SCOPED RUN, the same way. Written unconditionally they would put
-    # "mode": null on every full report, which the schema's enum refuses -- absent is how a full
-    # run says it measured everything, and null is not a third answer.
-    #
-    # The two go on TOGETHER: the schema requires changedFiles whenever mode is Changed, because
-    # a percentage over part of a tree that does not say which part is exactly the number this
-    # module exists to stop people quoting.
-    if ($ChangedFiles) {
-        $document | Add-Member -NotePropertyName mode -NotePropertyValue 'Changed'
-        $document | Add-Member -NotePropertyName changedFiles -NotePropertyValue (
-            ConvertTo-PSMutationList -Value $ChangedFiles)
-    }
+    Add-PSMutationReportScope -Document $document -ChangedFiles $ChangedFiles -ChangedLines $ChangedLines `
+        -Unchanged ([int]$Exclusion.Unchanged)
     # THE CAVEAT LIVES IN THE ARTIFACT, not only in the console, for the reason the merged report
     # gives: everything downstream reads this file as a measurement, and part of it was measured by
     # an earlier run. Added afterwards rather than written into the literal above, so an ordinary
@@ -1098,6 +1152,15 @@ function Get-PSMutationDeclarationFile {
     return $i -lt 0 ? $Key : $Key.Substring(0, $i)
 }
 
+function Get-PSMutationEquivalentKeyList {
+    # Every key a declaration may use for any of these rows. Read with -contains, which compares
+    # without case, as the declarations and the match counts are compared. Pure.
+    [OutputType([string[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Rows)
+    return [string[]]@(foreach ($r in $Rows) { Get-PSMutationEquivalentKey -Result $r })
+}
+
 function Get-PSMutationDeclarationCoverageFault {
     # WHOLE RUN: every declaration that matched no mutant, or matched more than one.
     #
@@ -1115,7 +1178,9 @@ function Get-PSMutationDeclarationCoverageFault {
         $Equivalents,
         # The files this run actually mutated, as the config spells them, or $null for a run over
         # everything in `mutate`.
-        [string[]]$InScopeFile = $null
+        [string[]]$InScopeFile = $null,
+        # Mutants that exist but were not evaluated, as result rows: the ones -ChangedLine took out.
+        [AllowEmptyCollection()] [object[]]$Unexamined = @()
     )
     $declared = Get-PSMutationDeclaredEquivalent -Equivalents $Equivalents
     # A count, not a set: "matched something" and "matched exactly one" are different
@@ -1147,13 +1212,36 @@ function Get-PSMutationDeclarationCoverageFault {
     $scope = $null -eq $InScopeFile ? $null :
         [System.Collections.Generic.HashSet[string]]::new([string[]]@($InScopeFile),
             [System.StringComparer]::OrdinalIgnoreCase)
+    # The same hazard at the grain of a mutant: a -ChangedLine run does not evaluate the mutants on
+    # the lines it was not given, so a declaration about one of them matched nothing because nothing
+    # looked. Only a declaration that matched NO evaluated mutant is let off; one that matched
+    # several is ambiguous whatever else it would match.
+    $unseen = Get-PSMutationEquivalentKeyList -Rows $Unexamined
     $faults = foreach ($k in $declared.Keys) {
         if ($scope -and -not $scope.Contains((Get-PSMutationDeclarationFile -Key $k))) { continue }
-        if ($twice.ContainsKey($k)) { "$k -- declares the same mutant as $($twice[$k]); two arguments for one mutant drift apart, so keep one"; continue }
-        Get-PSMutationDeclarationFault -Key $k -Hits ([int]$matched[$k])
+        Get-PSMutationScopedDeclarationFault -Key $k -Matched $matched -Twice $twice -Unseen $unseen
     }
     # No comma-wrap: the caller concatenates this with another array.
     return [string[]]@($faults | Where-Object { $_ })
+}
+
+function Get-PSMutationScopedDeclarationFault {
+    # The fault of one declaration that the run had in scope, or $null. Its own function so that
+    # Get-PSMutationDeclarationCoverageFault stays under the cognitive ceiling.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$Key,
+        # Declared key -> how many evaluated mutants it matched.
+        [Parameter(Mandatory)] [hashtable]$Matched,
+        # Declared key -> the key that already declares the same mutant.
+        [Parameter(Mandatory)] [hashtable]$Twice,
+        # The keys of the mutants the run took out without evaluating them.
+        [AllowEmptyCollection()] [string[]]$Unseen
+    )
+    if ($Twice.ContainsKey($Key)) { return "$Key -- declares the same mutant as $($Twice[$Key]); two arguments for one mutant drift apart, so keep one" }
+    if ($Unseen -contains $Key -and -not $Matched.ContainsKey($Key)) { return $null }
+    return Get-PSMutationDeclarationFault -Key $Key -Hits ([int]$Matched[$Key])
 }
 
 function Get-PSMutationScoreRole {
