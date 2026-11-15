@@ -603,7 +603,7 @@ Describe 'the contract a consumer actually depends on' {
                 Should-BeCollection @(
                     'generatedFrom', 'schemaVersion', 'producedBy', 'generatedAt', 'durations',
                     'mutationScore', 'totalMutationScore', 'total', 'killed', 'survived', 'timedOut', 'compileErrors', 'runtimeErrors',
-                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'testFiles', 'perFile', 'skippedAsUncovered', 'skippedAsIgnoredCall', 'ignoreCalls', 'filesWithNoMutants',
+                    'declaredEquivalent', 'filesMutated', 'killersComplete', 'testFiles', 'perFile', 'skippedAsUncovered', 'uncoveredMutants', 'skippedAsIgnoredCall', 'ignoreCalls', 'filesWithNoMutants',
                     'filesWithNoCandidate', 'filesWithoutTestMapping',
                     'staleEquivalents', 'thresholds', 'operators',
                     'sourceHashes', 'survivors', 'mutants')
@@ -881,6 +881,49 @@ Describe 'a score answers for what the coverage filter removed' {
             $raw = [System.IO.File]::ReadAllText($out)
             $raw.Contains('"filesWithNoMutants": []') | Should-BeTrue
             $raw.Contains('"staleEquivalents": []') | Should-BeTrue
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'carries the uncovered rows it is given, and none when given none' {
+        $row = [pscustomobject]@{ Id = 3; Function = 'Get-Total'; File = 'src/Billing.ps1'; Line = 12; Operator = 'BooleanLiteral'; Description = '$true -> $false' }
+        $perFile = @([pscustomobject]@{ File = 'src/Billing.ps1'; Produced = 1; Kept = 0 })
+        $x = Get-PSMutationCoverageExclusion -PerFile $perFile -Uncovered @($row)
+        $x.Uncovered.Count | Should-Be 1
+        $x.Uncovered[0].Line | Should-Be 12
+        (Get-PSMutationCoverageExclusion -PerFile $perFile).Uncovered.Count | Should-Be 0
+    }
+
+    It 'writes where each uncovered mutant is, beside the count' {
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-uncov-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            $rows = @(
+                [pscustomobject]@{ Id = 3; Function = 'Get-Total'; File = 'src/Billing.ps1'; Line = 12; Operator = 'BooleanLiteral'; Description = '$true -> $false' }
+                [pscustomobject]@{ Id = 9; Function = ''; File = 'src/Calc.ps1'; Line = 40; Operator = 'BinaryOperator'; Description = '-eq -> -ne' }
+            )
+            $excl = [pscustomobject]@{ Skipped = 2; FilesWithNoMutants = @(); Uncovered = $rows }
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Exclusion $excl | Out-Null
+            $doc = Get-Content -LiteralPath $out -Raw | ConvertFrom-Json
+            $doc.uncoveredMutants.Count | Should-Be 2
+            ($doc.uncoveredMutants | ForEach-Object { "$($_.File):$($_.Line)" }) -join ',' | Should-Be 'src/Billing.ps1:12,src/Calc.ps1:40'
+            $doc.uncoveredMutants[0].Function | Should-Be 'Get-Total'
+        }
+        finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
+    }
+
+    It 'writes the uncovered rows as [] when there are none, never [null]' {
+        # A single row would serialise as an object rather than an array without the wrap; an
+        # absent Exclusion is the case where the wrap meets $null.
+        $dir = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-uncov0-$([guid]::NewGuid())"
+        try {
+            $out = Join-Path $dir 'r.json'
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null | Out-Null
+            [System.IO.File]::ReadAllText($out).Contains('"uncoveredMutants": []') | Should-BeTrue
+            $one = [pscustomobject]@{ Skipped = 1; FilesWithNoMutants = @()
+                Uncovered = @([pscustomobject]@{ Id = 1; Function = ''; File = 'a.ps1'; Line = 1; Operator = 'BooleanLiteral'; Description = '$true -> $false' }) }
+            Write-PSMutationReport -Results $script:mixed -ReportPath $out -Thresholds $null -Exclusion $one | Out-Null
+            (Get-Content -LiteralPath $out -Raw | ConvertFrom-Json).uncoveredMutants -is [array] | Should-BeTrue
         }
         finally { Remove-Item -LiteralPath $dir -Recurse -Force -ErrorAction SilentlyContinue }
     }

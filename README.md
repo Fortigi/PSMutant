@@ -450,7 +450,13 @@ above it.
    the second line of a long condition is judged with the condition, and the body of a script
    block that never ran stays uncovered even though the pipeline holding it did. A line no
    command spans at all — a `param()` default — is never covered, because nothing Pester
-   instruments can say whether it executed.
+   instruments can say whether it executed. The one exception is an argument of an attribute on
+   a parameter or a param block, such as `Mandatory = $true` in `[Parameter()]`: it counts as
+   covered when a line of its function's body ran, because a call that got past parameter
+   binding is where the attribute took effect. A test that calls the function without that
+   parameter and expects the error kills the mutant. An argument holding a script block, as
+   `[ValidateScript({ ... })]` does, is left to its own lines: that block runs only when its
+   parameter is bound.
 2. **Enumerate** — parses each file's AST and collects candidates; only those on covered
    lines are kept (an uncovered mutant is guaranteed to survive and teaches nothing).
 3. **Evaluate** — copies the source subtrees into a temp **sandbox**, splices each mutant
@@ -730,6 +736,8 @@ how well the tests check the code they run; the total says how much of the code 
 The summary prints it when the two differ. The thresholds gate on `mutationScore`.
 
 A full report also discloses what its score does **not** answer for: `skippedAsUncovered`,
+`uncoveredMutants` (one row per mutant counted there, with its `File`, `Line`, `Function`,
+`Operator` and `Description`, so you can name the lines no test reaches),
 `filesWithNoMutants` (files whose candidates the coverage filter removed entirely) and
 `filesWithNoCandidate` (files no operator matched at all). The last two are the two shapes of a
 vacuous 100%, kept apart because the fixes differ, and they are what `-ListOnly` shows you

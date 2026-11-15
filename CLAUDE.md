@@ -2092,6 +2092,18 @@ lose in a hurry and expensive to rebuild, and because each one has already earne
   here". A `param()` default stays uncovered by design: no command spans it, so nothing Pester
   instruments can say whether it ran.
 
+  **An argument of a parameter attribute is the one exception, and it is read through the BODY.**
+  `Mandatory = $true` sat on a line no command spans, so it was skipped as uncovered on every run
+  and no test could change that -- 8 of the uncovered mutants in one consumer's run, all of them
+  this. Not generating those candidates was the other option and was refused: they are real
+  behaviour a test kills by calling without the parameter, and dropping them is the vacuous 100%
+  in a new place. `Get-PSMutationParamAttributeRange` pairs each argument with its function's body
+  lines, and `Test-PSMutantCovered` reads the argument as covered when one of those ran -- a call
+  past parameter binding. Ids do not move, since the filter runs after numbering. An argument
+  holding a script block keeps the line rule: `[ValidateScript({ })]` runs only when its parameter
+  is bound, and the body is no evidence of that. A param DEFAULT was deliberately left alone, for
+  the same reason -- it is evaluated only when its parameter is NOT bound.
+
 - **A pull request pays only for the expensive gates its change can reach.** `Get-PSMutantGatePlan`
   in `GateDecisions.ps1` decides, from the files a PR changed, whether self-mutation and the
   compatibility legs run; `tools/Get-PSMutantGatePlan.ps1` gathers the inputs and prints the

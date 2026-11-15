@@ -93,6 +93,76 @@ Describe 'Test-PSMutantCovered' {
     }
 }
 
+Describe 'Test-PSMutantCovered and parameter attributes' {
+    BeforeAll {
+        $script:attrFull = [System.IO.Path]::GetFullPath($script:fixture)
+        # One argument at offsets 10..15 whose function body spans lines 8 and 9.
+        $script:attrRange = @([pscustomobject]@{ Start = 10; End = 15; BodyLine = [int[]]@(8, 9) })
+        function AttrCandidate { param([int]$Start, [int]$End) [pscustomobject]@{ File = $script:fixture; Line = 4; StartOffset = $Start; EndOffset = $End } }
+        function BodyCovered { param([int[]]$Lines) @{ $script:attrFull = [System.Collections.Generic.HashSet[int]]$Lines } }
+    }
+
+    It 'reads an argument as covered when its line is not but a body line is' -ForEach @(
+        @{ Lines = @(8) }
+        @{ Lines = @(9) }
+    ) {
+        Test-PSMutantCovered -Candidate (AttrCandidate 10 15) -CoveredLines (BodyCovered $Lines) -AttributeRanges $script:attrRange | Should-BeTrue
+    }
+
+    It 'reads it as uncovered when no body line ran' {
+        # Lines next to the body, so neither end of the body can be read as reaching further.
+        Test-PSMutantCovered -Candidate (AttrCandidate 10 15) -CoveredLines (BodyCovered @(7, 10)) -AttributeRanges $script:attrRange | Should-BeFalse
+    }
+
+    It 'applies only to a candidate inside the argument, start and end both' -ForEach @(
+        @{ Start = 10; End = 15; Expected = $true }
+        @{ Start = 11; End = 14; Expected = $true }
+        @{ Start = 9; End = 15; Expected = $false }
+        @{ Start = 10; End = 16; Expected = $false }
+    ) {
+        Test-PSMutantCovered -Candidate (AttrCandidate $Start $End) -CoveredLines (BodyCovered @(8)) -AttributeRanges $script:attrRange | Should-Be $Expected
+    }
+
+    It 'reads lines alone when no range is given' {
+        Test-PSMutantCovered -Candidate (AttrCandidate 10 15) -CoveredLines (BodyCovered @(8)) | Should-BeFalse
+    }
+
+    It 'reads an argument of a function with an empty body as uncovered' {
+        $empty = @([pscustomobject]@{ Start = 10; End = 15; BodyLine = $null })
+        Test-PSMutantCovered -Candidate (AttrCandidate 10 15) -CoveredLines (BodyCovered @(8)) -AttributeRanges $empty | Should-BeFalse
+    }
+}
+
+Describe 'Select-PSMutationCandidate and parameter attributes' {
+    BeforeAll {
+        $script:mandatory = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-mandatory-$($script:tag).ps1"
+        [System.IO.File]::WriteAllText($script:mandatory, ((@(
+                        'function Get-Name {'                                   # 1
+                        '    param('                                            # 2
+                        '        [Parameter(Mandatory = $true)] [string]$Name'  # 3
+                        '    )'                                                 # 4
+                        '    $Name'                                             # 5
+                        '}'                                                     # 6
+                        'function Get-Other {'                                  # 7
+                        '    param([Parameter(Mandatory = $false)] $x)'         # 8
+                        '    $x'                                                # 9
+                        '}'                                                     # 10
+                    ) -join "`n") + "`n"))
+        $script:mandatoryFull = [System.IO.Path]::GetFullPath($script:mandatory)
+    }
+    AfterAll { Remove-Item -LiteralPath $script:mandatory -ErrorAction SilentlyContinue }
+
+    It 'keeps the attribute mutant of a function whose body ran, and leaves the other uncovered' {
+        # The baseline covers line 5 only: Get-Name ran and Get-Other did not. Two functions in one
+        # call, because a rule that read every attribute as covered, or none, would pass either alone.
+        $covered = @{ $script:mandatoryFull = [System.Collections.Generic.HashSet[int]]@(5) }
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:mandatory) -IgnoreCall @() `
+            -Operators @('BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
+        ($sel.Candidates | ForEach-Object { "$($_.Line):$($_.Description)" }) | Should-Be '3:$true -> $false'
+        ($sel.Uncovered | ForEach-Object { "$($_.Line):$($_.Description)" }) | Should-Be '8:$false -> $true'
+    }
+}
+
 Describe 'Select-PSMutationCandidate' {
     It 'returns all candidates when coverage filtering is off' {
         $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() `
@@ -120,6 +190,70 @@ Describe 'Select-PSMutationCandidate' {
         $c = (Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() `
             -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered).Candidates
         ($c | ForEach-Object Line | Sort-Object -Unique) | Should-Be 3
+    }
+
+    It 'carries every candidate the filter removed, and none it kept' {
+        # Both halves in one call: a list that held EVERY candidate, or none, would pass a test
+        # that only asked about one side.
+        $full = [System.IO.Path]::GetFullPath($script:fixture)
+        $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $true -CoveredLines $covered
+        @($sel.Uncovered).Count | Should-Be ($sel.PerFile[0].Produced - $sel.PerFile[0].Kept)
+        @($sel.Uncovered).Count | Should-BeGreaterThan 0
+        ($sel.Uncovered | ForEach-Object Line | Sort-Object -Unique) | Should-Be 4
+        $sel.Uncovered[0].Description | Should-Be '$false -> $true'
+    }
+
+    It 'carries nothing as uncovered when the filter is off' {
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:fixture) -IgnoreCall @() `
+            -Operators @('BinaryOperator', 'BooleanLiteral') -CoveredLinesOnly $false -CoveredLines @{}
+        $sel.Uncovered -is [array] | Should-BeTrue
+        $sel.Uncovered.Count | Should-Be 0
+    }
+}
+
+Describe 'Split-PSMutationCandidateByCoverage' {
+    It 'sends each candidate to exactly one list, by its own coverage' {
+        $full = [System.IO.Path]::GetFullPath($script:fixture)
+        $covered = @{ $full = [System.Collections.Generic.HashSet[int]]@(3) }
+        $on3 = [pscustomobject]@{ File = $script:fixture; Line = 3; StartOffset = 0; EndOffset = 1 }
+        $on4 = [pscustomobject]@{ File = $script:fixture; Line = 4; StartOffset = 0; EndOffset = 1 }
+        $split = Split-PSMutationCandidateByCoverage -Candidates @($on3, $on4) -CoveredLinesOnly $true -CoveredLines $covered
+        ($split.Kept | ForEach-Object Line) | Should-Be 3
+        ($split.Uncovered | ForEach-Object Line) | Should-Be 4
+    }
+
+    It 'keeps every candidate when the filter is off, and leaves Uncovered an empty array' {
+        $on4 = [pscustomobject]@{ File = $script:fixture; Line = 4; StartOffset = 0; EndOffset = 1 }
+        $split = Split-PSMutationCandidateByCoverage -Candidates @($on4) -CoveredLinesOnly $false -CoveredLines @{}
+        $split.Kept.Count | Should-Be 1
+        $split.Uncovered -is [array] | Should-BeTrue
+        $split.Uncovered.Count | Should-Be 0
+    }
+}
+
+Describe 'ConvertTo-PSMutationUncoveredRow' {
+    It 'keeps a mutant row''s fields up to Status, with the file as the report names it' {
+        $root = Split-Path $script:fixture
+        $c = [pscustomobject]@{ Id = 7; Function = 'Test-Fixture'; File = $script:fixture; Line = 4
+            StartOffset = 1; EndOffset = 2; Original = '$false'; Mutated = '$true'; Operator = 'BooleanLiteral'; Description = '$false -> $true' }
+        $rows = ConvertTo-PSMutationUncoveredRow -Candidates @($c) -SandboxRoot $root
+        $rows.Count | Should-Be 1
+        # The exact list, joined so the ORDER is part of the claim as well: this is a published shape.
+        ($rows[0].PSObject.Properties.Name -join ',') | Should-Be 'Id,Function,File,Line,Operator,Description'
+        $rows[0].File | Should-Be (Split-Path $script:fixture -Leaf)
+        $rows[0].Id | Should-Be 7
+        $rows[0].Function | Should-Be 'Test-Fixture'
+        $rows[0].Line | Should-Be 4
+        $rows[0].Operator | Should-Be 'BooleanLiteral'
+        $rows[0].Description | Should-Be '$false -> $true'
+    }
+
+    It 'returns an empty array, not $null, for no candidates' {
+        $rows = ConvertTo-PSMutationUncoveredRow -Candidates @() -SandboxRoot (Split-Path $script:fixture)
+        $rows -is [array] | Should-BeTrue
+        $rows.Count | Should-Be 0
     }
 }
 

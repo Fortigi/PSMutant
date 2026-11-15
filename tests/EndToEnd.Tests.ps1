@@ -1768,6 +1768,61 @@ Describe 'Get-Msg' { It 'joins' { Get-Msg | Should -Be 'abc' } }
     }
 }
 
+Describe 'uncovered mutants and parameter attributes, end to end' {
+    BeforeAll {
+        $script:att = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-att-$([System.Guid]::NewGuid().ToString('N'))"
+        New-Item -ItemType Directory -Path (Join-Path $script:att 'src'), (Join-Path $script:att 'tests') -Force | Out-Null
+        # Line numbers are the assertions below, so this text is positional: do not reflow it.
+        # Get-Name is called by the test, Get-Unused never is.
+        Set-Content -LiteralPath (Join-Path $script:att 'src/n.ps1') -Encoding utf8 -Value @'
+function Get-Name {
+    param([Parameter(Mandatory = $true)] [string]$Name)
+    "hi $Name"
+}
+function Get-Unused {
+    return $false
+}
+'@
+        # Calls Get-Name WITH its parameter and never without it, so the Mandatory mutant is reached
+        # and nothing checks it: a survivor, which is the honest answer for that test.
+        Set-Content -LiteralPath (Join-Path $script:att 'tests/n.Tests.ps1') -Encoding utf8 -Value @'
+BeforeAll { . (Join-Path (Split-Path -Parent $PSScriptRoot) 'src' 'n.ps1') }
+Describe 'n' { It 'greets' { Get-Name -Name 'x' | Should -Be 'hi x' } }
+'@
+        $config = Join-Path $script:att 'c.json'
+        [ordered]@{
+            sandboxSubtrees  = @('src', 'tests')
+            mutate           = @('src/n.ps1')
+            tests            = @{ 'src/n.ps1' = @('tests/n.Tests.ps1') }
+            coveredLinesOnly = $true
+            operators        = @('BooleanLiteral')
+            reportPath       = 'reports/r.json'
+        } | ConvertTo-Json -Depth 6 | Set-Content $config -Encoding utf8
+        $null = Invoke-PSMutation -ConfigFile $config -SourceRoot $script:att -Quiet
+        $script:attReport = Join-Path $script:att 'reports/r.json'
+        $script:attDoc = Get-Content -LiteralPath $script:attReport -Raw | ConvertFrom-Json
+    }
+
+    AfterAll { Remove-Item $script:att -Recurse -Force -ErrorAction SilentlyContinue }
+
+    It 'evaluates the Mandatory mutant of a function the suite called' {
+        @($script:attDoc.mutants | ForEach-Object { "$($_.Line):$($_.Description):$($_.Status)" }) |
+            Should-Be '2:$true -> $false:Survived'
+    }
+
+    It 'lists the mutant of the function nothing called, by repo-relative file and line' {
+        $script:attDoc.skippedAsUncovered | Should-Be 1
+        @($script:attDoc.uncoveredMutants).Count | Should-Be 1
+        $row = $script:attDoc.uncoveredMutants[0]
+        "$($row.File):$($row.Line):$($row.Function):$($row.Description)" | Should-Be 'src/n.ps1:6:Get-Unused:$false -> $true'
+    }
+
+    It 'writes a report the shipped schema accepts' {
+        $schema = Join-Path (Split-Path -Parent $PSScriptRoot) 'schemas/v3/report.schema.json'
+        Test-Json -Json ([System.IO.File]::ReadAllText($script:attReport)) -SchemaFile $schema | Should-BeTrue
+    }
+}
+
 Describe 'an equivalent mutant declared in the code, end to end (#262)' {
     BeforeAll {
         $script:inl = Join-Path ([System.IO.Path]::GetTempPath()) "psmut-inl-$([System.Guid]::NewGuid().ToString('N'))"

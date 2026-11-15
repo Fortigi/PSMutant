@@ -272,6 +272,77 @@ function Get-PSMutationIgnoredCallRange {
         })
 }
 
+function Get-PSMutationParamAttributeRange {
+    <#
+    .SYNOPSIS
+        Offset range of every argument of an attribute on a param block or a parameter, with the
+        lines of the body that param block belongs to.
+    .DESCRIPTION
+        Pester's coverage counts commands, and an attribute argument is not one: `Mandatory = $true`
+        in a [Parameter()] attribute sits on a line no command spans, so the covered-lines filter
+        reads it as unreached on every run, however thoroughly the function is tested. The
+        argument is evaluated whenever the function is CALLED, though, and a call that got past
+        parameter binding runs the body. So a body line that ran is the evidence the attribute was
+        reached, and BodyLine is where to look for it.
+
+        An argument holding a script block is left out, as `[ValidateScript({ ... })]` is: that
+        block runs only when its parameter is bound, so a call that ran the body says nothing about
+        it, and reading it as covered would hand the loop a mutant no run executed.
+
+        An attribute anywhere else -- on a variable in the body, on a class member -- is left out
+        too. A variable's attribute is part of a statement Pester already instruments.
+    #>
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Path)
+    $ast = [System.Management.Automation.Language.Parser]::ParseFile($Path, [ref]$null, [ref]$null)
+    $attributes = @(Get-PSMutationNodeByKind -Ast $ast -Type ([System.Management.Automation.Language.AttributeAst]))
+    # Comma operator so an empty result stays an array, as Get-PSMutationLoopRange does.
+    return , @(foreach ($a in $attributes) {
+            $body = Get-PSMutationAttributeBody -Attribute $a
+            if ($null -eq $body) { continue }
+            $lines = Get-PSMutationBodyLine -ScriptBlock $body
+            $arguments = [System.Collections.Generic.List[object]]::new()
+            foreach ($p in $a.PositionalArguments) { $arguments.Add($p) }
+            foreach ($n in $a.NamedArguments) { $arguments.Add($n.Argument) }
+            foreach ($arg in $arguments) {
+                # Through the index rather than a Find predicate of its own: the argument's subtree
+                # is small, and the index is the one walk every operator here shares.
+                $blocks = @(Get-PSMutationNodeByKind -Ast $arg -Type ([System.Management.Automation.Language.ScriptBlockExpressionAst]))
+                if ($blocks.Count -gt 0) { continue }
+                [pscustomobject]@{ Start = $arg.Extent.StartOffset; End = $arg.Extent.EndOffset; BodyLine = $lines }
+            }
+        })
+}
+
+function Get-PSMutationAttributeBody {
+    # The script block whose parameters an attribute decorates, or $null for any other attribute.
+    # A parameter is declared in a param block, or between a function's name and its body.
+    [OutputType([System.Management.Automation.Language.ScriptBlockAst])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Attribute)
+    $owner = $Attribute.Parent
+    if ($owner -is [System.Management.Automation.Language.ParameterAst]) { $owner = $owner.Parent }
+    if ($owner -is [System.Management.Automation.Language.ParamBlockAst]) { return $owner.Parent }
+    if ($owner -is [System.Management.Automation.Language.FunctionDefinitionAst]) { return $owner.Body }
+    return $null
+}
+
+function Get-PSMutationBodyLine {
+    # Every line a statement of the script block spans, in its dynamicparam, begin, process and
+    # end blocks. Statements rather than the block's extent, because the extent starts at the
+    # param block whose lines are the ones in question. Empty for an empty body, which then
+    # never counts as reached. Pure.
+    [OutputType([int[]])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [System.Management.Automation.Language.ScriptBlockAst]$ScriptBlock)
+    $lines = [System.Collections.Generic.List[int]]::new()
+    foreach ($block in @($ScriptBlock.DynamicParamBlock, $ScriptBlock.BeginBlock, $ScriptBlock.ProcessBlock, $ScriptBlock.EndBlock)) {
+        foreach ($s in $block.Statements) { $lines.AddRange([int[]]($s.Extent.StartLineNumber..$s.Extent.EndLineNumber)) }
+    }
+    return [int[]]$lines.ToArray()
+}
+
 function Test-PSMutationInIgnoredCall {
     # True if a candidate starts inside any ignored call's arguments. Pure.
     [OutputType([bool])]
