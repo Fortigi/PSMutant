@@ -1,3 +1,26 @@
+## [0.10.0] - 2026-11-15
+
+### For consumers
+
+**The report says where each uncovered mutant is.** A full report counted the mutants the
+covered-lines filter removed as `skippedAsUncovered` and named only the files that lost all of
+them. It now also lists them in `uncoveredMutants`, one row each with the `Id`, `Function`, `File`,
+`Line`, `Operator` and `Description` of a mutant row and no `Status`, so a consumer can name the
+lines no covering test executes. The field is optional in the report schema, so `schemaVersion`
+stays 3.
+
+**An argument of a parameter attribute is no longer always uncovered.** Pester's coverage counts
+commands, and `Mandatory = $true` in a `[Parameter()]` attribute is not one, so its mutant was
+skipped as uncovered on every run, however well the function was tested, and no test could change
+that. Such an argument now counts as covered when a line of its function's body ran: a call that
+got past parameter binding is where the attribute took effect. The mutant is then evaluated like
+any other, and a test that calls the function without the parameter and expects the error kills
+it. This covers the arguments of attributes on a param block, on a parameter in one, and on a
+parameter declared after the function name. An argument holding a script block, as
+`[ValidateScript({ ... })]` does, keeps its old rule, because that block runs only when its
+parameter is bound. Mutant ids do not change. A run of code with such attributes can report more
+mutants and, where no test checks the parameter contract, more survivors.
+
 ## [0.9.3] - 2026-11-09
 
 ### For consumers

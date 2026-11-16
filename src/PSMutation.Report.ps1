@@ -505,7 +505,9 @@ function Get-PSMutationCoverageExclusion {
         [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$PerFile,
         # The commands whose arguments the run did not mutate (#263), carried so the caveat and
         # the report can name them beside the count.
-        [AllowEmptyCollection()] [string[]]$IgnoreCall = @()
+        [AllowEmptyCollection()] [string[]]$IgnoreCall = @(),
+        # The rows the coverage filter removed, so the report can say WHERE as well as how many.
+        [AllowEmptyCollection()] [object[]]$Uncovered = @()
     )
     # `declaredEquivalent` is already reported for exactly this reason -- a reader who cannot
     # see how many mutants were excluded cannot tell a real 100% from an excluded one. The
@@ -527,6 +529,7 @@ function Get-PSMutationCoverageExclusion {
         # Taken out inside ignored calls before the coverage filter, so never also in Skipped.
         Ignored              = $ignored
         IgnoreCall           = [string[]]@($IgnoreCall)
+        Uncovered            = $Uncovered
         FilesWithNoMutants   = Get-PSMutationFileEmptiedByCoverage -PerFile $PerFile
         # The OTHER vacuous 100%. This field's sibling is named for what coverage removed; a file
         # no operator matched was removed by nothing, so it is not in that set.
@@ -951,6 +954,9 @@ function Write-PSMutationReport {
         # two-file run, and $r.Count is 2.
         perFile = Get-PSMutationPerFileScore -Results $Results -Equivalents $Equivalents
         skippedAsUncovered = [int]$Exclusion.Skipped
+        # WHERE those are, one row each, so a reader can name the lines no test reaches rather than
+        # only the files. Beside the count it explains, and as long as it: both come from one pass.
+        uncoveredMutants = ConvertTo-PSMutationList -Value $Exclusion.Uncovered
         # Mutants inside calls to the commands ignoreCalls names (#263), and the commands: excluded
         # from total and from both scores, like a declared equivalent, so it is said here.
         skippedAsIgnoredCall = [int]$Exclusion.Ignored

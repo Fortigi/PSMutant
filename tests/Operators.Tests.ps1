@@ -1360,3 +1360,79 @@ Describe 'Test-PSMutationParsable (#252)' {
         Test-PSMutationParsable -Content 'function F { if ($a -eq 1) { 2 }' | Should-BeFalse
     }
 }
+
+Describe 'parameter attribute ranges' {
+    BeforeAll {
+        # One line per construct, so a range can be named by the text it covers and a body by its
+        # lines. Line numbers are the claim in several tests below, so do not reflow this.
+        $script:attrs = Join-Path $TestDrive 'attrs.ps1'
+        [System.IO.File]::WriteAllText($script:attrs, ((@(
+                        'function Get-One {'                                                    # 1
+                        '    [CmdletBinding(SupportsShouldProcess = $true)]'                    # 2
+                        '    param('                                                            # 3
+                        '        [Parameter(Mandatory = $true, Position = 0)] [string]$Name,'   # 4
+                        '        [ValidateRange(1, 10)] [int]$N = 3,'                           # 5
+                        '        [ValidateScript({ $_ -gt 0 })] [int]$M = 1'                    # 6
+                        '    )'                                                                 # 7
+                        '    [ValidateNotNull()] $v = 1'                                        # 8
+                        '    "$Name $N $v"'                                                     # 9
+                        '}'                                                                     # 10
+                        'function Get-Two([Parameter(Mandatory = $false)] $y) {'                # 11
+                        '    begin { $a = 1 }'                                                  # 12
+                        '    process {'                                                         # 13
+                        '        $y +'                                                          # 14
+                        '            1'                                                         # 15
+                        '    }'                                                                 # 16
+                        '}'                                                                     # 17
+                        'function Get-Three { param([Parameter(Position = 1)] $z) }'            # 18
+                        'class Holder {'                                                        # 19
+                        '    [OutputType(1)] [int] Get([int]$x) { return $x }'                 # 20
+                        '}'                                                                     # 21
+                    ) -join "`n") + "`n"))
+        $script:attrText = [System.IO.File]::ReadAllText($script:attrs)
+        $script:attrRanges = Get-PSMutationParamAttributeRange -Path $script:attrs
+        function RangeText { param($Range) $script:attrText.Substring($Range.Start, $Range.End - $Range.Start) }
+    }
+
+    It 'gives each argument of an attribute on a param block, a parameter or an inline parameter' {
+        # Document order, and every argument once: the CmdletBinding one, both of Parameter's,
+        # both of ValidateRange's, the inline parameter's and the empty-bodied function's.
+        (@($script:attrRanges | ForEach-Object { RangeText $_ }) -join '|') |
+            Should-Be '$true|$true|0|1|10|$false|1'
+    }
+
+    It 'leaves out an argument holding a script block, and an attribute on a body variable or a class method' {
+        # Paired with the kept ones above: ValidateScript, ValidateNotNull and the method's are on
+        # lines 6, 8 and 20, and no range starts on any of them.
+        $starts = @($script:attrRanges | ForEach-Object { $script:attrText.Substring(0, $_.Start).Split("`n").Count })
+        $starts | Should-BeCollection @(2, 4, 4, 5, 5, 11, 18)
+    }
+
+    It 'gives the lines of the body statements, not of the param block' {
+        $script:attrRanges[0].BodyLine | Should-BeCollection @(8, 9)
+        # begin and process blocks both count, a statement over several lines counts whole.
+        ($script:attrRanges[5].BodyLine -join ',') | Should-Be '12,14,15'
+    }
+
+    It 'gives no body line for a function with an empty body' {
+        @($script:attrRanges[6].BodyLine).Count | Should-Be 0
+    }
+
+    It 'gives an array, empty when the file has no parameter attribute' {
+        $plain = Join-Path $TestDrive 'plain.ps1'
+        [System.IO.File]::WriteAllText($plain, "function f { param(`$x) [ValidateNotNull()] `$v = 1 }`n")
+        $r = Get-PSMutationParamAttributeRange -Path $plain
+        Should-BeTrue -Actual ($r -is [object[]])
+        $r.Count | Should-Be 0
+    }
+
+    It 'names the script block an attribute decorates, and nothing for any other' {
+        $ast = [System.Management.Automation.Language.Parser]::ParseFile($script:attrs, [ref]$null, [ref]$null)
+        $all = $ast.FindAll({ $args[0] -is [System.Management.Automation.Language.AttributeAst] }, $true)
+        $named = @($all | ForEach-Object { $b = Get-PSMutationAttributeBody -Attribute $_; if ($b) { $b.Parent.Name } else { '-' } })
+        # The one on the class method is left out: a method has a Body too, so an owner check that
+        # took any node with one would name it. (PowerShell refuses a validation attribute on a
+        # method PARAMETER when it compiles the class, so that case never runs.)
+        ($named -join ',') | Should-Be 'Get-One,Get-One,Get-One,Get-One,-,Get-Two,Get-Three,-'
+    }
+}

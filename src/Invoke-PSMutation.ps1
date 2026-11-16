@@ -182,7 +182,8 @@ function Get-PSMutationRunContext {
         PerFile          = $perFile
         # Derived here in the wiring and carried, because the pre-filter counts exist only
         # inside the selection; recomputing them later means parsing every file again.
-        Exclusion        = Get-PSMutationCoverageExclusion -PerFile $perFile -IgnoreCall $ignoreCalls
+        Exclusion        = Get-PSMutationCoverageExclusion -PerFile $perFile -IgnoreCall $ignoreCalls `
+            -Uncovered (ConvertTo-PSMutationUncoveredRow -Candidates @($selection.Uncovered | Where-Object { $_ }) -SandboxRoot $SandboxRoot)
         SourceHashes     = $hashes
         ReportPath       = $reportPath
         # $null when the config asks for no SARIF. Scoped beside the report, for the reason

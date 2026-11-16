@@ -157,6 +157,13 @@
       "type": "integer",
       "description": "Full runs only. Candidates the covered-lines filter removed before any test ran. Beside declaredEquivalent because it answers the same question -- how much of what the config asked for is NOT behind the score -- and this one usually removes far more."
     },
+    "uncoveredMutants": {
+      "type": "array",
+      "items": {
+        "$ref": "#/definitions/uncoveredMutant"
+      },
+      "description": "Full runs only. One row per candidate counted in skippedAsUncovered, so a reader can name the lines no covering test executes and not only the files. Empty is the ordinary answer and is written as [], never as [null]."
+    },
     "skippedAsIgnoredCall": {
       "type": "integer",
       "minimum": 0,
@@ -533,6 +540,46 @@
         "Reused": {
           "type": "boolean",
           "description": "Present, and true, on a row an -Incremental run took from the previous report rather than evaluated (#255). Absent on every row a run evaluated itself."
+        }
+      }
+    },
+    "uncoveredMutant": {
+      "type": "object",
+      "description": "A candidate the covered-lines filter removed before any test ran. The fields of a mutant up to its Status, spelled the same; no Status and no KilledBy, because nothing was evaluated.",
+      "required": [
+        "Id",
+        "Function",
+        "File",
+        "Line",
+        "Operator",
+        "Description"
+      ],
+      "properties": {
+        "Id": {
+          "type": "integer",
+          "description": "Not contractual, as a mutant's Id is not."
+        },
+        "Function": {
+          "type": [
+            "string",
+            "null"
+          ],
+          "description": "The enclosing function, or empty for code at file scope."
+        },
+        "File": {
+          "type": "string",
+          "description": "Repo-relative path to the source."
+        },
+        "Line": {
+          "type": "integer",
+          "description": "The line the candidate starts on: the line the baseline's coverage did not reach."
+        },
+        "Operator": {
+          "type": "string"
+        },
+        "Description": {
+          "type": "string",
+          "description": "<original> -> <mutated>, as for a mutant."
         }
       }
     },
