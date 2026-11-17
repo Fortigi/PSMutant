@@ -163,6 +163,21 @@ Describe 'the child a worker runs' {
         (Receive-PSMutationJob -Job $job).Result | Should-Be 'Passed'
     }
 
+    It 'returns what failed outside the tests, and no killer, for a suite whose AfterAll blocks fail (#329)' {
+        # Pester keeps the error of a failed Describe AfterAll on the block, and of a failed AfterAll
+        # at the top of the file on the file. Neither fails a test.
+        $teardown = Join-Path $script:proj 'teardown.Tests.ps1'
+        "AfterAll { throw 'file teardown failed' }; Describe 'd' { It 'passes' { 1 | Should -Be 1 }; AfterAll { throw 'block teardown failed' } }" |
+            Set-Content $teardown -Encoding utf8
+        $job = Start-PSMutantEvaluation -Candidate $script:cand -Source $script:cand -Index 0 `
+            -MutatedContent $script:original -OriginalContent $script:original `
+            -CoveringTests @($teardown) -WorkerId 0 -SandboxRoot $TestDrive
+        $null = $job.Async.AsyncWaitHandle.WaitOne([timespan]::FromSeconds(30))
+        $run = Receive-PSMutationJob -Job $job
+        "$($run.Result)|$(@($run.Killers).Count)|$($run.Errors -join '|')" |
+            Should-Be 'Failed|0|d: block teardown failed|teardown.Tests.ps1: file teardown failed'
+    }
+
     It 'imports the Pester it is handed, not whatever the runspace resolves' {
         # A fresh runspace resolves "Pester" by NAME and gets the newest installed,
         # which need not be the version this process loaded; assemblies are per-process

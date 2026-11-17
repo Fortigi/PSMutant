@@ -608,6 +608,34 @@ function Receive-PSMutationJob {
     return [pscustomobject]@{
         Result = $outcome; Ran = [int]$result.Ran; Killers = @($result.Killers)
         FailedPath = @($result.FailedPath); PassedPath = @($result.PassedPath)
+        Errors = @(Get-PSMutationOutsideTestError -Errors $result.Errors)
+    }
+}
+
+function Get-PSMutationOutsideTestError {
+    <#
+    .SYNOPSIS
+        One line for each error that Pester reported outside the tests of a run (#329). Pure.
+    .DESCRIPTION
+        The child hands back the whole message of each error of a failed block or test file, with the
+        path of the block or the name of the file. The line shown is the first that is neither blank nor
+        Pester's header 'Framework failed:'. Pester puts a failure of its own teardown, such as a
+        TestDrive it could not remove, under that header and the error on the next line; the stack
+        follows, and says nothing about the cause. An error with no such line is left out.
+
+        Walked with foreach statements, which iterate zero times over $null: a child of an older
+        PSMutant, or a stub, returns no Errors at all.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param($Errors)
+    foreach ($e in $Errors) {
+        foreach ($line in ([string]$e.Message -split "\r?\n")) {
+            $text = $line.Trim()
+            if (-not $text -or $text -eq 'Framework failed:') { continue }
+            if ($e.Where) { "$($e.Where): $text" } else { $text }
+            break
+        }
     }
 }
 
@@ -655,9 +683,16 @@ function Get-PSMutationVerdict {
             "model: '$outcome'. Known outcomes are $($script:PSMutationKnownOutcomes -join ', '). " +
             "Scoring it would guess, and the guess flatters the score.")
     }
+    # A kill that no test made (#329) carries what Pester reported outside the tests -- a failed
+    # AfterAll, or a TestDrive it could not remove -- so the report can tell it from a kill by a
+    # test, and a teardown that failed for a reason of its own from a mutant. Only then: Pester
+    # 6.1.0 replaces the error of a failed BeforeAll, which fails its tests, with the text of its
+    # own guard for break and continue.
+    $killers = @($Run.Killers)
+    $errors = @(if ($killers.Count -eq 0) { foreach ($e in $Run.Errors) { $e } })
     # And the killers by the name a filter matches, which the runner tries first on the mutants
-    # after it (#254). Not published: the row carries Killers alone.
-    return [pscustomobject]@{ Status = 'Killed'; Killers = @($Run.Killers); KillerPath = @($Run.FailedPath) }
+    # after it (#254). Not published: the row carries Killers and Errors, not KillerPath.
+    return [pscustomobject]@{ Status = 'Killed'; Killers = $killers; KillerPath = @($Run.FailedPath); Errors = $errors }
 }
 
 function Complete-PSMutantEvaluation {
@@ -813,7 +848,7 @@ function New-PSMutationResultRow {
         [Parameter(Mandatory)] $Verdict,
         [Parameter(Mandatory)] [string]$DisplayFile
     )
-    return [pscustomobject]@{
+    $row = [pscustomobject]@{
         # Function is carried so an equivalence declaration can address this mutant by
         # the function it lives in rather than by a line number, which moves whenever
         # anything above the mutant is edited and takes the declaration stale with it.
@@ -838,6 +873,11 @@ function New-PSMutationResultRow {
         # recorded found 85. Read killersComplete, never the count.
         KilledBy = @($Verdict.Killers)
     }
+    # What Pester reported on a kill that no test made (#329). Only on such a row, as Reused is only
+    # on a reused one: on every row it would widen the published shape for the few that need it.
+    $errors = @(foreach ($e in $Verdict.Errors) { $e })
+    if ($errors.Count -gt 0) { $row | Add-Member -NotePropertyName KilledByError -NotePropertyValue $errors }
+    return $row
 }
 
 function Get-PSMutationFreeWorker {
@@ -1487,17 +1527,31 @@ function Get-PSMutationWorkerGreenFault {
     }
     # Named, and capped at ten, as the baseline guard does: a suite that fails in a worker usually
     # fails every test it has, and the first name is the one most likely to explain them.
+    #
+    # A run that failed with no failed test (#329) failed in an AfterAll or in Pester's own teardown,
+    # such as a TestDrive it could not remove -- not in a BeforeAll, which fails its tests. Pester
+    # keeps that error on the block or on the file, and it is the one clue: the file run alone in a
+    # new session passes when what failed differs between the two.
     $named = @($Run.Killers)
-    $failed = ' No test carried the error, so a BeforeAll failed: run the file alone in a new session to see it.'
-    if ($named.Count -gt 0) {
-        $more = ''
-        if ($named.Count -gt 10) { $more = " (and $($named.Count - 10) more)" }
-        $failed = " Failed: $(@($named | Select-Object -First 10) -join '; ')$more."
-    }
+    $outside = @(foreach ($e in $Run.Errors) { $e })
+    $failed = ' No test failed, and Pester reported no error of a block or a test file: run the file alone in a new session to see it.'
+    # An error that ends its own sentence keeps one full stop, not two.
+    if ($outside.Count -gt 0) { $failed = " No test failed, but Pester reported: $((Join-PSMutationCappedList -Item $outside).TrimEnd('.'))." }
+    if ($named.Count -gt 0) { $failed = " Failed: $(Join-PSMutationCappedList -Item $named)." }
     return ("The covering suite passed the baseline but fails in a worker, which is where every mutant runs: $where.$failed " +
         'Both are clean runspaces, so it depends on something that differs between them -- most often the sandbox: ' +
         'a worker runs its own copy, so an absolute path into another copy, or a port or file another worker holds, ' +
         'fails there -- and every mutant it covers would be scored Killed by that failure rather than by a test.')
+}
+
+function Join-PSMutationCappedList {
+    # The first ten items joined, and how many more there are. Pure.
+    [OutputType([string])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string[]]$Item)
+    $more = ''
+    if ($Item.Count -gt 10) { $more = " (and $($Item.Count - 10) more)" }
+    return "$(@($Item | Select-Object -First 10) -join '; ')$more"
 }
 
 function Start-PSMutationGreenJob {

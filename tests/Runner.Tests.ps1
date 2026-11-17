@@ -808,6 +808,25 @@ Describe 'Get-PSMutationVerdict' {
         @($v.KillerPath | Where-Object { $_ }).Count | Should-Be 0
     }
 
+    It 'carries what Pester reported on a kill that no test made (#329)' {
+        # A failed AfterAll, or a TestDrive Pester could not remove, fails no test. Without the error
+        # the report cannot tell such a kill from a kill by a test.
+        $v = Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @(); Errors = @('d: teardown failed') })
+        "$($v.Status)|$($v.Errors -join '|')" | Should-Be 'Killed|d: teardown failed'
+    }
+
+    It 'leaves the errors out beside a failed test' {
+        # Pester 6.1.0 replaces the error of a failed BeforeAll, which fails its tests, with the text
+        # of its own guard for break and continue. Beside a failed test, the error misleads.
+        $v = Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @('a test'); Errors = @('d: guard text') })
+        @($v.Errors).Count | Should-Be 0
+    }
+
+    It 'carries no error for a run that returned none' {
+        # A crashed run, and a child of an older PSMutant, return no Errors at all.
+        @((Get-PSMutationVerdict -Run ([pscustomobject]@{ Result = 'Crashed'; Killers = @() })).Errors).Count | Should-Be 0
+    }
+
     It 'refuses an outcome it does not model rather than scoring it' {
         # The collapse below is toward the FLATTERING answer: an unmodelled value would be
         # scored Killed, so a Pester that grew a third run-level state would report a perfect
@@ -819,6 +838,66 @@ Describe 'Get-PSMutationVerdict' {
         # the fragments raises a conversion error that QUOTES its left operand, so a pattern
         # taken from an earlier fragment matches the mutant's own failure and the assertion
         # passes against a message that was never built.
+    }
+}
+
+Describe 'Get-PSMutationOutsideTestError' {
+    It 'gives the first line of each error, after the path of its block or the name of its file' {
+        $lines = Get-PSMutationOutsideTestError -Errors @(
+            [pscustomobject]@{ Where = 'Add-One'; Message = "teardown failed`nat <ScriptBlock>, a.Tests.ps1: line 9" }
+            [pscustomobject]@{ Where = 'b.Tests.ps1'; Message = 'file teardown failed' }
+        )
+        ($lines -join '|') | Should-Be 'Add-One: teardown failed|b.Tests.ps1: file teardown failed'
+    }
+
+    It 'gives the error under the header of a failure of Pester''s own teardown' {
+        # Measured on Pester 6.1.0 and 6.2.0: a TestDrive that Pester could not remove is
+        # "Framework failed:", then the error, then the stack.
+        $message = "Framework failed:`r`n  Result 2 - Error 1:MethodInvocationException: locked  `r`n`r`nat Remove-TestDrive"
+        Get-PSMutationOutsideTestError -Errors @([pscustomobject]@{ Where = 'a.Tests.ps1'; Message = $message }) |
+            Should-Be 'a.Tests.ps1: Result 2 - Error 1:MethodInvocationException: locked'
+    }
+
+    It 'skips the blank lines before the error' {
+        Get-PSMutationOutsideTestError -Errors @([pscustomobject]@{ Where = 'd'; Message = "`n   `nfailed" }) | Should-Be 'd: failed'
+    }
+
+    It 'gives the line alone when the error names no block or file' {
+        Get-PSMutationOutsideTestError -Errors @([pscustomobject]@{ Where = ''; Message = 'failed' }) | Should-Be 'failed'
+    }
+
+    It 'leaves out an error with no line to show' {
+        $lines = @(Get-PSMutationOutsideTestError -Errors @(
+                [pscustomobject]@{ Where = 'd'; Message = "Framework failed:`n " }
+                [pscustomobject]@{ Where = 'e'; Message = 'second' }
+            ))
+        ($lines -join '|') | Should-Be 'e: second'
+    }
+
+    It 'gives nothing for a run that returned no errors' {
+        # A child of an older PSMutant, or a stub, returns no Errors at all.
+        @(Get-PSMutationOutsideTestError -Errors $null).Count | Should-Be 0
+    }
+}
+
+Describe 'New-PSMutationResultRow' {
+    BeforeAll {
+        $script:rowCandidate = [pscustomobject]@{ Id = 3; Function = 'F'; Line = 2; Operator = 'BinaryOperator'; Description = '-gt -> -le' }
+    }
+
+    It 'adds KilledByError, as a list, to a kill that no test made (#329)' {
+        $row = New-PSMutationResultRow -Candidate $script:rowCandidate -DisplayFile 'src/a.ps1' `
+            -Verdict ([pscustomobject]@{ Status = 'Killed'; Killers = @(); Errors = @('d: teardown failed') })
+        ($row.PSObject.Properties.Name -join ',') | Should-Be 'Id,Function,File,Line,Operator,Description,Status,KilledBy,KilledByError'
+        Should-BeTrue -Actual ($row.KilledByError -is [object[]])
+        ($row.KilledByError -join '|') | Should-Be 'd: teardown failed'
+    }
+
+    It 'keeps the shape of every other row' {
+        # On every row the field would widen the published shape for the few rows that need it.
+        $row = New-PSMutationResultRow -Candidate $script:rowCandidate -DisplayFile 'src/a.ps1' `
+            -Verdict ([pscustomobject]@{ Status = 'Killed'; Killers = @('t'); Errors = @() })
+        ($row.PSObject.Properties.Name -join ',') | Should-Be 'Id,Function,File,Line,Operator,Description,Status,KilledBy'
     }
 }
 
@@ -1906,10 +1985,40 @@ Describe 'Get-PSMutationWorkerGreenFault' {
         $f | Should-NotBeLikeString '*more)*'
     }
 
-    It 'points at a BeforeAll when no test carried the error' {
+    It 'sends the reader to the file alone when no test failed and Pester reported no error' {
         $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @() }) `
             -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
-        $f | Should-BeLikeString '*in worker 0. No test carried the error, so a BeforeAll failed: run the file alone in a new session to see it. Both are clean runspaces*'
+        $f | Should-BeLikeString '*in worker 0. No test failed, and Pester reported no error of a block or a test file: run the file alone in a new session to see it. Both are clean runspaces*'
+    }
+
+    It 'gives what Pester reported when no test failed (#329)' {
+        # A failed AfterAll, or a TestDrive Pester could not remove, fails no test, and the file run
+        # alone passes when the failure is the worker's own. The error is the one clue.
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @(); Errors = @('Add-One: locked') }) `
+            -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
+        $f | Should-BeLikeString '*in worker 0. No test failed, but Pester reported: Add-One: locked. Both are clean runspaces*'
+    }
+
+    It 'ends an error that ends its own sentence with one full stop' {
+        # Measured: the error of a TestDrive that Pester could not remove ends with a full stop.
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @(); Errors = @('Add-One: in use by another process.') }) `
+            -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
+        $f | Should-BeLikeString '*Pester reported: Add-One: in use by another process. Both are clean runspaces*'
+    }
+
+    It 'caps the errors at ten and counts the rest' {
+        $eleven = @(1..11 | ForEach-Object { "E.$_" })
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @(); Errors = $eleven }) `
+            -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
+        $f | Should-BeLikeString '*Pester reported: E.1; E.2; E.3; E.4; E.5; E.6; E.7; E.8; E.9; E.10 (and 1 more). Both*'
+    }
+
+    It 'names a failed test, and not the error of its block' {
+        # Pester 6.1.0 replaces the error of a failed BeforeAll, which fails its tests, with the text
+        # of its own guard for break and continue.
+        $f = Get-PSMutationWorkerGreenFault -Run ([pscustomobject]@{ Result = 'Failed'; Killers = @('A.one'); Errors = @('A: guard text') }) `
+            -Suite @('a.Tests.ps1') -WorkerId 0 -TimeoutSeconds 5
+        $f | Should-BeLikeString '*in worker 0. Failed: A.one. Both are clean runspaces*'
     }
 
     It 'says an unmutated suite that ended its worker process would kill every mutant (#256)' {

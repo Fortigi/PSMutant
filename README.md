@@ -462,8 +462,10 @@ above it.
    Before the first mutant, each covering suite runs once, unmutated, where the mutants will
    run: a fresh runspace per worker that has only Pester, not your session's modules, global
    functions or preferences. A suite green in your session but not there is refused, named with
-   its failing tests, because every mutant would otherwise be scored Killed by that failure. So is
-   one that runs no test there, every test skipped or never discovered: it can say nothing about
+   its failing tests, because every mutant would otherwise be scored Killed by that failure. When
+   no test failed, the refusal gives what Pester reported instead: a failed `AfterAll`, or a
+   TestDrive that Pester could not remove because a file in it was still open. A suite that runs
+   no test there, every test skipped or never discovered, is refused too: it can say nothing about
    any mutant it covers.
 4. **Score** — `killed / total`, written to the JSON report. A mutant that hits the
    per-mutant timeout counts toward `killed`, because a mutant that hangs your suite is a
@@ -476,6 +478,12 @@ above it.
    a survivor: it ended their discovery -- an `exit` reached while a test file was loading, say in
    a function a `BeforeDiscovery` calls for its cases -- so nothing was asked about it. It is left
    out of the score and counted as `runtimeErrors`, and the summary line says how many.
+
+   A mutant whose covering run failed with no test failing is `Killed` with an empty `KilledBy`:
+   an `AfterAll` failed, or Pester's own teardown of a test file. Its row then carries
+   `KilledByError`, one line of what Pester reported for each failed block or file, such as
+   `d: 1 file(s) still open`. A teardown that fails for a reason of its own, and not because of
+   the mutant, is then visible in the report.
 
 A **loop-condition guard** drops any candidate inside a `while`/`for`/`do` condition, so a
 flipped comparison can never spin an infinite loop — which is what makes in-process

@@ -1,3 +1,20 @@
+## [0.10.0] - 2026-11-17
+
+### For consumers
+
+**A suite that fails only in a worker, with no failed test, is refused with what failed.** An
+`AfterAll`, or Pester's removal of TestDrive at the end of a test file, fails no test. The refusal
+said "No test carried the error, so a BeforeAll failed" and showed nothing, although a `BeforeAll`
+that fails also fails its tests. Its advice, to run the file alone, shows nothing either when the
+failure occurs only in a worker. The refusal now gives one line of what Pester reported for each
+failed block or test file, such as `Add-One: The process cannot access the file 'session.jsonl'
+because it is being used by another process.`
+
+**A kill that no test made says what failed.** Such a mutant is still `Killed` with an empty
+`KilledBy`. Its row now also carries `KilledByError`, with the same lines, so a teardown that fails
+for a reason of its own can be told from a kill by a test. The field is only on such a row and is
+optional in the report schema, so `schemaVersion` stays 3.
+
 ## [0.9.3] - 2026-11-09
 
 ### For consumers

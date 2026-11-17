@@ -508,7 +508,23 @@ Describe 'fixture' {
         $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $false -sandboxRoot $TestDrive
         $out.Result | Should-Be 'Passed'
         @($out.Killers) | Should-BeCollection -Count 0
+        @($out.Errors) | Should-BeCollection -Count 0
         $out.Ran | Should-Be 1
+    }
+
+    It 'answers each error that Pester kept outside the tests, with its block or its file (#329)' {
+        # A failed AfterAll fails no test, so this is all a run says about it. A block whose
+        # BeforeAll and AfterAll both failed holds two errors, the AfterAll's first, and an AfterAll
+        # at the top of the file keeps its error on the file.
+        $name = "outside-$([System.Guid]::NewGuid().ToString('N')).Tests.ps1"
+        $fixture = Join-Path $TestDrive $name
+        "AfterAll { throw 'file teardown' }; Describe 'd' { BeforeAll { throw 'block setup' }; It 'x' { 1 | Should-Be 1 }; AfterAll { throw 'block teardown' } }" |
+            Set-Content -LiteralPath $fixture -Encoding utf8
+
+        $out = & (Get-PSMutationWarmPesterScript) -tests @($fixture) -recordAllKillers $false -sandboxRoot $TestDrive
+
+        (@($out.Errors | ForEach-Object { "$($_.Where): $($_.Message)" }) -join '|') |
+            Should-Be "d: block teardown|d: block setup|${name}: file teardown"
     }
 
     It 'answers Passed having run NO test when a file''s discovery is ended (#251)' {

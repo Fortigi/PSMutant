@@ -664,5 +664,18 @@ function Invoke-PSMutationChild {
         Killers = @(foreach ($t in $r.Failed) { $t.ExpandedName })
         FailedPath = @(@(foreach ($t in $r.Failed) { $t.Path -join '.' }) | Select-Object -Unique)
         PassedPath = @(@(foreach ($t in $r.Passed) { $t.Path -join '.' }) | Select-Object -Unique)
+        # What failed outside the tests (#329). An AfterAll, or Pester's own removal of TestDrive at
+        # the end of a file, fails no test, so the run is 'Failed' with no killer. Pester keeps that
+        # error on the block or on the file, and a block whose BeforeAll and AfterAll both failed
+        # holds two. Each one whole: the runner picks the line to show, because only this function's
+        # text reaches a worker.
+        Errors = @(
+            foreach ($b in $r.FailedBlocks) {
+                foreach ($e in $b.ErrorRecord) { [pscustomobject]@{ Where = $b.ExpandedPath; Message = [string]$e.Exception.Message } }
+            }
+            foreach ($k in $r.Containers) {
+                foreach ($e in $k.ErrorRecord) { [pscustomobject]@{ Where = [string]$k.Item.Name; Message = [string]$e.Exception.Message } }
+            }
+        )
     }
 }

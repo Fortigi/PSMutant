@@ -530,6 +530,13 @@
           },
           "description": "Tests that failed on this mutant. One entry unless killersComplete is true, since the run stops at the first failure by default. Empty for a survivor or a timeout."
         },
+        "KilledByError": {
+          "type": "array",
+          "items": {
+            "type": "string"
+          },
+          "description": "Present only on a Killed row whose KilledBy is empty, and only when Pester reported an error outside the tests (#329): a failed AfterAll, or a TestDrive it could not remove. One line for each failed block or test file, as '<block path or file name>: <error>'. Absent on every other row."
+        },
         "Reused": {
           "type": "boolean",
           "description": "Present, and true, on a row an -Incremental run took from the previous report rather than evaluated (#255). Absent on every row a run evaluated itself."
