@@ -840,6 +840,22 @@ Describe 'Get-PSMutationMergedMutant' {
             -Rechecked @()
         @($merged).Count | Should-Be 2
     }
+
+    It 'keeps what Pester reported on a rechecked kill that no test made (#329)' {
+        # A survivor that a recheck finds killed by a failed AfterAll: without the field, the merged
+        # report would show a kill by nothing.
+        $fresh = script:Mu -Desc 'd1' -Status 'Killed'
+        $fresh | Add-Member -NotePropertyName KilledByError -NotePropertyValue @('d: teardown failed')
+        $merged = Get-PSMutationMergedMutant -Baseline @((script:Mu -Desc 'd1' -Status 'Survived')) -Rechecked @($fresh)
+        Should-BeTrue -Actual ($merged[0].KilledByError -is [object[]])
+        ($merged[0].KilledByError -join '|') | Should-Be 'd: teardown failed'
+    }
+
+    It 'adds no KilledByError to a rechecked row that has none' {
+        $merged = Get-PSMutationMergedMutant -Baseline @((script:Mu -Desc 'd1' -Status 'Survived')) `
+            -Rechecked @((script:Mu -Desc 'd1' -Status 'Killed'))
+        ($merged[0].PSObject.Properties.Name -join ',') | Should-Be 'Id,Function,File,Line,Operator,Description,Status,KilledBy'
+    }
 }
 
 Describe 'Get-PSMutationMergedBaseline' {

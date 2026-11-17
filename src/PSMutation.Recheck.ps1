@@ -174,11 +174,16 @@ function Get-PSMutationMergedMutant {
             # row -- file, line, operator, description -- comes from the baseline, because that is
             # where it was measured and the recheck row is a projection of the same mutant.
             $fresh = $byKey[$key]
-            $out.Add([pscustomobject]@{
-                    Id = $b.Id; Function = $b.Function; File = $b.File; Line = $b.Line
-                    Operator = $b.Operator; Description = $b.Description
-                    Status = $fresh.Status; KilledBy = @($fresh.KilledBy)
-                })
+            $row = [pscustomobject]@{
+                Id = $b.Id; Function = $b.Function; File = $b.File; Line = $b.Line
+                Operator = $b.Operator; Description = $b.Description
+                Status = $fresh.Status; KilledBy = @($fresh.KilledBy)
+            }
+            # Only on a kill that no test made (#329), as the recheck row has it.
+            foreach ($p in $fresh.PSObject.Properties['KilledByError']) {
+                $row | Add-Member -NotePropertyName KilledByError -NotePropertyValue @($p.Value)
+            }
+            $out.Add($row)
         }
         else { $out.Add($b) }
     }
