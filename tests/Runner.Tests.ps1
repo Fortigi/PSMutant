@@ -2094,6 +2094,111 @@ Describe 'a mutant that ends its worker process (#256)' {
             Get-Content -Raw -LiteralPath (Join-Path $r 'src/a.ps1') | Should-Be 'function F { 1 }'
         }
     }
+
+    It 'is scored Killed, and the run goes on, when another process holds its file for a moment after the worker ended' {
+        # The worker starts a process that opens the mutated file without write sharing, as a child
+        # process of a test can, and then ends. On Windows the restore of the file then fails until
+        # that process lets go. Measured on a run with four workers: the failed restore stopped the
+        # run after 92 mutants. Elsewhere an open file can be written, and the run is the same.
+        $holder = Join-Path $TestDrive 'hold.ps1'
+        Set-Content -LiteralPath $holder -Value @'
+param($File, $Marker)
+$h = [System.IO.File]::Open($File, 'Open', 'Read', 'Read')
+Set-Content -LiteralPath $Marker -Value 'held'
+Start-Sleep -Milliseconds 1500
+$h.Dispose()
+'@
+        $script:holderScript = $holder
+        Mock Get-PSMutationWarmPesterScript {
+            ('param($tests, $recordAllKillers, $sandboxRoot) $f = Join-Path $sandboxRoot "src/a.ps1"; if ((Get-Content -Raw -LiteralPath $f) -match "HOLD") { ' +
+                '$m = Join-Path $sandboxRoot "held"; Start-Process -FilePath (Join-Path $PSHOME "pwsh") -NoNewWindow -ArgumentList "-NoLogo", "-NoProfile", "-NonInteractive", "-File", "HOLDER", $f, $m; ' +
+                'while (-not (Test-Path -LiteralPath $m)) { Start-Sleep -Milliseconds 20 }; [System.Environment]::Exit(3) }; ' +
+                '[pscustomobject]@{ Result = "Passed"; Ran = 1; Killers = @() }').Replace('HOLDER', $script:holderScript)
+        }
+        Mock Start-Sleep { [System.Threading.Thread]::Sleep($Milliseconds) }
+        $file = Join-Path $script:crashPrimary 'src/a.ps1'
+        $cands = @(1, 2, 3, 4) | ForEach-Object {
+            [pscustomobject]@{ Id = $_; Function = 'F'; File = $file; Line = 1; Operator = 'NumberLiteral'
+                Description = "m$_"; StartOffset = 13; EndOffset = 14; Mutated = (($_ -eq 2) ? 'HOLD' : '2') }
+        }
+        $rows = Invoke-PSMutationLoop -TimeoutRule ([pscustomobject]@{ Factor = 4; Floor = 15 }) -Sink ([System.Collections.Generic.List[object]]::new()) `
+            -Candidates $cands -TestsByFile @{} -AllTests @((Join-Path $script:crashPrimary 'a.Tests.ps1')) -TimeoutSeconds 60 `
+            -SandboxRoot $script:crashPrimary -WorkerSandbox @($script:crashSecond) -Quiet
+        # Joined, because Should-BeCollection does not compare the order.
+        @($rows | ForEach-Object { $_.Status }) -join ',' | Should-Be 'Survived,Killed,Survived,Survived'
+        foreach ($r in $script:crashPrimary, $script:crashSecond) {
+            Get-Content -Raw -LiteralPath (Join-Path $r 'src/a.ps1') | Should-Be 'function F { 1 }'
+        }
+        # On Windows the restore met the held file and waited for it.
+        if ($IsWindows) { Should-Invoke Start-Sleep -ParameterFilter { $Milliseconds -eq $script:PSMutationSandboxWriteWaitMs } }
+    }
+}
+
+Describe 'Invoke-PSMutationSandboxWrite' {
+    # Each write of a sandbox file waits while another process holds the file open: on Windows the
+    # write fails at once with a sharing violation, and a mutant's restore that failed stopped the run.
+    BeforeEach {
+        $script:savedAttempts = $script:PSMutationSandboxWriteAttempts
+        $script:calls = 0
+        Mock Start-Sleep { }
+    }
+    AfterEach { $script:PSMutationSandboxWriteAttempts = $script:savedAttempts }
+
+    It 'writes the text, or the bytes, once when nothing holds the file' {
+        $text = Join-Path $TestDrive 'w-text.ps1'
+        $bytes = Join-Path $TestDrive 'w-bytes.ps1'
+        $empty = Join-Path $TestDrive 'w-empty.ps1'
+        Invoke-PSMutationSandboxWrite -Path $text -Content "function $([char]0xC4) { 1 }"
+        Invoke-PSMutationSandboxWrite -Path $bytes -Content ([byte[]](0xEF, 0xBB, 0xBF, 0x31))
+        Invoke-PSMutationSandboxWrite -Path $empty -Content ''
+        # UTF-8 without a BOM, as the file was read; the bytes exactly, a BOM included.
+        [System.IO.File]::ReadAllBytes($text) -join ',' | Should-Be (([System.Text.UTF8Encoding]::new($false)).GetBytes("function $([char]0xC4) { 1 }") -join ',')
+        [System.IO.File]::ReadAllBytes($bytes) -join ',' | Should-Be '239,187,191,49'
+        (Get-Item -LiteralPath $empty).Length | Should-Be 0
+        Should-Invoke Start-Sleep -Exactly 0
+    }
+
+    It 'waits while another process holds the file (Windows error <Code>), then writes' -ForEach @(
+        @{ Code = 32; HResult = -2147024864 }
+        @{ Code = 33; HResult = -2147024863 }
+    ) {
+        $script:hresult = $HResult
+        # As a .NET call throws it into PowerShell: wrapped.
+        Mock Write-PSMutationFile {
+            if (++$script:calls -lt 3) {
+                throw [System.Management.Automation.MethodInvocationException]::new('Exception calling "WriteAllText"',
+                    [System.IO.IOException]::new('The file is in use.', $script:hresult))
+            }
+        }
+        Invoke-PSMutationSandboxWrite -Path 'a.ps1' -Content 'x'
+        $script:calls | Should-Be 3
+        Should-Invoke Write-PSMutationFile -Exactly 3 -ParameterFilter { $Path -eq 'a.ps1' -and $Content -eq 'x' }
+        Should-Invoke Start-Sleep -Exactly 2 -ParameterFilter { $Milliseconds -eq $script:PSMutationSandboxWriteWaitMs }
+    }
+
+    It 'stops after its attempts, naming the file and why the run cannot go on' {
+        $script:PSMutationSandboxWriteAttempts = 3
+        Mock Write-PSMutationFile { $script:calls++; throw [System.IO.IOException]::new('The file is in use.', -2147024864) }
+        { Invoke-PSMutationSandboxWrite -Path 'C:\box\a.ps1' -Content 'x' } |
+            Should-Throw -ExceptionMessage 'Another process held the sandbox file C:\box\a.ps1 through 3 attempts to write it, so the sandbox cannot be put back, and the mutants after it would run against the wrong code: The file is in use.'
+        $script:calls | Should-Be 3
+    }
+
+    It 'throws at once an error that is not a file in use' {
+        { Invoke-PSMutationSandboxWrite -Path (Join-Path -Path $TestDrive -ChildPath 'no-such-folder' -AdditionalChildPath 'a.ps1') -Content 'x' } |
+            Should-Throw -ExceptionType ([System.Management.Automation.MethodInvocationException])
+        Mock Write-PSMutationFile { $script:calls++; throw 'not a file error' }
+        { Invoke-PSMutationSandboxWrite -Path 'a.ps1' -Content 'x' } | Should-Throw -ExceptionMessage 'not a file error'
+        $script:calls | Should-Be 1
+        Should-Invoke Start-Sleep -Exactly 0
+    }
+
+    It 'tries three hundred times, a tenth of a second apart' {
+        # Decisions, pinned: the tests above are written in terms of the variables. Thirty seconds
+        # cover a worker that ends and a child of its tests; the scheduler waits for them.
+        $script:savedAttempts | Should-Be 300
+        $script:PSMutationSandboxWriteWaitMs | Should-Be 100
+    }
 }
 
 Describe 'Get-PSMutationReloadFault (#249)' {

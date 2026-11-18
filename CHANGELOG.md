@@ -1,3 +1,18 @@
+## [0.10.0] - 2026-11-18
+
+### For consumers
+
+**A worker process that ends no longer stops the run.** With `workers` above one, two events
+stopped a run with "Interrupted after N of M mutant(s)" and no score, at random. After a worker
+process ended, under a mutant or by a timeout, the mutated file was written back at once. On
+Windows another process can still hold that file for a moment, such as a child process of the
+tests or a virus scanner, and the write then failed with "The process cannot access the file ...
+because it is being used by another process". PSMutant now waits for the file, up to thirty
+seconds, and stops the run only when the file stays held. And a new worker process that ended
+during its own start, before its runspace opened or before it said what it can debug, threw "You
+cannot call a method on a null-valued expression". PSMutant now starts another process, up to
+three times. No mutant runs before its worker is ready, so such an end gives no mutant a verdict.
+
 ## [0.9.3] - 2026-11-09
 
 ### For consumers

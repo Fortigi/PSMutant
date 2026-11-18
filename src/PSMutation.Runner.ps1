@@ -544,7 +544,7 @@ function Start-PSMutantEvaluation {
         [switch]$Process
     )
     $ps = Get-PSMutationSuiteShell -WorkerId $WorkerId -Tests $CoveringTests -SandboxRoot $SandboxRoot -RecordAllKillers:$RecordAllKillers -Filter $Filter -Process:$Process
-    [System.IO.File]::WriteAllText($Candidate.File, $MutatedContent)
+    Invoke-PSMutationSandboxWrite -Path $Candidate.File -Content $MutatedContent
     # The clock starts at BeginInvoke rather than when the candidate was queued, so a mutant's
     # measured seconds are what it spent running and not what it spent waiting for a worker.
     # The per-mutant budget is a statement about the child, and a queue time folded into it would
@@ -692,10 +692,72 @@ function Complete-PSMutantEvaluation {
         # whole file anyway, so this write is redundant between two mutants of the SAME file in
         # the SAME worker -- but it is what makes the pair self-contained: a mutant that throws,
         # or a run killed here, leaves the sandbox as it found it.
-        [System.IO.File]::WriteAllText($Job.Candidate.File, $Job.OriginalContent)
+        Invoke-PSMutationSandboxWrite -Path $Job.Candidate.File -Content $Job.OriginalContent
         # The covering tests too, when they were marked for this mutant (#270). A foreach STATEMENT,
         # so a job with none -- the ordinary case -- iterates zero times rather than once on $null.
-        foreach ($o in $Job.TestOriginals) { [System.IO.File]::WriteAllBytes($o.Path, $o.Bytes) }
+        foreach ($o in $Job.TestOriginals) { Invoke-PSMutationSandboxWrite -Path $o.Path -Content $o.Bytes }
+    }
+}
+
+# How many times a write of a sandbox file is tried while another process holds the file, and how
+# long apart: thirty seconds in all. A worker that ends, a child process of its tests, or a virus
+# scanner can hold a file of the sandbox for a moment after its mutant.
+$script:PSMutationSandboxWriteAttempts = 300
+$script:PSMutationSandboxWriteWaitMs = 100
+
+function Write-PSMutationFile {
+    # One write of a whole file: the bytes as they are, or the text as UTF-8 without a BOM.
+    [OutputType([void])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [string]$Path, [Parameter(Mandatory)] [AllowEmptyString()] [AllowEmptyCollection()] $Content)
+    if ($Content -is [byte[]]) { [System.IO.File]::WriteAllBytes($Path, $Content) }
+    else { [System.IO.File]::WriteAllText($Path, $Content) }
+}
+
+function Test-PSMutationFileInUse {
+    # True for the error of a file that another process holds open: a sharing or a lock violation,
+    # Windows errors 32 and 33. A .NET call reaches PowerShell wrapped, so its base is asked. Pure.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [System.Exception]$Exception)
+    $io = $Exception.GetBaseException()
+    return $io -is [System.IO.IOException] -and ($io.HResult -band 0xFFFF) -in 32, 33
+}
+
+function Invoke-PSMutationSandboxWrite {
+    <#
+    .SYNOPSIS
+        Write one file of a sandbox, and wait while another process holds it.
+    .DESCRIPTION
+        On Windows a file that another process holds open without write sharing cannot be written,
+        and the write fails at once. After a worker process ended under its mutant, the restore of
+        the mutated file met such a hold, and its error stopped the whole run. Measured on a run with
+        four workers: interrupted after 92 mutants, and the same run passed the next time.
+
+        A write that still fails after its attempts is thrown: the mutants after it would run
+        against the code of another mutant, and their verdicts would be wrong.
+    #>
+    [OutputType([void])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$Path,
+        # Text, or the bytes of a marked test file (#270). Empty for an empty file.
+        [Parameter(Mandatory)] [AllowEmptyString()] [AllowEmptyCollection()] $Content
+    )
+    for ($attempt = 1; ; $attempt++) {
+        try {
+            Write-PSMutationFile -Path $Path -Content $Content
+            return
+        }
+        catch {
+            if (-not (Test-PSMutationFileInUse -Exception $_.Exception)) { throw }
+            if ($attempt -ge $script:PSMutationSandboxWriteAttempts) {
+                throw ("Another process held the sandbox file $Path through $attempt attempts to write it, so the " +
+                    "sandbox cannot be put back, and the mutants after it would run against the wrong code: " +
+                    $_.Exception.GetBaseException().Message)
+            }
+            Start-Sleep -Milliseconds $script:PSMutationSandboxWriteWaitMs
+        }
     }
 }
 
