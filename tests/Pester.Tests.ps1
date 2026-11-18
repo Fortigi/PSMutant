@@ -827,10 +827,93 @@ Describe 'a worker in a process of its own (#256)' {
         $sw.Elapsed.TotalSeconds | Should-BeLessThan 10
     }
 
-    It 'leaves no process behind when Pester will not import into it' {
+    It 'leaves no process behind when Pester will not import into it, and does not start another' {
         Mock Get-PSMutationPesterPath { Join-Path ([System.IO.Path]::GetTempPath()) 'no-such-pester.psd1' }
         { Get-PSMutationWarmShell -WorkerId 24 -Process } | Should-Throw -ExceptionMessage '*Could not import Pester into the mutant runspace*'
         $script:PSMutationWarmProcess.ContainsKey(24) | Should-BeFalse
+        # Its process lives, so the failure is the import's own, and a new process would fail the same way.
+        Should-Invoke Get-PSMutationPesterPath -Exactly 1
+    }
+
+    Context 'a worker process whose start fails by accident' {
+        # A worker's start can fail by accident: its process ends before its runspace opens, or its
+        # runspace opens without a debugger -- when the worker's application private data arrives
+        # after the message that opens the runspace, or never. No mutant is written until the shell
+        # is ready, so the failure is not the mutant's doing, and the run starts another process.
+        # Measured on CI runs with four workers: a null Debugger stopped the run, its process alive.
+        BeforeAll {
+            $script:realRunspace = ${function:New-PSMutationWorkerRunspace}
+            # A process that has ended, as the record of a worker that ended during its start.
+            $script:ended = Start-Process -FilePath (Join-Path $PSHOME 'pwsh') -PassThru -NoNewWindow `
+                -ArgumentList '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit'
+            $null = $script:ended.WaitForExit(30000)
+            function script:New-FailedStart {
+                param([int]$WorkerId, [string]$Failure, [System.Diagnostics.Process]$Process = $script:ended)
+                $script:PSMutationWarmProcess[$WorkerId] = [pscustomobject]@{
+                    Process = $Process; PipeName = 'psmut-failed'; Directory = (Join-Path $TestDrive 'failed')
+                }
+                $rs = [pscustomobject]@{ Debugger = $null }
+                $open = ($Failure -eq 'Open') ? { throw 'An error has occurred which PowerShell cannot handle. A remote session might have ended.' } : { }
+                $rs | Add-Member -MemberType ScriptMethod -Name Open -Value $open
+                return $rs
+            }
+        }
+
+        It 'starts another process when the first one ended <Name>' -ForEach @(
+            @{ Name = 'before its runspace opened'; Failure = 'Open' }
+            @{ Name = 'before it said what it can debug'; Failure = 'Debugger' }
+        ) {
+            $script:failedStarts = 1
+            $script:failure = $Failure
+            Mock New-PSMutationWorkerRunspace {
+                if ($script:failedStarts-- -gt 0) { return New-FailedStart -WorkerId $WorkerId -Failure $script:failure }
+                & $script:realRunspace -WorkerId $WorkerId -Process:$Process
+            }
+            $shell = Get-PSMutationWarmShell -WorkerId 31 -Process
+            Should-Invoke New-PSMutationWorkerRunspace -Exactly 2
+            $script:PSMutationWarmProcess[31].Process.Id | Should-NotBe $script:ended.Id
+            $shell.Commands.Clear()
+            [void]$shell.AddScript('(Get-Module Pester | Select-Object -First 1).Name')
+            @($shell.Invoke())[-1] | Should-Be 'Pester'
+        }
+
+        It 'starts another process when the first one opened without a debugger and lives on, and ends the first' {
+            # A process that lives on, as the worker whose private data came too late.
+            $script:live = Start-Process -FilePath (Join-Path $PSHOME 'pwsh') -PassThru -NoNewWindow `
+                -ArgumentList '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 120'
+            $script:failedStarts = 1
+            Mock New-PSMutationWorkerRunspace {
+                if ($script:failedStarts-- -gt 0) { return New-FailedStart -WorkerId $WorkerId -Failure 'Debugger' -Process $script:live }
+                & $script:realRunspace -WorkerId $WorkerId -Process:$Process
+            }
+            try {
+                $shell = Get-PSMutationWarmShell -WorkerId 33 -Process
+                Should-Invoke New-PSMutationWorkerRunspace -Exactly 2
+                $script:PSMutationWarmProcess[33].Process.Id | Should-NotBe $script:live.Id
+                Should-BeTrue -Actual $script:live.WaitForExit(5000)
+                $shell.Commands.Clear()
+                [void]$shell.AddScript('(Get-Module Pester | Select-Object -First 1).Name')
+                @($shell.Invoke())[-1] | Should-Be 'Pester'
+            }
+            finally { Stop-Process -InputObject $script:live -Force -ErrorAction Ignore }
+        }
+
+        It 'stops after its attempts, says so, and leaves no process behind' {
+            Mock New-PSMutationWorkerRunspace { New-FailedStart -WorkerId $WorkerId -Failure 'Debugger' }
+            { Get-PSMutationWarmShell -WorkerId 32 -Process } |
+                Should-Throw -ExceptionMessage "Worker 32 could not start 3 times in a row: The worker process opened its runspace without a debugger."
+            Should-Invoke New-PSMutationWorkerRunspace -Exactly $script:PSMutationWorkerStartAttempts
+            $script:PSMutationWarmProcess.ContainsKey(32) | Should-BeFalse
+            $script:PSMutationWarmShell.ContainsKey(32) | Should-BeFalse
+        }
+
+        It 'tries three times, and waits two seconds for a failed start to end' {
+            # Decisions, pinned: the tests above are written in terms of the variables. Three starts
+            # that each fail are no accident; two seconds covers a process that closed its pipe and
+            # has not exited yet, which the runspace sees first.
+            $script:PSMutationWorkerStartAttempts | Should-Be 3
+            $script:PSMutationWorkerEndWaitMs | Should-Be 2000
+        }
     }
 
     It 'serves five hundred mutants before it is renewed' {

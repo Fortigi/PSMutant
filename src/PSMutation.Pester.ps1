@@ -429,6 +429,55 @@ function Get-PSMutationWarmShell {
         return $script:PSMutationWarmShell[$WorkerId]
     }
     Close-PSMutationWarmRunspace -WorkerId $WorkerId
+    # A worker PROCESS can fail its start by accident: it can end before its shell is ready, or open
+    # without a debugger. That is never the mutant's doing -- the mutant is written only after this
+    # returns -- so another process is started, a few times. A start that fails while its process
+    # lives for any other reason, such as an import of Pester that fails, fails the same way in a
+    # new process, and is thrown at once.
+    for ($attempt = 1; ; $attempt++) {
+        try { $shell = New-PSMutationWarmShell -WorkerId $WorkerId -Process:$Process; break }
+        catch {
+            $accident = $_.FullyQualifiedErrorId -like 'PSMutationWorkerNoDebugger*' -or
+                (Test-PSMutationWorkerEnded -WorkerId $WorkerId)
+            Close-PSMutationWorkerProcess -WorkerId $WorkerId
+            if (-not $accident) { throw }
+            if ($attempt -ge $script:PSMutationWorkerStartAttempts) {
+                throw "Worker $WorkerId could not start $attempt times in a row: $($_.Exception.Message)"
+            }
+        }
+    }
+    $script:PSMutationWarmRunspace[$WorkerId] = $shell.Runspace
+    $script:PSMutationWarmShell[$WorkerId] = $shell
+    $script:PSMutationWarmUses[$WorkerId] = 1
+    return $shell
+}
+
+# How many processes one worker starts in a row, each of whose starts fails by accident, before the
+# run stops. One such start is an accident of the machine; three in a row are a fault.
+$script:PSMutationWorkerStartAttempts = 3
+
+# How long a worker process whose start failed is given to end, before the failure is called the
+# start's own. A process that is ending closes its pipe before it counts as exited, and the
+# runspace sees the closed pipe first.
+$script:PSMutationWorkerEndWaitMs = 2000
+
+function Test-PSMutationWorkerEnded {
+    # True when this worker runs in a process that has ended, or that ends within a moment.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$WorkerId)
+    return $script:PSMutationWarmProcess.ContainsKey($WorkerId) -and
+        $script:PSMutationWarmProcess[$WorkerId].Process.WaitForExit($script:PSMutationWorkerEndWaitMs)
+}
+
+function New-PSMutationWarmShell {
+    # One attempt at a worker's shell, with Pester imported. On a throw, the caller ends the
+    # worker's process.
+    [Diagnostics.CodeAnalysis.SuppressMessageAttribute('PSUseShouldProcessForStateChangingFunctions', '',
+        Justification = 'Opens a runspace for a worker this module owns; there is no user state to confirm.')]
+    [OutputType([powershell])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] [int]$WorkerId, [switch]$Process)
     $rs = New-PSMutationWorkerRunspace -WorkerId $WorkerId -Process:$Process
     $rs.Open()
     # A worker process refuses Set-PSBreakpoint until its client says it can debug it -- measured:
@@ -436,7 +485,20 @@ function Get-PSMutationWarmShell {
     # and any suite that traces with a breakpoint action, failed in a worker and passed in this
     # process. RemoteScript allows them. A breakpoint that STOPS then waits for the client, where
     # in-process it runs on; Resume-PSMutationWorkerBreakpoint resumes it.
-    if ($Process) { $rs.Debugger.SetDebugMode([System.Management.Automation.DebugModes]::RemoteScript) }
+    if ($Process) {
+        # The client makes the debugger of a remote runspace once, when the runspace opens, from the
+        # application private data that the worker sent. That data can arrive after the message
+        # that opens the runspace -- PowerShell 7.6 reads it there without waiting -- and a worker
+        # that ends early sends none; either way the runspace never gets a debugger, also while its
+        # process lives. Measured on a CI run with four workers: the process lived on.
+        $debugger = $rs.Debugger
+        if ($null -eq $debugger) {
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.InvalidOperationException]::new('The worker process opened its runspace without a debugger.'),
+                'PSMutationWorkerNoDebugger', [System.Management.Automation.ErrorCategory]::ResourceUnavailable, $WorkerId)
+        }
+        $debugger.SetDebugMode([System.Management.Automation.DebugModes]::RemoteScript)
+    }
     $shell = [PowerShell]::Create()
     $shell.Runspace = $rs
     # Started where an in-process runspace starts: the process's current directory. A worker
@@ -457,13 +519,9 @@ function Get-PSMutationWarmShell {
     try { $null = $shell.Invoke() }
     catch {
         $shell.Dispose(); $rs.Dispose()
-        Close-PSMutationWorkerProcess -WorkerId $WorkerId
         throw "Could not import Pester into the mutant runspace: $($_.Exception.Message)"
     }
     $shell.Commands.Clear()
-    $script:PSMutationWarmRunspace[$WorkerId] = $rs
-    $script:PSMutationWarmShell[$WorkerId] = $shell
-    $script:PSMutationWarmUses[$WorkerId] = 1
     return $shell
 }
 
