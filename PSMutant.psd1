@@ -42,7 +42,7 @@
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
             ReleaseNotes = 'PSMutant 0.10.0
 
-- A worker process that ends no longer stops the run.
+- A worker process that ends, or that starts without a debugger, no longer stops the run.
 
 Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.10.0'
         }

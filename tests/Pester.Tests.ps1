@@ -835,21 +835,22 @@ Describe 'a worker in a process of its own (#256)' {
         Should-Invoke Get-PSMutationPesterPath -Exactly 1
     }
 
-    Context 'a worker process that ends during its start' {
-        # A worker can end before its shell is ready: before its runspace opens, or before it sends
-        # what it can debug, which leaves the runspace's Debugger null. No mutant is written until
-        # the shell is ready, so the end is not the mutant's doing, and the run starts another
-        # process. Measured on a CI run: the null Debugger stopped the run after 299 of 502 mutants.
+    Context 'a worker process whose start fails by accident' {
+        # A worker's start can fail by accident: its process ends before its runspace opens, or its
+        # runspace opens without a debugger -- when the worker's application private data arrives
+        # after the message that opens the runspace, or never. No mutant is written until the shell
+        # is ready, so the failure is not the mutant's doing, and the run starts another process.
+        # Measured on CI runs with four workers: a null Debugger stopped the run, its process alive.
         BeforeAll {
             $script:realRunspace = ${function:New-PSMutationWorkerRunspace}
             # A process that has ended, as the record of a worker that ended during its start.
             $script:ended = Start-Process -FilePath (Join-Path $PSHOME 'pwsh') -PassThru -NoNewWindow `
                 -ArgumentList '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'exit'
             $null = $script:ended.WaitForExit(30000)
-            function script:New-EndedStart {
-                param([int]$WorkerId, [string]$Failure)
+            function script:New-FailedStart {
+                param([int]$WorkerId, [string]$Failure, [System.Diagnostics.Process]$Process = $script:ended)
                 $script:PSMutationWarmProcess[$WorkerId] = [pscustomobject]@{
-                    Process = $script:ended; PipeName = 'psmut-ended'; Directory = (Join-Path $TestDrive 'ended')
+                    Process = $Process; PipeName = 'psmut-failed'; Directory = (Join-Path $TestDrive 'failed')
                 }
                 $rs = [pscustomobject]@{ Debugger = $null }
                 $open = ($Failure -eq 'Open') ? { throw 'An error has occurred which PowerShell cannot handle. A remote session might have ended.' } : { }
@@ -862,10 +863,10 @@ Describe 'a worker in a process of its own (#256)' {
             @{ Name = 'before its runspace opened'; Failure = 'Open' }
             @{ Name = 'before it said what it can debug'; Failure = 'Debugger' }
         ) {
-            $script:endedStarts = 1
+            $script:failedStarts = 1
             $script:failure = $Failure
             Mock New-PSMutationWorkerRunspace {
-                if ($script:endedStarts-- -gt 0) { return New-EndedStart -WorkerId $WorkerId -Failure $script:failure }
+                if ($script:failedStarts-- -gt 0) { return New-FailedStart -WorkerId $WorkerId -Failure $script:failure }
                 & $script:realRunspace -WorkerId $WorkerId -Process:$Process
             }
             $shell = Get-PSMutationWarmShell -WorkerId 31 -Process
@@ -876,10 +877,31 @@ Describe 'a worker in a process of its own (#256)' {
             @($shell.Invoke())[-1] | Should-Be 'Pester'
         }
 
+        It 'starts another process when the first one opened without a debugger and lives on, and ends the first' {
+            # A process that lives on, as the worker whose private data came too late.
+            $script:live = Start-Process -FilePath (Join-Path $PSHOME 'pwsh') -PassThru -NoNewWindow `
+                -ArgumentList '-NoLogo', '-NoProfile', '-NonInteractive', '-Command', 'Start-Sleep -Seconds 120'
+            $script:failedStarts = 1
+            Mock New-PSMutationWorkerRunspace {
+                if ($script:failedStarts-- -gt 0) { return New-FailedStart -WorkerId $WorkerId -Failure 'Debugger' -Process $script:live }
+                & $script:realRunspace -WorkerId $WorkerId -Process:$Process
+            }
+            try {
+                $shell = Get-PSMutationWarmShell -WorkerId 33 -Process
+                Should-Invoke New-PSMutationWorkerRunspace -Exactly 2
+                $script:PSMutationWarmProcess[33].Process.Id | Should-NotBe $script:live.Id
+                Should-BeTrue -Actual $script:live.WaitForExit(5000)
+                $shell.Commands.Clear()
+                [void]$shell.AddScript('(Get-Module Pester | Select-Object -First 1).Name')
+                @($shell.Invoke())[-1] | Should-Be 'Pester'
+            }
+            finally { Stop-Process -InputObject $script:live -Force -ErrorAction Ignore }
+        }
+
         It 'stops after its attempts, says so, and leaves no process behind' {
-            Mock New-PSMutationWorkerRunspace { New-EndedStart -WorkerId $WorkerId -Failure 'Debugger' }
+            Mock New-PSMutationWorkerRunspace { New-FailedStart -WorkerId $WorkerId -Failure 'Debugger' }
             { Get-PSMutationWarmShell -WorkerId 32 -Process } |
-                Should-Throw -ExceptionMessage "Worker 32 ended during its start 3 times in a row*the worker process ended before it said what it can debug*"
+                Should-Throw -ExceptionMessage "Worker 32 could not start 3 times in a row: The worker process opened its runspace without a debugger."
             Should-Invoke New-PSMutationWorkerRunspace -Exactly $script:PSMutationWorkerStartAttempts
             $script:PSMutationWarmProcess.ContainsKey(32) | Should-BeFalse
             $script:PSMutationWarmShell.ContainsKey(32) | Should-BeFalse
@@ -887,7 +909,7 @@ Describe 'a worker in a process of its own (#256)' {
 
         It 'tries three times, and waits two seconds for a failed start to end' {
             # Decisions, pinned: the tests above are written in terms of the variables. Three starts
-            # that each end are no accident; two seconds covers a process that closed its pipe and
+            # that each fail are no accident; two seconds covers a process that closed its pipe and
             # has not exited yet, which the runspace sees first.
             $script:PSMutationWorkerStartAttempts | Should-Be 3
             $script:PSMutationWorkerEndWaitMs | Should-Be 2000

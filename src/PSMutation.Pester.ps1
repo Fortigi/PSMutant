@@ -429,18 +429,20 @@ function Get-PSMutationWarmShell {
         return $script:PSMutationWarmShell[$WorkerId]
     }
     Close-PSMutationWarmRunspace -WorkerId $WorkerId
-    # A worker PROCESS can end before its shell is ready. That is never the mutant's doing -- the
-    # mutant is written only after this returns -- so another process is started, a few times. A
-    # start that fails while its process lives, such as an import of Pester that fails, fails the
-    # same way in a new process, and is thrown at once.
+    # A worker PROCESS can fail its start by accident: it can end before its shell is ready, or open
+    # without a debugger. That is never the mutant's doing -- the mutant is written only after this
+    # returns -- so another process is started, a few times. A start that fails while its process
+    # lives for any other reason, such as an import of Pester that fails, fails the same way in a
+    # new process, and is thrown at once.
     for ($attempt = 1; ; $attempt++) {
         try { $shell = New-PSMutationWarmShell -WorkerId $WorkerId -Process:$Process; break }
         catch {
-            $ended = Test-PSMutationWorkerEnded -WorkerId $WorkerId
+            $accident = $_.FullyQualifiedErrorId -like 'PSMutationWorkerNoDebugger*' -or
+                (Test-PSMutationWorkerEnded -WorkerId $WorkerId)
             Close-PSMutationWorkerProcess -WorkerId $WorkerId
-            if (-not $ended) { throw }
+            if (-not $accident) { throw }
             if ($attempt -ge $script:PSMutationWorkerStartAttempts) {
-                throw "Worker $WorkerId ended during its start $attempt times in a row: $($_.Exception.Message)"
+                throw "Worker $WorkerId could not start $attempt times in a row: $($_.Exception.Message)"
             }
         }
     }
@@ -450,8 +452,8 @@ function Get-PSMutationWarmShell {
     return $shell
 }
 
-# How many processes one worker starts in a row, each of which ends before its shell is ready,
-# before the run stops. One that ends is an accident of the machine; three in a row are a fault.
+# How many processes one worker starts in a row, each of whose starts fails by accident, before the
+# run stops. One such start is an accident of the machine; three in a row are a fault.
 $script:PSMutationWorkerStartAttempts = 3
 
 # How long a worker process whose start failed is given to end, before the failure is called the
@@ -484,10 +486,17 @@ function New-PSMutationWarmShell {
     # process. RemoteScript allows them. A breakpoint that STOPS then waits for the client, where
     # in-process it runs on; Resume-PSMutationWorkerBreakpoint resumes it.
     if ($Process) {
-        # The client makes the debugger of a remote runspace only from what the worker sends after
-        # it opened -- its PSVersionTable -- so a worker that ends before that leaves none.
+        # The client makes the debugger of a remote runspace once, when the runspace opens, from the
+        # application private data that the worker sent. That data can arrive after the message
+        # that opens the runspace -- PowerShell 7.6 reads it there without waiting -- and a worker
+        # that ends early sends none; either way the runspace never gets a debugger, also while its
+        # process lives. Measured on a CI run with four workers: the process lived on.
         $debugger = $rs.Debugger
-        if ($null -eq $debugger) { throw 'The worker process ended before it said what it can debug.' }
+        if ($null -eq $debugger) {
+            throw [System.Management.Automation.ErrorRecord]::new(
+                [System.InvalidOperationException]::new('The worker process opened its runspace without a debugger.'),
+                'PSMutationWorkerNoDebugger', [System.Management.Automation.ErrorCategory]::ResourceUnavailable, $WorkerId)
+        }
         $debugger.SetDebugMode([System.Management.Automation.DebugModes]::RemoteScript)
     }
     $shell = [PowerShell]::Create()
