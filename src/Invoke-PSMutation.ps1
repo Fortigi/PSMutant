@@ -51,8 +51,10 @@ function Get-PSMutationRunContext {
         survivors into a whole-project baseline would record "no survivors" for every file the run
         never looked at.
 
-        Restricting mutants to changed LINES is not implemented. It needs hunk offsets, which have
-        the same problem -ChangedSince has and no agreed shape yet.
+    .PARAMETER ChangedLine
+        Narrow the files of -ChangedFile further, to the lines the caller names: file -> line
+        numbers. A file of -ChangedFile with no key is mutated whole. The caller computes the
+        lines for the reason it computes the diff; Invoke-PSMutation's help gives the rules.
 
     .PARAMETER ListOnly
         Preview the mutant set. Decides only whether the baseline is worth measuring; the
@@ -73,6 +75,8 @@ function Get-PSMutationRunContext {
         # here -- the caller refuses it, because a diff that produced nothing is more often a
         # broken pipeline than a pull request that changed nothing.
         [string[]]$ChangedFile,
+        # The changed lines per file, already checked against -ChangedFile; $null for none.
+        [hashtable]$ChangedLine,
         [switch]$Quiet
     )
     $t = Get-PSMutationSandboxPlan -Cfg $Cfg -SourceRoot $SourceRoot -SandboxRoot $SandboxRoot
@@ -97,6 +101,16 @@ function Get-PSMutationRunContext {
         $inScope = [System.Collections.Generic.List[string]]::new()
         foreach ($m in $t.Mutate) { $inScope.Add($t.ConfigByPath[$m]) }
         $inScope = [string[]]@($inScope)
+    }
+    # Resolved against the NARROWED set, so only a file this run mutates carries a line filter, and
+    # recorded in the config's spelling for the report. Both stay $null without -ChangedLine:
+    # absent says every file of the scope was mutated whole.
+    $changedLines = $null
+    $lineRecord = $null
+    if ($null -ne $ChangedLine) {
+        $changedLines = ConvertTo-PSMutationScopedChangedLine -Mutate $t.Mutate -ChangedLine $ChangedLine `
+            -SourceRoot $SourceRoot -SandboxRoot $SandboxRoot
+        $lineRecord = ConvertTo-PSMutationChangedLineRecord -ChangedLines $changedLines -Mutate $t.Mutate -ConfigByPath $t.ConfigByPath
     }
 
     # THE RESOLUTIONS, on the verbose stream. These are narration while a run works and the
@@ -148,7 +162,7 @@ function Get-PSMutationRunContext {
     $ops = Get-PSMutationOperatorList -Cfg $Cfg
     $ignoreCalls = Get-PSMutationIgnoreCall -Cfg $Cfg
     $selection = Select-PSMutationCandidate -MutateFiles $t.Mutate -Operators $ops -IgnoreCall $ignoreCalls `
-        -CoveredLinesOnly $coverageNeeded -CoveredLines $baseline.CoveredLines
+        -CoveredLinesOnly $coverageNeeded -CoveredLines $baseline.CoveredLines -ChangedLines $changedLines
     # Locals first, because two of these appear both as their own field and inside Doc. Spelled
     # twice they would be COMPUTED twice -- a second hash of every mutate file -- and the copies
     # could drift; there would then be two answers to "which report does this run write".
@@ -193,7 +207,14 @@ function Get-PSMutationRunContext {
         # $null on a whole-tree run, which is what the report writer keys its `mode` marker off
         # and what tells a reader the score covered everything in `mutate`.
         ChangedFiles     = $ChangedFile
+        # The line filter the selection applied, sandbox path -> lines, and the same as the report
+        # records it; both $null without -ChangedLine.
+        ChangedLines     = $changedLines
+        ChangedLineRecord = $lineRecord
         InScopeFile      = $inScope
+        # The mutants -ChangedLine took out, for the stale check: a declaration about one of them
+        # was not examined, which is not the same as matching no mutant.
+        Unexamined       = ConvertTo-PSMutationUnexaminedRow -Candidates $selection.Unchanged -SandboxRoot $SandboxRoot
         # NOT in Exec, which is splatted into the recheck run as well. A recheck evaluates its
         # mutants through the same loop and still records a first killer per row; what it does
         # not do is pay for the complete list, because its report carries no killersComplete
@@ -235,6 +256,7 @@ function Invoke-PSMutationRun {
         [string]$RecheckFrom,
         [AllowEmptyString()] [string[]]$ChangedFile,
         [bool]$ChangedFileBound,
+        [hashtable]$ChangedLine,
         [switch]$ListOnly,
         [switch]$Quiet,
         [switch]$UpdateBaseline,
@@ -255,7 +277,8 @@ function Invoke-PSMutationRun {
     $inputFault = Get-PSMutationInputFault -SourceRoot $SourceRoot -ListOnly $ListOnly.IsPresent `
         -Recheck ([bool]$RecheckFrom) -UpdateBaseline $UpdateBaseline.IsPresent `
         -MergeIntoBaseline $MergeIntoBaseline.IsPresent -Changed $ChangedFileBound `
-        -Resume ([bool]$ResumeFrom) -Incremental $Incremental.IsPresent -ChangedFile $ChangedFile
+        -Resume ([bool]$ResumeFrom) -Incremental $Incremental.IsPresent -ChangedFile $ChangedFile `
+        -ChangedLine $ChangedLine
     if ($inputFault) { throw $inputFault }
     $root = (Resolve-Path $SourceRoot).Path
     $cfg = Get-Content $ConfigFile -Raw | ConvertFrom-Json
@@ -285,7 +308,7 @@ function Invoke-PSMutationRun {
     try {
         $ctx = Get-PSMutationRunContext -Cfg $cfg -SourceRoot $root -SandboxRoot $sandbox `
             -Subtrees $subtrees -ListOnly:$ListOnly -Recheck:([bool]$RecheckFrom) `
-            -ChangedFile $ChangedFile -Quiet:$Quiet
+            -ChangedFile $ChangedFile -ChangedLine $ChangedLine -Quiet:$Quiet
         if ($ListOnly) {
             Write-PSMutationOutput -Quiet:$Quiet -Lines (Get-PSMutationMutantListLine `
                     -PerFile $ctx.PerFile -CoveredLinesOnly $ctx.CoveredLinesOnly `
@@ -362,8 +385,8 @@ function Invoke-PSMutationRun {
         # that nobody knows is partial is the one this module exists to stop being quoted.
         if ($null -ne $ctx.ChangedFiles) {
             Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Muted' `
-                    -Text ("  SCOPED run: {0} changed file(s) given, {1} of them in mutate. The score covers those only, and the report goes to {2}." -f `
-                            @($ctx.ChangedFiles).Count, @($t.Mutate).Count, (Split-Path $ctx.ReportPath -Leaf)))
+                    -Text (Get-PSMutationScopedRunText -ChangedCount @($ctx.ChangedFiles).Count -InScopeCount @($t.Mutate).Count `
+                            -ChangedLines $ctx.ChangedLines -ReportLeaf (Split-Path $ctx.ReportPath -Leaf)))
         }
         Write-PSMutationOutput -Quiet:$Quiet -Lines (New-PSMutationLine -Role 'Detail' `
                 -Text "  Mutants to evaluate: $($cands.Count)`n")
@@ -417,7 +440,7 @@ function Invoke-PSMutationRun {
         $results = Join-PSMutationIncrementalRow -Candidates $all -Reused $inc.Reused -Results (@($resume.PriorRows) + @($results)) -SandboxRoot $sandbox
         $summary = Write-PSMutationReport @doc -Incremental $inc.Record -Resumed:$resume.IsResume -CarriedOverUnverified @($resume.PriorRows).Count -Results $results -Thresholds $cfg.thresholds -Provenance (& $provenance) -Exclusion $ctx.Exclusion -UnmappedFiles $unmapped -MutateFiles $t.Mutate -KillersComplete $ctx.RecordAllKillers -MappedTests $t.AllTests `
             -TestFileLength (Get-PSMutationTestFileLength -Path $t.AllTests -SandboxRoot $sandbox) `
-            -ChangedFiles $ctx.ChangedFiles -InScopeFile $ctx.InScopeFile
+            -ChangedFiles $ctx.ChangedFiles -ChangedLines $ctx.ChangedLineRecord -InScopeFile $ctx.InScopeFile -Unexamined $ctx.Unexamined
         # Right after the report and from the same rows, so the two files describe one run. Only
         # here, on the path that scored: a recheck returned above and an interrupted run never
         # reaches this line, and neither may write a log that would close alerts it did not
@@ -577,6 +600,38 @@ function Invoke-PSMutation {
         recheck never evaluates those -- so finish with a full run before trusting a
         number or moving a threshold.
 
+    .PARAMETER ChangedLine
+        Narrow a -ChangedFile run further, to the lines a pull request changed. A hashtable: each
+        key a file named the way -ChangedFile names it, each value the line numbers that changed
+        in it, counted from 1 as a diff counts them.
+
+            Invoke-PSMutation -ConfigFile ./c.json -ChangedFile 'src/a.ps1', 'src/b.ps1' `
+                -ChangedLine @{ 'src/a.ps1' = 12, 13, 40 }
+
+        THE CALLER COMPUTES THE LINES, for the reason it computes the diff: they need a base, and
+        every way that goes wrong -- a ref never fetched, a merge base that is not the reviewer's --
+        goes wrong in the caller's environment, where it can be fixed. A pull request's own
+        changed lines are what a reviewer reads, and the caller already has them.
+
+        It REFINES -ChangedFile and never replaces it. Without -ChangedFile it is refused, and so
+        is a key that names no file of -ChangedFile, or a line number that is not a whole number
+        from 1 up. A file of -ChangedFile with NO key is mutated whole -- the shape for a file the
+        caller wants measured in full, such as one just added to `mutate`. An EMPTY list is
+        allowed: the file changed and no line of it is left, as after a pure deletion, so it
+        yields no mutant.
+
+        A mutant is kept when ANY changed line lies between its first line and its last,
+        inclusive. A condition spanning three lines and changed on the third is changed code,
+        and its mutants are kept.
+
+        The removed mutants are numbered before they are removed, so every other mutant keeps the
+        id a full run gives it. They are counted as `Unchanged` per file, and the scoped report
+        records the lines as `changedLines` and the count as `skippedAsUnchanged`. A declared
+        equivalent whose mutant was removed this way is not called stale, because nothing looked
+        at it; a declaration that matches no mutant at all still is. Everything
+        -ChangedFile refuses -- -RecheckFrom, -ResumeFrom, -UpdateBaseline, -MergeIntoBaseline,
+        -Incremental -- is refused here too, and -ListOnly previews the narrowed set.
+
     .PARAMETER ListOnly
         Print what this config WOULD mutate -- per file, per operator, and how many candidates
         survive the coveredLinesOnly filter -- then stop. No mutant is evaluated, no report is
@@ -613,7 +668,7 @@ function Invoke-PSMutation {
                         StaleEquivalents; DeclaredEquivalent }
             recheck  @{ Mode='Recheck'; PriorSurvivors; Rechecked; NowKilled; StillSurviving;
                         ExitCode; FailureReason }
-            list     @{ Mode='List'; Files; Produced; Total; Ignored; FilesWithNoCandidate;
+            list     @{ Mode='List'; Files; Produced; Total; Ignored; Unchanged; FilesWithNoCandidate;
                         FilesEmptiedByCoverage; BaselineMeasured; ExitCode; FailureReason }
 
         ONE object per config. Configs piped in are processed as they arrive rather than
@@ -704,6 +759,16 @@ function Invoke-PSMutation {
         cheapest use either has.
 
     .EXAMPLE
+        $lines = @{ 'src/a.ps1' = 12, 13, 40; 'src/gone.ps1' = @() }
+        $r = Invoke-PSMutation -ConfigFile ./c.json -ChangedFile 'src/a.ps1', 'src/b.ps1', 'src/gone.ps1' `
+            -ChangedLine $lines
+        exit $r.ExitCode
+
+        A per-PR gate on the changed LINES. src/a.ps1 is mutated only where a mutant touches line
+        12, 13 or 40; src/b.ps1 has no key and is mutated whole; src/gone.ps1 lost lines and kept
+        none, so it yields no mutant.
+
+    .EXAMPLE
         Get-ChildItem ./packages -Directory |
             Invoke-PSMutation -ConfigFile ./psmutant.config.json -Quiet |
             Where-Object ExitCode -ne 0
@@ -748,6 +813,8 @@ function Invoke-PSMutation {
         # the .PARAMETER block for why there is no -ChangedSince. AllowEmptyString so a list of
         # blanks reaches Get-PSMutationChangedFileFault, whose message names the likely cause.
         [AllowEmptyString()] [string[]]$ChangedFile,
+        # Narrow the -ChangedFile files to the lines a pull request changed: file -> line numbers.
+        [hashtable]$ChangedLine,
         [switch]$Quiet,
         # Record this run's survivors as the accepted baseline. Writes even on a failing run --
         # see the call site.
@@ -769,7 +836,7 @@ function Invoke-PSMutation {
         Invoke-PSMutationRun -ConfigFile $ConfigFile -SourceRoot $SourceRoot -RecheckFrom $RecheckFrom `
             -ResumeFrom $ResumeFrom `
             -ChangedFile $ChangedFile -ChangedFileBound $PSBoundParameters.ContainsKey('ChangedFile') `
-            -ListOnly:$ListOnly -Quiet:$Quiet -UpdateBaseline:$UpdateBaseline `
+            -ChangedLine $ChangedLine -ListOnly:$ListOnly -Quiet:$Quiet -UpdateBaseline:$UpdateBaseline `
             -MergeIntoBaseline:$MergeIntoBaseline -Incremental:$Incremental
     }
 }

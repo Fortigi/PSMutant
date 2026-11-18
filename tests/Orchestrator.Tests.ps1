@@ -100,6 +100,7 @@ Describe 'Invoke-PSMutation' {
         Mock Select-PSMutationCandidate {
             [pscustomobject]@{
                 Candidates = @('cand-1', 'cand-2')
+                Unchanged  = @()
                 # ByOperator too: the real function attaches it on every row, and a preview
                 # rendering a $null map would pass here and print nothing there.
                 PerFile    = @([pscustomobject]@{ File = 'src/a.ps1'; Produced = 2; Kept = 2
@@ -700,6 +701,7 @@ Describe 'Invoke-PSMutation -ListOnly' {
         Mock Select-PSMutationCandidate {
             [pscustomobject]@{
                 Candidates = @('cand-1', 'cand-2')
+                Unchanged  = @()
                 PerFile    = @(
                     [pscustomobject]@{ File = (Join-Path $script:root 'sandbox/src/a.ps1'); Produced = 2; Kept = 2
                         ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 2; Kept = 2 } }
@@ -834,6 +836,7 @@ Describe 'Invoke-PSMutation pipeline binding' {
         Mock Select-PSMutationCandidate {
             [pscustomobject]@{
                 Candidates = @('cand-1')
+                Unchanged  = @()
                 PerFile    = @([pscustomobject]@{ File = 'src/a.ps1'; Produced = 1; Kept = 1
                         ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 1; Kept = 1 } }
                     })
@@ -926,6 +929,7 @@ Describe 'Invoke-PSMutation -ChangedFile' {
             }
             [pscustomobject]@{
                 Candidates = @($MutateFiles | ForEach-Object { "cand-$_" })
+                Unchanged  = @()
                 PerFile    = @($rows)
             }
         }
@@ -1056,6 +1060,95 @@ Describe 'Invoke-PSMutation -ChangedFile' {
         { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
                 -ChangedFile @('README.md') -Quiet } | Should-Throw
     }
+
+    It 'hands the selection the changed lines of each mutated file, by its sandbox path' {
+        # src/b.ps1 has no key and tests/a.Tests.ps1 is not in mutate: neither gets a filter.
+        $script:sawLines = $null
+        Mock Select-PSMutationCandidate {
+            $script:sawLines = $ChangedLines
+            [pscustomobject]@{
+                Candidates = @($MutateFiles | ForEach-Object { "cand-$_" })
+                Unchanged  = @()
+                PerFile    = @($MutateFiles | ForEach-Object { [pscustomobject]@{ File = $_; Produced = 1; Kept = 1; Unchanged = 3; ByOperator = [ordered]@{} } })
+            }
+        }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet `
+            -ChangedFile @('src/a.ps1', 'src/b.ps1', 'tests/a.Tests.ps1') `
+            -ChangedLine @{ 'src/a.ps1' = @(4, 2); 'tests/a.Tests.ps1' = @(1) } | Out-Null
+        $a = [System.IO.Path]::GetFullPath((Join-Path $script:root 'sandbox/src/a.ps1'))
+        @($script:sawLines.Keys) | Should-BeCollection @($a)
+        @($script:sawLines[$a] | Sort-Object) | Should-BeCollection @(2, 4)
+        $doc = Get-Content (Join-Path $script:root 'reports/run.changed.json') -Raw | ConvertFrom-Json
+        @($doc.changedLines.PSObject.Properties.Name) | Should-BeCollection @('src/a.ps1')
+        ($doc.changedLines.'src/a.ps1' -join ',') | Should-Be '2,4'
+        $doc.skippedAsUnchanged | Should-Be 6
+    }
+
+    It 'hands the stale check the mutants the line filter took out, named as the report names files' {
+        $script:sawUnexamined = 'not called'
+        Mock Select-PSMutationCandidate {
+            $out = [pscustomobject]@{ File = (Join-Path $script:root 'sandbox/src/a.ps1'); Function = 'Get-A'; Line = 9; Description = 'x -> y' }
+            [pscustomobject]@{
+                Candidates = @('cand-1')
+                Unchanged  = @($out)
+                PerFile    = @([pscustomobject]@{ File = $MutateFiles[0]; Produced = 1; Kept = 1; Unchanged = 1; ByOperator = [ordered]@{} })
+            }
+        }
+        Mock Get-PSMutationDeclarationCoverageFault { $script:sawUnexamined = $Unexamined; @() }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet `
+            -ChangedFile @('src/a.ps1') -ChangedLine @{ 'src/a.ps1' = @(2) } | Out-Null
+        @($script:sawUnexamined).Count | Should-Be 1
+        "$($script:sawUnexamined[0].File)|$($script:sawUnexamined[0].Function)|$($script:sawUnexamined[0].Line)|$($script:sawUnexamined[0].Description)" |
+            Should-Be 'src/a.ps1|Get-A|9|x -> y'
+    }
+
+    It 'hands the selection no line filter, and records none, without -ChangedLine' {
+        $script:sawLines = 'not called'
+        Mock Select-PSMutationCandidate {
+            $script:sawLines = $ChangedLines
+            [pscustomobject]@{ Candidates = @('cand-1'); Unchanged = @(); PerFile = @([pscustomobject]@{ File = 'src/a.ps1'; Produced = 1; Kept = 1; ByOperator = [ordered]@{} }) }
+        }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet -ChangedFile @('src/a.ps1') | Out-Null
+        $null -eq $script:sawLines | Should-BeTrue
+        $names = (Get-Content (Join-Path $script:root 'reports/run.changed.json') -Raw | ConvertFrom-Json).PSObject.Properties.Name
+        $names | Should-NotContainCollection 'changedLines'
+        $names | Should-NotContainCollection 'skippedAsUnchanged'
+    }
+
+    It 'says on the console how many files were limited to their changed lines' {
+        Mock Write-PSMutationOutput { }
+        Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root `
+            -ChangedFile @('src/a.ps1', 'src/b.ps1') -ChangedLine @{ 'src/b.ps1' = @(1) } | Out-Null
+        Should-Invoke Write-PSMutationOutput -Exactly 1 -ParameterFilter {
+            $Lines.Text -match ([regex]::Escape('2 of them in mutate, 1 of those limited to their changed lines.'))
+        }
+    }
+
+    It 'refuses -ChangedLine without -ChangedFile before building anything' {
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet -ChangedLine @{ 'src/a.ps1' = @(1) } } |
+            Should-Throw -ExceptionMessage '-ChangedLine was given without -ChangedFile*'
+        Should-Invoke New-PSMutationSandbox -Exactly 0
+    }
+
+    It 'refuses a -ChangedLine key that -ChangedFile does not name, before building anything' {
+        { Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet -ChangedFile @('src/a.ps1') `
+                -ChangedLine @{ 'src/b.ps1' = @(1) } } |
+            Should-Throw -ExceptionMessage "*names 'src/b.ps1', which is not in -ChangedFile*"
+        Should-Invoke New-PSMutationSandbox -Exactly 0
+    }
+
+    It 'previews the line-limited set with -ListOnly' {
+        $script:sawLines = $null
+        Mock Select-PSMutationCandidate {
+            $script:sawLines = $ChangedLines
+            [pscustomobject]@{ Candidates = @('cand-1'); Unchanged = @(); PerFile = @([pscustomobject]@{ File = $MutateFiles[0]; Produced = 1; Kept = 1; Unchanged = 2; ByOperator = [ordered]@{} }) }
+        }
+        $r = Invoke-PSMutation -ConfigFile $script:configFile -SourceRoot $script:root -Quiet -ListOnly `
+            -ChangedFile @('src/a.ps1') -ChangedLine @{ 'src/a.ps1' = @(3) }
+        $r.Mode | Should-Be 'List'
+        $r.Unchanged | Should-Be 2
+        @($script:sawLines.Keys).Count | Should-Be 1
+    }
 }
 
 Describe 'Get-PSMutationRunContext' {
@@ -1092,6 +1185,7 @@ Describe 'Get-PSMutationRunContext' {
         Mock Select-PSMutationCandidate {
             [pscustomobject]@{
                 Candidates = @('cand-1', 'cand-2')
+                Unchanged  = @()
                 PerFile    = @([pscustomobject]@{ File = (Join-Path $script:root 'sandbox/src/a.ps1'); Produced = 2; Kept = 2
                         ByOperator = [ordered]@{ BinaryOperator = @{ Produced = 2; Kept = 2 } }
                     })

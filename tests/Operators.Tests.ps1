@@ -176,6 +176,36 @@ Describe 'New-PSMutationCandidate' {
         $c.Line | Should-BeGreaterThan 0
         $c.EndOffset | Should-BeGreaterThan $c.StartOffset
     }
+
+    It 'ends a one-line candidate on the line it starts on' {
+        # -ChangedLine keeps a candidate when a changed line lies in Line..EndLine, so a
+        # one-line candidate must not reach the line after it.
+        $c = @($script:cands | Where-Object Operator -eq 'BinaryOperator')[0]
+        $c.Line | Should-Be 3
+        $c.EndLine | Should-Be 3
+    }
+
+    It 'ends a multi-line candidate on its LAST line, not its first' {
+        $p = Join-Path $TestDrive 'multi-line.ps1'
+        Set-Content -LiteralPath $p -Encoding utf8 -Value @(
+            'function Get-Span {'
+            '    if ($a -and'
+            '        $b) { return 1 }'
+            '}'
+        )
+        $forced = @(Get-PSMutationCandidate -Path $p -Operators @('ConditionForcing') | Where-Object Original -like '*-and*')
+        $forced.Count | Should-BeGreaterThan 0
+        $forced[0].Line | Should-Be 2
+        $forced[0].EndLine | Should-Be 3
+    }
+
+    It 'carries exactly the documented fields' {
+        # The candidate is the shape every operator emits and every later stage reads, so a
+        # field added or lost is a decision rather than a side effect.
+        $c = $script:cands | Select-Object -First 1
+        @($c.PSObject.Properties.Name) | Should-BeCollection @('Id', 'Function', 'File', 'Line', 'EndLine',
+            'StartOffset', 'EndOffset', 'Original', 'Mutated', 'Operator', 'Description')
+    }
 }
 
 Describe 'Get-PSMutationCandidate - unparseable input' {

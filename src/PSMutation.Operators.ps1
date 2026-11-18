@@ -185,6 +185,9 @@ function New-PSMutationCandidate {
         # place that has the whole file's context. The sentinels are deliberate: 0 is
         # outside the real id range, and '' means "file scope", which is a real answer.
         Id = 0; Function = ''; File = $File; Line = $Extent.StartLineNumber
+        # The LAST line too, because an extent can span several: a -ChangedLine run keeps a
+        # multi-line candidate when the change falls on any of its lines, not only on the first.
+        EndLine = $Extent.EndLineNumber
         StartOffset = $Extent.StartOffset; EndOffset = $Extent.EndOffset
         Original = $Original; Mutated = $Mutated; Operator = $Operator; Description = $description
     }

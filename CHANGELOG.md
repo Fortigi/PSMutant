@@ -1,3 +1,23 @@
+## [0.10.0] - 2026-11-18
+
+### For consumers
+
+**`-ChangedLine` narrows a `-ChangedFile` run to the lines a pull request changed.** It takes a
+hashtable: each key a file named the way `-ChangedFile` names it, each value the changed line
+numbers, counted from 1. You compute the lines, as you compute the diff. It refines `-ChangedFile`
+and never replaces it: a file of `-ChangedFile` with no key is mutated whole, and an empty list
+means the file has no line left to mutate, so it yields no mutant. `-ChangedLine` without
+`-ChangedFile`, a key that names no file of `-ChangedFile`, and a line number that is not a whole
+number from 1 up are refused before anything is built. A mutant is kept when any changed line lies
+between its first and its last line, so the mutants of a condition over several lines are kept when
+any of its lines changed. Kept mutants have the ids a full run gives them. The others are counted
+per file as `Unchanged`, on the `-ListOnly` result too, and the scoped report records the lines as
+`changedLines` and the count as `skippedAsUnchanged`, both optional fields of the report schema. The
+console line of a scoped run says how many files were limited to their changed lines. A declared
+equivalent whose mutant is on a line that was not named is not evaluated, so it is not called
+stale; a declaration that matches no mutant at all still fails the run. The same switches
+`-ChangedFile` refuses are refused with it.
+
 ## [0.9.3] - 2026-11-09
 
 ### For consumers

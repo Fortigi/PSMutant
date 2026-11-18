@@ -516,7 +516,7 @@ function Get-PSMutationInputFault {
     .SYNOPSIS
         The first reason this run's ARGUMENTS are refused, or empty when they are not.
     .DESCRIPTION
-        Three refusals in one place, in a deliberate order, for the reason the sibling module
+        Four refusals in one place, in a deliberate order, for the reason the sibling module
         sequences its scan faults together: written as separate guards at the call site they can
         only be read one at a time, and the order between them -- which is a decision -- is
         wherever somebody happened to put them.
@@ -527,8 +527,10 @@ function Get-PSMutationInputFault {
            makes every config path resolve against a file, so reporting a mode conflict first
            would send the reader to argue about switches while the root is the actual fault.
         2. **Mode conflicts**, because they need nothing from the filesystem.
-        3. **An empty -ChangedFile**, last because it is the narrowest: it says the caller's diff
-           produced nothing, which is only worth saying once the run is otherwise coherent.
+        3. **An empty -ChangedFile**, because it says the caller's diff produced nothing, which is
+           only worth saying once the run is otherwise coherent.
+        4. **-ChangedLine**, last because it is the narrowest: it refines the files of step 3, so
+           its keys are worth checking only against a list that holds some.
 
         Asked of `-ChangedFileBound` rather than of the value: an omitted -ChangedFile is a
         whole-tree run and an empty one is a broken pipeline, and `$null` and `@()` are
@@ -545,14 +547,18 @@ function Get-PSMutationInputFault {
         [Parameter(Mandatory)] [bool]$Changed,
         [bool]$Resume,
         [bool]$Incremental,
-        [AllowEmptyString()] [AllowEmptyCollection()] [string[]]$ChangedFile = @()
+        [AllowEmptyString()] [AllowEmptyCollection()] [string[]]$ChangedFile = @(),
+        # The changed lines per file; $null when -ChangedLine was not given.
+        [hashtable]$ChangedLine = $null
     )
     $fault = Get-PSMutationSourceRootFault -SourceRoot $SourceRoot
     if ($fault) { return $fault }
     $fault = Get-PSMutationModeFault -ListOnly $ListOnly -Recheck $Recheck `
         -UpdateBaseline $UpdateBaseline -MergeIntoBaseline $MergeIntoBaseline -Changed $Changed -Resume $Resume -Incremental $Incremental
     if ($fault) { return $fault }
-    return $Changed ? (Get-PSMutationChangedFileFault -ChangedFile $ChangedFile) : ''
+    $fault = $Changed ? (Get-PSMutationChangedFileFault -ChangedFile $ChangedFile) : ''
+    if ($fault) { return $fault }
+    return Get-PSMutationChangedLineFault -ChangedLine $ChangedLine -Changed $Changed -ChangedFile $ChangedFile -SourceRoot $SourceRoot
 }
 
 function Get-PSMutationSourceRootFault {
@@ -742,12 +748,11 @@ function Select-PSMutationScopedMutateFile {
     $wanted = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
     # NO blank guard. `Join-Path $SourceRoot ''` and `... $null` both yield the source root, whose
     # sandbox path is the sandbox root -- and no mutate file is ever the sandbox root, so a blank
-    # entry adds a key that matches nothing. Measured. A guard here would be a branch whose two
-    # arms produce identical output, which is the shape this repo deletes rather than tests: its
-    # mutants survive because nothing can tell it from its own absence.
+    # entry adds a key that matches nothing. Measured. A guard here would be a branch whose two arms produce
+    # identical output, which is the shape this repo deletes rather than tests: its mutants
+    # survive because nothing can tell it from its own absence.
     foreach ($f in $ChangedFile) {
-        [void]$wanted.Add((ConvertTo-PSMutationSandboxPath -Path (Join-Path $SourceRoot $f) `
-                    -RepoRoot $SourceRoot -SandboxRoot $SandboxRoot))
+        [void]$wanted.Add((ConvertTo-PSMutationChangedPath -Path $f -SourceRoot $SourceRoot -SandboxRoot $SandboxRoot))
     }
     # ORDER FROM $Mutate, not from $ChangedFile. The config's order is what every other run
     # reports in, and a scoped report that listed files in diff order would sort differently
@@ -759,6 +764,185 @@ function Select-PSMutationScopedMutateFile {
     # must never wrap it in @( ) again.
     $scoped = [string[]]@($Mutate | Where-Object { $wanted.Contains($_) })
     return , $scoped
+}
+
+function ConvertTo-PSMutationChangedPath {
+    <#
+    .SYNOPSIS
+        The sandbox path a -ChangedFile entry or a -ChangedLine key names. Pure.
+    .DESCRIPTION
+        One resolution for both, so a key and the -ChangedFile entry it refines are equal exactly
+        when they name the same file, however each was spelled.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [AllowEmptyString()] [string]$Path,
+        [Parameter(Mandatory)] [string]$SourceRoot,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    return ConvertTo-PSMutationSandboxPath -Path (Join-Path $SourceRoot $Path) -RepoRoot $SourceRoot -SandboxRoot $SandboxRoot
+}
+
+function Get-PSMutationChangedLineFault {
+    <#
+    .SYNOPSIS
+        The message refusing a -ChangedLine map, or empty when there is nothing to refuse.
+    .DESCRIPTION
+        -ChangedLine REFINES -ChangedFile and never replaces it, so three things are refused, in
+        this order:
+
+        1. **-ChangedLine without -ChangedFile.** The map names no file of its own; read as one,
+           it would make the keys the scope, and a caller who forgot -ChangedFile would get a
+           different run than the one the two together describe.
+        2. **A key no -ChangedFile entry names.** Dropped quietly, the lines of that file would be
+           left out of a scope that seems to include them, and the run would pass over them.
+        3. **A line number that is not a whole number from 1 up.** A candidate is kept when a
+           changed line lies inside its range, so a 0, a negative number or a text such as '3-5'
+           selects nothing -- a gate that measured less than it was asked to, and said nothing.
+
+        The keys are compared with the -ChangedFile entries in the source tree itself, because
+        this runs before any sandbox exists: both resolve against the same root, so the answer is
+        the one the sandbox paths give later.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [hashtable]$ChangedLine,
+        [Parameter(Mandatory)] [bool]$Changed,
+        # $null when -ChangedFile was omitted, which is the case the first refusal is about.
+        [AllowEmptyCollection()] [AllowEmptyString()] [string[]]$ChangedFile = @(),
+        [Parameter(Mandatory)] [string]$SourceRoot
+    )
+    if ($null -eq $ChangedLine) { return '' }
+    if (-not $Changed) {
+        return ('-ChangedLine was given without -ChangedFile. It narrows the files -ChangedFile names ' +
+            'to some of their lines and names no file of its own, so pass the same files to ' +
+            '-ChangedFile, or drop -ChangedLine to mutate the changed files whole.')
+    }
+    $root = (Resolve-Path -LiteralPath $SourceRoot).Path
+    $named = [System.Collections.Generic.HashSet[string]]::new([System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($f in $ChangedFile) { [void]$named.Add((ConvertTo-PSMutationChangedPath -Path $f -SourceRoot $root -SandboxRoot $root)) }
+    foreach ($key in $ChangedLine.Keys) {
+        if (-not $named.Contains((ConvertTo-PSMutationChangedPath -Path $key -SourceRoot $root -SandboxRoot $root))) {
+            return ("-ChangedLine names '{0}', which is not in -ChangedFile. Each key must name a file " +
+                '-ChangedFile names too: a key that matched no file would leave its lines out of the ' +
+                'run without a word. Add the file to -ChangedFile, or drop the key.') -f $key
+        }
+        $fault = Get-PSMutationLineNumberFault -File $key -Value $ChangedLine[$key]
+        if ($fault) { return $fault }
+    }
+    return ''
+}
+
+function Get-PSMutationLineNumberFault {
+    <#
+    .SYNOPSIS
+        The message refusing the first line number of one -ChangedLine entry that is not a whole
+        number from 1 up, or empty. An empty list is accepted: the file changed, and no line of it
+        is left to mutate.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [string]$File,
+        [AllowNull()] $Value
+    )
+    foreach ($n in @($Value)) {
+        if (-not (Test-PSMutationLineNumber -Value $n)) {
+            return ("-ChangedLine gives '{0}' as a line of '{1}'. A line number is a whole number from 1 " +
+                'up, as a diff counts them, and anything else would select no mutant while the run ' +
+                'reads as a measurement of the change.') -f "$n", $File
+        }
+    }
+    return ''
+}
+
+function Test-PSMutationLineNumber {
+    # True for a whole number from 1 up. [long] as well as [int], because ConvertFrom-Json
+    # returns a JSON number as [long], and a map read from a file is an ordinary way to build one.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([AllowNull()] $Value)
+    return ($Value -is [int] -or $Value -is [long]) -and $Value -ge 1
+}
+
+function ConvertTo-PSMutationScopedChangedLine {
+    <#
+    .SYNOPSIS
+        The -ChangedLine map resolved for the selection: sandbox path -> set of line numbers.
+    .DESCRIPTION
+        Only for the mutate files this run scoped to, and keyed by their own spelling, so the
+        selection looks a file up by the very string it enumerates. Two keys naming one file
+        join their lines.
+    #>
+    [OutputType([hashtable])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Mutate,
+        [Parameter(Mandatory)] [hashtable]$ChangedLine,
+        [Parameter(Mandatory)] [string]$SourceRoot,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    $byPath = [System.Collections.Generic.Dictionary[string, System.Collections.Generic.HashSet[int]]]::new(
+        [System.StringComparer]::OrdinalIgnoreCase)
+    foreach ($key in $ChangedLine.Keys) {
+        $path = ConvertTo-PSMutationChangedPath -Path $key -SourceRoot $SourceRoot -SandboxRoot $SandboxRoot
+        if (-not $byPath.ContainsKey($path)) { $byPath[$path] = [System.Collections.Generic.HashSet[int]]::new() }
+        foreach ($n in @($ChangedLine[$key])) { [void]$byPath[$path].Add([int]$n) }
+    }
+    $scoped = @{}
+    foreach ($m in $Mutate) {
+        if ($byPath.ContainsKey($m)) { $scoped[$m] = $byPath[$m] }
+    }
+    return $scoped
+}
+
+function ConvertTo-PSMutationChangedLineRecord {
+    <#
+    .SYNOPSIS
+        The resolved changed lines as the report records them: config path -> sorted line numbers.
+    .DESCRIPTION
+        In the order of `mutate`, as every other per-file list in the report is, and named the
+        way the config names the files, because that is the spelling a reader can find.
+    #>
+    [OutputType([System.Collections.Specialized.OrderedDictionary])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [hashtable]$ChangedLines,
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$Mutate,
+        [Parameter(Mandatory)] [hashtable]$ConfigByPath
+    )
+    $record = [ordered]@{}
+    foreach ($m in $Mutate) {
+        if ($ChangedLines.ContainsKey($m)) { $record[$ConfigByPath[$m]] = [int[]]@($ChangedLines[$m] | Sort-Object) }
+    }
+    return $record
+}
+
+function Get-PSMutationScopedRunText {
+    <#
+    .SYNOPSIS
+        The notice a scoped run prints before its loop: what it measured, and where it reports.
+    .DESCRIPTION
+        Said on every scoped run, because a passing gate is otherwise silent about the fact that it
+        measured part of the tree. With -ChangedLine it also says how many of those files were
+        limited to their changed lines, since the rest were mutated whole.
+    #>
+    [OutputType([string])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [int]$ChangedCount,
+        [Parameter(Mandatory)] [int]$InScopeCount,
+        # The resolved line filter, one entry per in-scope file it limits; $null without
+        # -ChangedLine. The map rather than its count, because $null.Count is 0 and would say
+        # "0 limited" on a run that limited nothing because it was never asked to.
+        [hashtable]$ChangedLines,
+        [Parameter(Mandatory)] [string]$ReportLeaf
+    )
+    $lines = ($null -ne $ChangedLines) ? (", {0} of those limited to their changed lines" -f $ChangedLines.Count) : ''
+    return ("  SCOPED run: {0} changed file(s) given, {1} of them in mutate{2}. The score covers those only, and the report goes to {3}." -f `
+            $ChangedCount, $InScopeCount, $lines, $ReportLeaf)
 }
 
 function Get-PSMutationScopedReportPath {

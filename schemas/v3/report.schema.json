@@ -183,6 +183,23 @@
       },
       "description": "The files a -ChangedFile run was scoped to. Required when mode is 'Changed' and ABSENT otherwise -- absent is how a full run says it measured everything in 'mutate', and an empty array would be a scoped run that measured nothing, which is refused before it starts."
     },
+    "changedLines": {
+      "type": "object",
+      "additionalProperties": {
+        "type": "array",
+        "items": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "uniqueItems": true
+      },
+      "description": "Optional, and only on a scoped run given -ChangedLine. Each mutated file that was limited to its changed lines, named as the config names it, with those line numbers in ascending order. A mutant was evaluated when one of them lies between its first and last line. A file of the scope without an entry was mutated whole; an empty list means no line of the file was left to mutate."
+    },
+    "skippedAsUnchanged": {
+      "type": "integer",
+      "minimum": 0,
+      "description": "Optional, and only beside changedLines. Candidates on no line changedLines names, taken out before the covered-lines filter and never evaluated. Excluded from total and from both scores, as skippedAsIgnoredCall is."
+    },
     "filesWithNoCandidate": {
       "type": "array",
       "items": {

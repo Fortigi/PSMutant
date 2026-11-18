@@ -127,8 +127,37 @@ scoped run's survivors into a whole-project baseline would record "no survivors"
 run never looked at. `-ListOnly` *is* allowed, and previewing what a PR would mutate is the cheapest
 use either has.
 
-Restricting mutants to changed **lines** is not implemented. It needs hunk offsets, which have the
-same problem `-ChangedSince` has and no agreed shape yet.
+#### Narrowing to the changed lines
+
+```powershell
+$lines  = @{ 'src/a.ps1' = 12, 13, 40; 'src/gone.ps1' = @() }
+$result = Invoke-PSMutation -ConfigFile ./psmutant.config.json `
+    -ChangedFile 'src/a.ps1', 'src/b.ps1', 'src/gone.ps1' -ChangedLine $lines
+```
+
+`-ChangedLine` takes a hashtable: each key a file named the way `-ChangedFile` names it, each value
+the line numbers that changed in it, counted from 1. **You compute the lines**, for the reason you
+compute the diff — the hunk offsets need the same base.
+
+It **refines** `-ChangedFile` and never replaces it:
+
+- Without `-ChangedFile` it is refused, and so is a key that names no file of `-ChangedFile`, and a
+  line number that is not a whole number from 1 up.
+- A file of `-ChangedFile` with **no key** is mutated whole — the shape for a file you want measured
+  in full, such as one just added to `mutate`.
+- An **empty list** is allowed: the file changed and no line of it is left, as after a pure
+  deletion, so it yields no mutant.
+
+A mutant is kept when **any** changed line lies between its first and its last line, inclusive, so
+the mutants of a condition that spans three lines and changed on the third are kept. The others are
+taken out after numbering, so every kept mutant has the id a full run gives it. They are counted per
+file as `Unchanged` — on the `-ListOnly` result as well — and the scoped report records the lines as
+`changedLines` (config path to sorted line numbers) and the count as `skippedAsUnchanged`, which is
+excluded from `total` and from both scores as `skippedAsIgnoredCall` is. Everything `-ChangedFile`
+refuses is refused here too, `-Incremental` and `-ResumeFrom` included.
+
+A declared equivalent whose mutant is on a line you did not name is not evaluated, so it is not
+called stale either. A declaration that matches no mutant at all still fails the run.
 
 ### In CI: survivors on the pull request
 

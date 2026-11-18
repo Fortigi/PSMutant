@@ -326,6 +326,23 @@ function Test-PSMutantCovered {
     return $CoveredLines.ContainsKey($f) -and $CoveredLines[$f].Contains([int]$Candidate.Line)
 }
 
+function Test-PSMutationOnChangedLine {
+    # True if a -ChangedLine run keeps a candidate: its file has no entry, or a changed line lies
+    # between its first and its last line. Pure.
+    #
+    # The RANGE, not the first line. A condition that spans three lines and was changed on the
+    # third is changed code, and a test of only its first line would drop the mutant that
+    # checks it.
+    [OutputType([bool])]
+    [CmdletBinding()]
+    param([Parameter(Mandatory)] $Candidate, [hashtable]$ChangedLines)
+    if ($null -eq $ChangedLines -or -not $ChangedLines.ContainsKey($Candidate.File)) { return $true }
+    foreach ($line in $ChangedLines[$Candidate.File]) {
+        if ($line -ge $Candidate.Line -and $line -le $Candidate.EndLine) { return $true }
+    }
+    return $false
+}
+
 function Get-PSMutationRunBaseline {
     <#
     .SYNOPSIS
@@ -390,6 +407,7 @@ function ConvertTo-PSMutationDisplayPerFile {
                 Produced   = $_.Produced
                 Kept       = $_.Kept
                 Ignored    = $_.Ignored
+                Unchanged  = $_.Unchanged
                 ByOperator = $_.ByOperator
             }
         })
@@ -443,9 +461,13 @@ function Select-PSMutationCandidate {
         # Commands whose arguments are not mutated (#263); empty to mutate inside every call.
         [Parameter(Mandatory)] [AllowEmptyCollection()] [string[]]$IgnoreCall,
         [bool]$CoveredLinesOnly,
-        $CoveredLines
+        $CoveredLines,
+        # The changed lines of a -ChangedLine run: sandbox path -> set of line numbers. A file
+        # with no entry, or a $null map, is mutated whole.
+        [hashtable]$ChangedLines = $null
     )
     $out = [System.Collections.Generic.List[object]]::new()
+    $unchanged = [System.Collections.Generic.List[object]]::new()
     $perFile = [System.Collections.Generic.List[object]]::new()
     foreach ($file in $MutateFiles) {
         # Ignored calls are taken out AFTER numbering, like the coverage filter and for the same
@@ -454,14 +476,40 @@ function Select-PSMutationCandidate {
         # number taken out, reported beside them.
         $all = @(Get-PSMutationCandidate -Path $file -Operators $Operators)
         $ignored = Get-PSMutationIgnoredCallRange -Path $file -Command $IgnoreCall
-        $produced = @($all | Where-Object { -not (Test-PSMutationInIgnoredCall -Candidate $_ -Ranges $ignored) })
+        $called = @($all | Where-Object { -not (Test-PSMutationInIgnoredCall -Candidate $_ -Ranges $ignored) })
+        # The unchanged lines the same way, and counted beside Ignored as Unchanged.
+        $produced = @($called | Where-Object { Test-PSMutationOnChangedLine -Candidate $_ -ChangedLines $ChangedLines })
+        # Carried, not only counted: a declared equivalent among them was not examined, and the
+        # stale check must not read it as a declaration that matches no mutant.
+        foreach ($c in @($called | Where-Object { -not (Test-PSMutationOnChangedLine -Candidate $_ -ChangedLines $ChangedLines) })) { $unchanged.Add($c) }
         $kept = @($produced | Where-Object { -not $CoveredLinesOnly -or (Test-PSMutantCovered -Candidate $_ -CoveredLines $CoveredLines) })
         foreach ($c in $kept) { $out.Add($c) }
-        $perFile.Add([pscustomobject]@{ File = $file; Produced = $produced.Count; Kept = $kept.Count; Ignored = $all.Count - $produced.Count
+        $perFile.Add([pscustomobject]@{ File = $file; Produced = $produced.Count; Kept = $kept.Count; Ignored = $all.Count - $called.Count
+                Unchanged = $called.Count - $produced.Count
                 ByOperator = (Get-PSMutationCandidateByOperator -Produced $produced -Kept $kept)
             })
     }
-    return [pscustomobject]@{ Candidates = $out.ToArray(); PerFile = $perFile.ToArray() }
+    return [pscustomobject]@{ Candidates = $out.ToArray(); PerFile = $perFile.ToArray(); Unchanged = $unchanged.ToArray() }
+}
+
+function ConvertTo-PSMutationUnexaminedRow {
+    # The candidates a run took out without evaluating them, in the shape of a result row that the
+    # equivalence keys read: the file as the report names it, the function, the line and the
+    # description. No Status, because nothing was observed. Pure.
+    [OutputType([object[]])]
+    [CmdletBinding()]
+    param(
+        [Parameter(Mandatory)] [AllowEmptyCollection()] [object[]]$Candidates,
+        [Parameter(Mandatory)] [string]$SandboxRoot
+    )
+    return , @($Candidates | ForEach-Object {
+            [pscustomobject]@{
+                File        = (ConvertFrom-PSMutationSandboxPath -Path $_.File -SandboxRoot $SandboxRoot)
+                Function    = $_.Function
+                Line        = $_.Line
+                Description = $_.Description
+            }
+        })
 }
 
 # The outcomes this module understands from a covering-test run. Pester's run-level result

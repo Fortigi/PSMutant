@@ -155,8 +155,153 @@ Describe 'Select-PSMutationCandidate and ignored calls (#263)' {
     }
 
     It 'carries the count into the display tally' {
-        $tally = ConvertTo-PSMutationDisplayPerFile -PerFile @([pscustomobject]@{ File = $script:loud; Produced = 3; Kept = 2; Ignored = 4; ByOperator = @{} }) -SandboxRoot (Split-Path $script:loud)
+        $tally = ConvertTo-PSMutationDisplayPerFile -PerFile @([pscustomobject]@{ File = $script:loud; Produced = 3; Kept = 2; Ignored = 4; Unchanged = 5; ByOperator = @{} }) -SandboxRoot (Split-Path $script:loud)
         $tally[0].Ignored | Should-Be 4
+        $tally[0].Unchanged | Should-Be 5
+    }
+}
+
+Describe 'Test-PSMutationOnChangedLine' {
+    BeforeAll {
+        # A candidate spanning lines 10 to 12, as a multi-line condition does.
+        $script:span = [pscustomobject]@{ File = 'C:/sb/src/a.ps1'; Line = 10; EndLine = 12 }
+        function script:OnLines { param([int[]]$Lines)
+            Test-PSMutationOnChangedLine -Candidate $script:span -ChangedLines @{ 'C:/sb/src/a.ps1' = [System.Collections.Generic.HashSet[int]]$Lines }
+        }
+    }
+
+    It 'keeps a candidate with a changed line <Name>' -ForEach @(
+        @{ Name = 'on its first line'; Lines = @(10) }
+        @{ Name = 'on its last line'; Lines = @(12) }
+        @{ Name = 'between its first and last line'; Lines = @(11) }
+        # Only the third line of a condition that starts above it changed: still changed code.
+        @{ Name = 'below the line it starts on, and none on that line'; Lines = @(3, 12, 40) }
+    ) {
+        OnLines -Lines $Lines | Should-BeTrue
+    }
+
+    It 'drops a candidate whose changed lines are all <Name>' -ForEach @(
+        @{ Name = 'above it'; Lines = @(9) }
+        @{ Name = 'below it'; Lines = @(13) }
+        @{ Name = 'outside it on both sides'; Lines = @(9, 13) }
+        @{ Name = 'absent, the file having no changed line left'; Lines = @() }
+    ) {
+        OnLines -Lines $Lines | Should-BeFalse
+    }
+
+    It 'keeps every candidate of a file the map has no entry for' {
+        # The file of -ChangedFile with no key, which the consumer relies on to measure it whole.
+        Test-PSMutationOnChangedLine -Candidate $script:span -ChangedLines @{ 'C:/sb/src/b.ps1' = [System.Collections.Generic.HashSet[int]]@(1) } |
+            Should-BeTrue
+    }
+
+    It 'keeps every candidate when there is no map at all' {
+        Test-PSMutationOnChangedLine -Candidate $script:span -ChangedLines $null | Should-BeTrue
+    }
+}
+
+Describe 'Select-PSMutationCandidate and changed lines' {
+    BeforeAll {
+        $script:lined = Join-Path $TestDrive 'lined.ps1'
+        Set-Content -LiteralPath $script:lined -Encoding utf8 -Value @(
+            'function Get-Lined {'
+            '    $a = 1 + 2'
+            '    $b = 3 + 4'
+            '    return 5 + 6'
+            '}'
+        )
+        $script:whole = Join-Path $TestDrive 'whole.ps1'
+        Set-Content -LiteralPath $script:whole -Encoding utf8 -Value 'function Get-Whole { return 7 + 8 }'
+        $script:ops = @('BinaryOperator', 'NumberLiteral')
+        function script:Lines { param([string]$File, [int[]]$Line) @{ $File = [System.Collections.Generic.HashSet[int]]$Line } }
+    }
+
+    It 'keeps only the candidates on a changed line, counts the rest as Unchanged, and leaves every id where it was' {
+        $all = Select-PSMutationCandidate -MutateFiles @($script:lined) -Operators $script:ops -IgnoreCall @() -CoveredLinesOnly $false
+        $some = Select-PSMutationCandidate -MutateFiles @($script:lined) -Operators $script:ops -IgnoreCall @() -CoveredLinesOnly $false `
+            -ChangedLines (Lines -File $script:lined -Line 3)
+        $onThree = @($all.Candidates | Where-Object Line -EQ 3)
+        $onThree.Count | Should-BeGreaterThan 0
+        @($some.Candidates.Id) | Should-BeCollection @($onThree.Id)
+        @($some.Candidates | Where-Object Line -NE 3).Count | Should-Be 0
+        $some.PerFile[0].Unchanged | Should-Be ($all.Candidates.Count - $onThree.Count)
+        $some.PerFile[0].Produced | Should-Be $onThree.Count
+        $some.PerFile[0].Kept | Should-Be $onThree.Count
+        $all.PerFile[0].Unchanged | Should-Be 0
+    }
+
+    It 'hands back the candidates it took out, in the order they were found, and none without a line filter' {
+        $all = Select-PSMutationCandidate -MutateFiles @($script:lined) -Operators $script:ops -IgnoreCall @() -CoveredLinesOnly $false
+        $some = Select-PSMutationCandidate -MutateFiles @($script:lined) -Operators $script:ops -IgnoreCall @() -CoveredLinesOnly $false `
+            -ChangedLines (Lines -File $script:lined -Line 3)
+        (@($some.Unchanged.Id) -join ',') | Should-Be (@($all.Candidates | Where-Object Line -NE 3 | ForEach-Object Id) -join ',')
+        @($all.Unchanged).Count | Should-Be 0
+    }
+
+    It 'mutates a file without an entry whole, beside one that has an entry' {
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:lined, $script:whole) -Operators $script:ops -IgnoreCall @() -CoveredLinesOnly $false `
+            -ChangedLines (Lines -File $script:lined -Line 2)
+        $whole = @($sel.Candidates | Where-Object File -EQ $script:whole)
+        $whole.Count | Should-Be $sel.PerFile[1].Produced
+        $sel.PerFile[1].Unchanged | Should-Be 0
+        $sel.PerFile[1].Produced | Should-BeGreaterThan 0
+        $sel.PerFile[0].Unchanged | Should-BeGreaterThan 0
+    }
+
+    It 'yields no candidate of a file whose changed lines are an empty list' {
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:lined) -Operators $script:ops -IgnoreCall @() -CoveredLinesOnly $false `
+            -ChangedLines (Lines -File $script:lined -Line @())
+        $sel.Candidates.Count | Should-Be 0
+        $sel.PerFile[0].Produced | Should-Be 0
+        $sel.PerFile[0].Unchanged | Should-BeGreaterThan 0
+    }
+
+    It 'takes them out before the coverage filter, so none is also counted as uncovered' {
+        # Lines 2 and 3 changed, only line 2 covered: the line-4 candidates are Unchanged, the
+        # line-3 ones are the only uncovered ones.
+        $covered = @{ ([System.IO.Path]::GetFullPath($script:lined)) = [System.Collections.Generic.HashSet[int]]@(2) }
+        $sel = Select-PSMutationCandidate -MutateFiles @($script:lined) -Operators $script:ops -IgnoreCall @() -CoveredLinesOnly $true -CoveredLines $covered `
+            -ChangedLines (Lines -File $script:lined -Line 2, 3)
+        $perLine = @(Select-PSMutationCandidate -MutateFiles @($script:lined) -Operators $script:ops -IgnoreCall @() -CoveredLinesOnly $false).Candidates
+        $sel.PerFile[0].Unchanged | Should-Be @($perLine | Where-Object Line -EQ 4).Count
+        ($sel.PerFile[0].Produced - $sel.PerFile[0].Kept) | Should-Be @($perLine | Where-Object Line -EQ 3).Count
+        @($sel.Candidates | ForEach-Object Line | Sort-Object -Unique) | Should-BeCollection @(2)
+    }
+
+    It 'counts an ignored-call mutant as Ignored, never also as Unchanged' {
+        $quiet = Join-Path $TestDrive 'quiet.ps1'
+        Set-Content -LiteralPath $quiet -Encoding utf8 -Value @(
+            'function Get-Quiet {'
+            '    Write-Verbose ("{0}" -f (1 + 2))'
+            '    return 3 + 4'
+            '}'
+        )
+        $sel = Select-PSMutationCandidate -MutateFiles @($quiet) -Operators $script:ops -IgnoreCall @('Write-Verbose') -CoveredLinesOnly $false `
+            -ChangedLines (Lines -File $quiet -Line 3)
+        $all = Select-PSMutationCandidate -MutateFiles @($quiet) -Operators $script:ops -IgnoreCall @() -CoveredLinesOnly $false
+        @($all.Candidates | Where-Object Line -EQ 2).Count | Should-BeGreaterThan 0
+        $sel.PerFile[0].Ignored | Should-Be @($all.Candidates | Where-Object Line -EQ 2).Count
+        $sel.PerFile[0].Unchanged | Should-Be 0
+        @($sel.Unchanged).Count | Should-Be 0
+        $sel.PerFile[0].Produced | Should-Be @($all.Candidates | Where-Object Line -EQ 3).Count
+    }
+}
+
+Describe 'ConvertTo-PSMutationUnexaminedRow' {
+    It 'names each candidate as the report names its file, with the fields an equivalence key reads' {
+        $root = Join-Path $TestDrive 'sb'
+        $c = [pscustomobject]@{ Id = 4; File = (Join-Path $root 'src/a.ps1'); Function = 'Get-A'; Line = 7; EndLine = 8
+            Operator = 'BinaryOperator'; Description = '-gt -> -le'; StartOffset = 1; EndOffset = 2; Original = 'x'; Mutated = 'y' }
+        $rows = ConvertTo-PSMutationUnexaminedRow -Candidates @($c) -SandboxRoot $root
+        $rows.Count | Should-Be 1
+        (@($rows[0].PSObject.Properties.Name) -join ',') | Should-Be 'File,Function,Line,Description'
+        "$($rows[0].File)|$($rows[0].Function)|$($rows[0].Line)|$($rows[0].Description)" | Should-Be 'src/a.ps1|Get-A|7|-gt -> -le'
+    }
+
+    It 'gives an empty array for no candidate' {
+        $rows = ConvertTo-PSMutationUnexaminedRow -Candidates @() -SandboxRoot $TestDrive
+        Should-BeCollection -Actual $rows -Expected @()
+        $rows.GetType().Name | Should-Be 'Object[]'
     }
 }
 

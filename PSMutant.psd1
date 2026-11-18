@@ -1,6 +1,6 @@
 @{
     RootModule        = 'PSMutant.psm1'
-    ModuleVersion     = '0.9.3'
+    ModuleVersion     = '0.10.0'
     GUID              = '9c19f399-e58d-4087-829a-22e5a7ec3282'
     Author            = 'Fortigi'
     CompanyName       = 'Fortigi'
@@ -40,11 +40,11 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = 'PSMutant 0.9.3
+            ReleaseNotes = 'PSMutant 0.10.0
 
-- PSMutant''s own Pester runs no longer put error annotations on a pull request.
+- -ChangedLine narrows a -ChangedFile run to the lines a pull request changed.
 
-Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.3'
+Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.10.0'
         }
     }
 }
