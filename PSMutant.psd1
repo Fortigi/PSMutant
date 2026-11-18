@@ -40,11 +40,11 @@
             Tags         = @('mutation-testing', 'testing', 'pester', 'ast', 'quality', 'test-quality', 'coverage')
             LicenseUri   = 'https://github.com/Fortigi/PSMutant/blob/main/LICENSE'
             ProjectUri   = 'https://github.com/Fortigi/PSMutant'
-            ReleaseNotes = 'PSMutant 0.9.3
+            ReleaseNotes = 'PSMutant 0.10.0
 
-- PSMutant''s own Pester runs no longer put error annotations on a pull request.
+- A worker process that ends no longer stops the run.
 
-Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.9.3'
+Full release notes: https://github.com/Fortigi/PSMutant/releases/tag/v0.10.0'
         }
     }
 }
