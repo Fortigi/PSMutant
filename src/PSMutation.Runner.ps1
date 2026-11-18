@@ -716,12 +716,13 @@ function Write-PSMutationFile {
 
 function Test-PSMutationFileInUse {
     # True for the error of a file that another process holds open: a sharing or a lock violation,
-    # Windows errors 32 and 33. A .NET call reaches PowerShell wrapped, so its base is asked. Pure.
+    # Windows errors 32 and 33, which .NET gives as the HResults 0x80070020 and 0x80070021. A .NET
+    # call reaches PowerShell wrapped, so its base is asked. Pure.
     [OutputType([bool])]
     [CmdletBinding()]
     param([Parameter(Mandatory)] [System.Exception]$Exception)
     $io = $Exception.GetBaseException()
-    return $io -is [System.IO.IOException] -and ($io.HResult -band 0xFFFF) -in 32, 33
+    return $io -is [System.IO.IOException] -and $io.HResult -in 0x80070020, 0x80070021
 }
 
 function Invoke-PSMutationSandboxWrite {
